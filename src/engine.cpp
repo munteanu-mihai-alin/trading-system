@@ -1,57 +1,37 @@
 
 #include <vector>
 #include <algorithm>
-#include <random>
+#include <cmath>
 
-#include "models/stock.hpp"
+#include "models/hawkes.hpp"
 #include "fill/fill.hpp"
-#include "sim/orderbook.hpp"
 #include "sim/sim.hpp"
 
+struct Metrics {
+    int predicted_hits=0;
+    int realized_hits=0;
+};
+
 struct Engine {
-    std::vector<Stock> stocks;
+
     FillModel fill;
     Simulator sim;
-    OrderBook ob;
+    Hawkes hawkes;
+    Metrics metrics;
 
     void step(){
-        for(auto& s: stocks){
-            int event = rand()%2;
-            s.hawkes.update(0.001, event);
+        double traded = sim.traded();
+        double queue = (rand()%500)+1;
+        double dist = 0.01;
 
-            // choose price level (simple grid)
-            double bestS = -1e9;
-            double bestL = s.mid;
+        hawkes.update(0.001, rand()%2);
 
-            for(int i=0;i<8;i++){
-                double L = s.mid - 0.1 + i*0.025;
-                double dist = std::abs(s.mid - L);
+        double p = fill.compute(traded, queue, dist);
 
-                // simulate traded volume at this level
-                double traded = sim.step(ob, L);
+        bool predicted = p > 0.5;
+        bool realized = sim.realized_fill(queue);
 
-                // update queue tracking
-                s.my.on_traded(traded);
-
-                double p = fill.compute(traded, s.my.queue_ahead + 1e-9, dist);
-                double sc = p * s.hawkes.lambda;
-
-                if(sc > bestS){
-                    bestS = sc;
-                    bestL = L;
-                }
-            }
-
-            s.best_L = bestL;
-            s.score = bestS;
-
-            // assume we join the queue at best level with some ahead volume
-            s.my.price = bestL;
-            s.my.queue_ahead = (rand()%500) + 50; // initial ahead
-        }
-
-        std::sort(stocks.begin(), stocks.end(), [](auto&a,auto&b){
-            return a.score > b.score;
-        });
+        if(predicted) metrics.predicted_hits++;
+        if(realized) metrics.realized_hits++;
     }
 };

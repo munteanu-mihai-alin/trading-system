@@ -1,13 +1,12 @@
+
 #pragma once
 #include <cmath>
 
 inline double compute_score(double mid,double L,double mu,double lambda,double queue,double latency_ms) {
     double dist = fabs(mid - L);
     double p_touch = exp(-5.0 * dist);
-
     double effective_queue = queue + lambda * (latency_ms / 1000.0);
     double fill = 1 - exp(-lambda / (effective_queue + 1e-9));
-
     double p_fill = p_touch * fill;
 
     double reward = 0.8;

@@ -16,6 +16,8 @@ include_directories(include tests)
 set(LIB_SOURCES
     src/lib/AppConfig.cpp
     src/lib/RankingEngine.cpp
+    src/lib/IBKRClient.cpp
+    src/lib/LiveExecutionEngine.cpp
 )
 
 add_library(hft_lib ${LIB_SOURCES})
@@ -31,6 +33,7 @@ add_executable(hft_tests
     tests/math/TestMathModels.cpp
     tests/sim/TestSimulator.cpp
     tests/validation/TestValidation.cpp
+    tests/integration/TestBrokerIntegration.cpp
 )
 target_link_libraries(hft_tests PRIVATE hft_lib)
 

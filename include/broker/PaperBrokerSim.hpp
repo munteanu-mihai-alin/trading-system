@@ -1,3 +1,4 @@
+
 #pragma once
 #include <deque>
 #include <string>
@@ -40,6 +41,10 @@ public:
         cancelled.push_back(order_id);
         updates.push_back(OrderUpdate{order_id, "Cancelled", 0.0, 0.0, 0.0});
     }
+
+    void start_event_loop() override {}
+    void stop_event_loop() override {}
+    void subscribe_market_depth(const MarketDepthRequest&) override {}
 
     bool poll_update(OrderUpdate& out) {
         if (updates.empty()) return false;

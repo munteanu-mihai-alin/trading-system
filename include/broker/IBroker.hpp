@@ -3,6 +3,12 @@
 
 namespace hft {
 
+struct MarketDepthRequest {
+    int ticker_id = 0;
+    std::string symbol;
+    int depth = 5;
+};
+
 struct OrderRequest {
     int id = 0;
     std::string symbol;
@@ -27,6 +33,9 @@ public:
     virtual bool is_connected() const = 0;
     virtual void place_limit_order(const OrderRequest& req) = 0;
     virtual void cancel_order(int order_id) = 0;
+    virtual void start_event_loop() = 0;
+    virtual void stop_event_loop() = 0;
+    virtual void subscribe_market_depth(const MarketDepthRequest& req) = 0;
 };
 
 }  // namespace hft

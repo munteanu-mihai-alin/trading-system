@@ -1,3 +1,4 @@
+
 #include "common/TestFramework.hpp"
 
 #include <memory>
@@ -33,4 +34,14 @@ HFT_TEST(test_live_config_maps_mode_name) {
     const auto live = LiveTradingConfig::from_app(cfg);
     hft::test::require(live.use_real_ibkr, "live config should enable real ibkr");
     hft::test::require(live.mode_name() == "live", "mode name should be live");
+}
+
+HFT_TEST(test_paper_broker_supports_event_loop_and_depth_subscribe) {
+    PaperBrokerSim broker;
+    hft::test::require(broker.connect("127.0.0.1", 7497, 1), "paper broker should connect");
+    broker.start_event_loop();
+    broker.subscribe_market_depth(MarketDepthRequest{1, "AAPL", 5});
+    broker.stop_event_loop();
+    broker.disconnect();
+    hft::test::require(!broker.is_connected(), "paper broker should disconnect cleanly");
 }

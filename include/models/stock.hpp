@@ -6,19 +6,16 @@
 
 struct Stock {
     std::string symbol;
-    double mid = 100;
-    double queue = 500;
-    double best_L = 0;
-    double score = 0;
+    double mid=100;
+    double queue=500;
+    double best_L=0;
+    double score=0;
 
     Hawkes hawkes;
 
-    // real vs shadow
     TradeStats real;
     TradeStats shadow;
 
-    bool active = false;
-
-    // cooldown
-    int cooldown = 0;
+    bool active=false;
+    int cooldown=0;
 };

@@ -1,5 +1,6 @@
 #include <iostream>
 #include <memory>
+#include <vector>
 
 #include "bench/bench.hpp"
 #include "broker/IBKRClient.hpp"
@@ -13,8 +14,10 @@ int main() {
     const auto live_cfg = hft::LiveTradingConfig::from_app(cfg);
 
     std::unique_ptr<hft::IBroker> broker;
+    hft::IBKRClient* raw_ibkr = nullptr;
     if (live_cfg.use_real_ibkr) {
         broker = std::make_unique<hft::IBKRClient>();
+        raw_ibkr = static_cast<hft::IBKRClient*>(broker.get());
     } else {
         broker = std::make_unique<hft::PaperBrokerSim>();
     }
@@ -26,6 +29,10 @@ int main() {
     }
 
     engine.initialize_universe(30);
+    std::vector<std::string> symbols;
+    for (int i = 0; i < 30; ++i) symbols.push_back("STK" + std::to_string(i));
+    engine.subscribe_live_books(symbols);
+    if (raw_ibkr != nullptr) raw_ibkr->start_production_event_loop();
     for (int t = 0; t < cfg.steps; ++t) {
         engine.step(t);
     }

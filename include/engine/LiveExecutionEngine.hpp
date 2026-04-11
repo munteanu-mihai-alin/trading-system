@@ -26,6 +26,8 @@ public:
     void stop();
 
     void initialize_universe(int n_stocks);
+    void subscribe_live_books(const std::vector<std::string>& symbols);
+    void reconcile_broker_state();
     void step(int t);
 };
 

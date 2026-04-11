@@ -1,10 +1,17 @@
 
 #pragma once
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <string>
 #include <unordered_map>
 
 #include "broker/IBroker.hpp"
+#include "broker/ConnectionSupervisor.hpp"
+#include "broker/OrderLifecycle.hpp"
+#include "models/l2_book.hpp"
 
 #ifdef HFT_ENABLE_IBKR
 #include "EClientSocket.h"
@@ -30,11 +37,20 @@ class IBKRClient
     bool connected_ = false;
     std::unordered_map<int, std::chrono::high_resolution_clock::time_point> send_ts_;
     std::unordered_map<int, double> ack_latency_ms_cache_;
+    std::unordered_map<int, L2Book> books_;
+    OrderLifecycleBook lifecycle_;
+    ConnectionSupervisor reconnect_;
+    std::string host_;
+    int port_ = 0;
+    int client_id_ = 0;
 
+    mutable std::mutex books_mutex_;
 #ifdef HFT_ENABLE_IBKR
     EReaderOSSignal signal_{2000};
     EClientSocket client_{this, &signal_};
     EReader* reader_ = nullptr;
+    std::atomic<bool> reader_running_{false};
+    std::thread reader_thread_;
 #endif
 
 public:
@@ -49,8 +65,13 @@ public:
     void start_event_loop() override;
     void stop_event_loop() override;
     void subscribe_market_depth(const MarketDepthRequest& req) override;
+    void start_production_event_loop();
+    void pump_once();
+    bool reconnect_once();
 
     [[nodiscard]] double ack_latency_ms(int order_id) const;
+    [[nodiscard]] L2Book snapshot_book(int ticker_id) const;
+    [[nodiscard]] const OrderLifecycleBook& lifecycle() const { return lifecycle_; }
 
 #ifdef HFT_ENABLE_IBKR
     // Core callbacks we actively use.
@@ -67,6 +88,12 @@ public:
                      double mktCapPrice) override;
 
     void nextValidId(OrderId orderId) override {}
+    void updateMktDepth(TickerId id,
+                        int position,
+                        int operation,
+                        int side,
+                        double price,
+                        Decimal size) override;
 
     // Required no-op overrides to satisfy EWrapper.
     void tickPrice(TickerId, TickType, double, const TickAttrib&) override {}

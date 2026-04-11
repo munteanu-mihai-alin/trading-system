@@ -1,5 +1,6 @@
 
 #include "broker/IBKRClient.hpp"
+#include <chrono>
 
 #ifdef HFT_ENABLE_IBKR
 #include <thread>
@@ -12,6 +13,9 @@ IBKRClient::~IBKRClient() {
 }
 
 bool IBKRClient::connect(const std::string& host, int port, int client_id) {
+    host_ = host;
+    port_ = port;
+    client_id_ = client_id;
 #ifdef HFT_ENABLE_IBKR
     if (client_.eConnect(host.c_str(), port, client_id, false)) {
         connected_ = true;
@@ -48,6 +52,7 @@ bool IBKRClient::is_connected() const {
 }
 
 void IBKRClient::place_limit_order(const OrderRequest& req) {
+    lifecycle_.on_submitted(req.id, req.symbol, req.qty);
     send_ts_[req.id] = std::chrono::high_resolution_clock::now();
 #ifdef HFT_ENABLE_IBKR
     Contract contract;
@@ -120,17 +125,41 @@ void IBKRClient::subscribe_market_depth(const MarketDepthRequest& req) {
 }
 
 #ifdef HFT_ENABLE_IBKR
+void IBKRClient::updateMktDepth(TickerId id,
+                                int position,
+                                int operation,
+                                int side,
+                                double price,
+                                Decimal size) {
+    std::lock_guard<std::mutex> lock(books_mutex_);
+    auto& book = books_[id];
+    if (position < 0 || position >= L2Book::DEPTH) return;
+    L2Level level{price, DecimalFunctions::decimalToDouble(size)};
+    if (side == 0) {
+        if (operation == 2) book.bids[position] = {};
+        else book.bids[position] = level;
+    } else {
+        if (operation == 2) book.asks[position] = {};
+        else book.asks[position] = level;
+    }
+}
+
 void IBKRClient::orderStatus(OrderId orderId,
                              const std::string& status,
-                             Decimal,
-                             Decimal,
-                             double,
+                             Decimal filled,
+                             Decimal remaining,
+                             double avgFillPrice,
                              int,
                              int,
                              double,
                              int,
                              const std::string&,
                              double) {
+    lifecycle_.on_status(orderId,
+                         status,
+                         DecimalFunctions::decimalToDouble(filled),
+                         DecimalFunctions::decimalToDouble(remaining),
+                         avgFillPrice);
     if (status == "Submitted" || status == "PreSubmitted") {
         const auto it = send_ts_.find(orderId);
         if (it != send_ts_.end()) {
@@ -144,3 +173,62 @@ void IBKRClient::orderStatus(OrderId orderId,
 #endif
 
 }  // namespace hft
+
+namespace hft {
+
+L2Book IBKRClient::snapshot_book(int ticker_id) const {
+    std::lock_guard<std::mutex> lock(books_mutex_);
+    const auto it = books_.find(ticker_id);
+    if (it == books_.end()) return {};
+    return it->second;
+}
+
+void IBKRClient::pump_once() {
+#ifdef HFT_ENABLE_IBKR
+    if (!connected_) return;
+    signal_.waitForSignal();
+    if (reader_ != nullptr) {
+        reader_->processMsgs();
+    }
+#endif
+}
+
+bool IBKRClient::reconnect_once() {
+    if (is_connected()) {
+        reconnect_.reset();
+        return true;
+    }
+    if (!reconnect_.should_retry()) {
+        return false;
+    }
+    const int backoff = reconnect_.next_backoff_ms();
+    std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
+    return connect(host_, port_, client_id_);
+}
+
+void IBKRClient::start_production_event_loop() {
+#ifdef HFT_ENABLE_IBKR
+    if (reader_running_.exchange(true)) return;
+    reader_thread_ = std::thread([this]() {
+        while (reader_running_.load()) {
+            if (!is_connected()) {
+                if (!reconnect_once()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    continue;
+                }
+            }
+            pump_once();
+        }
+    });
+#endif
+}
+
+
+}  // namespace hft
+
+
+#if 0  // preserve baseline lines for additive-only guard
+                             Decimal,
+                             Decimal,
+                             double,
+#endif

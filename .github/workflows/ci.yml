@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+
+      - name: Configure
+        run: |
+          cmake -S . -B build
+
+      - name: Build
+        run: |
+          cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: |
+          cd build
+          ctest --output-on-failure
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+
+      - name: Run coverage
+        run: |
+          chmod +x scripts/run_coverage.sh
+          python3 --version
+          ./scripts/run_coverage.sh
+
+      - name: Upload HTML coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: build-coverage/coverage-html
+
+      - name: Upload LCOV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: build-coverage/coverage.filtered.info

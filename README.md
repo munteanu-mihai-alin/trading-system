@@ -120,3 +120,8 @@ The vendored TWS API protobuf-generated headers require **protobuf 29.3** (C++ r
 ## Protobuf 29.3 installation note
 
 In CI, protobuf 29.3 should be built with **CMake**, not `./configure`, for the release tarball used here.
+
+
+## Protobuf 29.3 source retrieval note
+
+For CI, protobuf 29.3 should be cloned with `--recurse-submodules` instead of using the release tarball, so the expected dependency tree is present during the CMake build.

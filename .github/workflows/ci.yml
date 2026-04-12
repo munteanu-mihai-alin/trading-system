@@ -79,10 +79,8 @@ jobs:
 
       - name: Install protobuf 29.3 from source
         run: |
-          PROTOBUF_VERSION=29.3
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/protobuf-${PROTOBUF_VERSION}.tar.gz
-          tar -xzf protobuf-${PROTOBUF_VERSION}.tar.gz
-          cmake -S protobuf-${PROTOBUF_VERSION} -B protobuf-build \
+          git clone --branch v29.3 --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git protobuf-29.3
+          cmake -S protobuf-29.3 -B protobuf-build \
             -Dprotobuf_BUILD_TESTS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local

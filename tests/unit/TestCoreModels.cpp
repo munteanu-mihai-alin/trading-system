@@ -13,158 +13,168 @@
 using namespace hft;
 
 HFT_TEST(test_forecast_normalizer_caps) {
-    ForecastNormalizer n;
-    const double x = n.normalize(100.0, 1.0);
-    hft::test::require(x <= 20.0, "forecast normalizer should cap output");
+  ForecastNormalizer n;
+  const double x = n.normalize(100.0, 1.0);
+  hft::test::require(x <= 20.0, "forecast normalizer should cap output");
 }
 
 HFT_TEST(test_transaction_cost_nonnegative) {
-    InstitutionalTransactionCostModel m(0.005, 0.0005, 0.1);
-    const double c = m.estimateCost(100, 200, 50, 1'000'000);
-    hft::test::require(c >= 0.0, "cost must be non-negative");
+  InstitutionalTransactionCostModel m(0.005, 0.0005, 0.1);
+  const double c = m.estimateCost(100, 200, 50, 1'000'000);
+  hft::test::require(c >= 0.0, "cost must be non-negative");
 }
 
 HFT_TEST(test_slippage_moves_price_for_buy) {
-    MarketImpactSlippageModel m(0.0005, 0.1);
-    const double px = m.adjustExecutionPrice(100.0, true, 0.01);
-    hft::test::require(px > 100.0, "buy slippage should increase execution price");
+  MarketImpactSlippageModel m(0.0005, 0.1);
+  const double px = m.adjustExecutionPrice(100.0, true, 0.01);
+  hft::test::require(px > 100.0,
+                     "buy slippage should increase execution price");
 }
 
 HFT_TEST(test_ewma_vol_positive) {
-    EWMAVolatility v;
-    const std::vector<double> returns{0.01, -0.005, 0.002};
-    const double vol = v.annualizedVol(returns);
-    hft::test::require(vol > 0.0, "volatility should be positive");
+  EWMAVolatility v;
+  const std::vector<double> returns{0.01, -0.005, 0.002};
+  const double vol = v.annualizedVol(returns);
+  hft::test::require(vol > 0.0, "volatility should be positive");
 }
 
 // ===== Branch coverage cases =====
 
 HFT_TEST(test_trade_stats_zero_win_rate_when_no_trades) {
-    TradeStats s;
-    hft::test::require_close(s.win_rate(), 0.0, 1e-12,
-                             "empty trade stats should have zero win rate");
+  TradeStats s;
+  hft::test::require_close(s.win_rate(), 0.0, 1e-12,
+                           "empty trade stats should have zero win rate");
 }
 
 HFT_TEST(test_trade_stats_win_rate_updates) {
-    TradeStats s;
-    s.update(1.0);
-    s.update(-1.0);
-    s.update(2.0);
-    hft::test::require_close(s.win_rate(), 2.0 / 3.0, 1e-12,
-                             "win rate should reflect positive pnl trades");
+  TradeStats s;
+  s.update(1.0);
+  s.update(-1.0);
+  s.update(2.0);
+  hft::test::require_close(s.win_rate(), 2.0 / 3.0, 1e-12,
+                           "win rate should reflect positive pnl trades");
 }
 
 HFT_TEST(test_app_config_loads_live_mode_and_values) {
-    const std::string path = "tmp_test_config_live.ini";
-    {
-        std::ofstream out(path);
-        out << "[runtime]\n";
-        out << "top_k=7\n";
-        out << "steps=42\n";
-        out << "[broker]\n";
-        out << "mode=live\n";
-        out << "host=10.0.0.2\n";
-        out << "paper_port=7001\n";
-        out << "live_port=7002\n";
-        out << "client_id=99\n";
-    }
+  const std::string path = "tmp_test_config_live.ini";
+  {
+    std::ofstream out(path);
+    out << "[runtime]\n";
+    out << "top_k=7\n";
+    out << "steps=42\n";
+    out << "[broker]\n";
+    out << "mode=live\n";
+    out << "host=10.0.0.2\n";
+    out << "paper_port=7001\n";
+    out << "live_port=7002\n";
+    out << "client_id=99\n";
+  }
 
-    const auto cfg = AppConfig::load_from_file(path);
-    hft::test::require(cfg.mode == BrokerMode::Live, "mode should parse as live");
-    hft::test::require(cfg.host == "10.0.0.2", "host should parse");
-    hft::test::require(cfg.paper_port == 7001, "paper port should parse");
-    hft::test::require(cfg.live_port == 7002, "live port should parse");
-    hft::test::require(cfg.client_id == 99, "client id should parse");
-    hft::test::require(cfg.top_k == 7, "top_k should parse");
-    hft::test::require(cfg.steps == 42, "steps should parse");
-    hft::test::require(cfg.port() == 7002, "live port should be selected in live mode");
-    std::remove(path.c_str());
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::Live, "mode should parse as live");
+  hft::test::require(cfg.host == "10.0.0.2", "host should parse");
+  hft::test::require(cfg.paper_port == 7001, "paper port should parse");
+  hft::test::require(cfg.live_port == 7002, "live port should parse");
+  hft::test::require(cfg.client_id == 99, "client id should parse");
+  hft::test::require(cfg.top_k == 7, "top_k should parse");
+  hft::test::require(cfg.steps == 42, "steps should parse");
+  hft::test::require(cfg.port() == 7002,
+                     "live port should be selected in live mode");
+  std::remove(path.c_str());
 }
 
 HFT_TEST(test_app_config_loads_sim_mode) {
-    const std::string path = "tmp_test_config_sim.ini";
-    {
-        std::ofstream out(path);
-        out << "mode=sim\n";
-    }
-    const auto cfg = AppConfig::load_from_file(path);
-    hft::test::require(cfg.mode == BrokerMode::Sim, "mode should parse as sim");
-    hft::test::require(cfg.port() == cfg.paper_port, "sim should use paper port path");
-    std::remove(path.c_str());
+  const std::string path = "tmp_test_config_sim.ini";
+  {
+    std::ofstream out(path);
+    out << "mode=sim\n";
+  }
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::Sim, "mode should parse as sim");
+  hft::test::require(cfg.port() == cfg.paper_port,
+                     "sim should use paper port path");
+  std::remove(path.c_str());
 }
 
 // ===== Additional coverage cases =====
 
 HFT_TEST(test_app_config_unknown_mode_falls_back_to_paper) {
-    const std::string path = "tmp_test_config_unknown.ini";
-    {
-        std::ofstream out(path);
-        out << "# comment\n";
-        out << "[broker]\n";
-        out << "mode=weird\n";
-        out << "badlinewithoutseparator\n";
-        out << "\n";
-    }
-    const auto cfg = AppConfig::load_from_file(path);
-    hft::test::require(cfg.mode == BrokerMode::Paper, "unknown mode should fall back to paper");
-    hft::test::require(cfg.port() == cfg.paper_port, "paper path should use paper port");
-    std::remove(path.c_str());
+  const std::string path = "tmp_test_config_unknown.ini";
+  {
+    std::ofstream out(path);
+    out << "# comment\n";
+    out << "[broker]\n";
+    out << "mode=weird\n";
+    out << "badlinewithoutseparator\n";
+    out << "\n";
+  }
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::Paper,
+                     "unknown mode should fall back to paper");
+  hft::test::require(cfg.port() == cfg.paper_port,
+                     "paper path should use paper port");
+  std::remove(path.c_str());
 }
 
 HFT_TEST(test_app_config_explicit_paper_mode_uses_paper_port) {
-    const std::string path = "tmp_test_config_paper.ini";
-    {
-        std::ofstream out(path);
-        out << "mode=paper\n";
-        out << "paper_port=7123\n";
-        out << "live_port=7999\n";
-    }
-    const auto cfg = AppConfig::load_from_file(path);
-    hft::test::require(cfg.mode == BrokerMode::Paper, "explicit paper mode should parse");
-    hft::test::require(cfg.port() == 7123, "paper mode should use paper port");
-    std::remove(path.c_str());
+  const std::string path = "tmp_test_config_paper.ini";
+  {
+    std::ofstream out(path);
+    out << "mode=paper\n";
+    out << "paper_port=7123\n";
+    out << "live_port=7999\n";
+  }
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::Paper,
+                     "explicit paper mode should parse");
+  hft::test::require(cfg.port() == 7123, "paper mode should use paper port");
+  std::remove(path.c_str());
 }
 
 HFT_TEST(test_app_config_default_port_uses_paper) {
-    AppConfig cfg;
-    hft::test::require(cfg.mode == BrokerMode::Paper, "default mode should be paper");
-    hft::test::require(cfg.port() == cfg.paper_port, "default port should be paper port");
+  AppConfig cfg;
+  hft::test::require(cfg.mode == BrokerMode::Paper,
+                     "default mode should be paper");
+  hft::test::require(cfg.port() == cfg.paper_port,
+                     "default port should be paper port");
 }
 
 HFT_TEST(test_app_config_live_port_branch_direct) {
-    AppConfig cfg;
-    cfg.mode = BrokerMode::Live;
-    cfg.paper_port = 7001;
-    cfg.live_port = 7002;
-    hft::test::require(cfg.port() == 7002, "live mode should return live port");
+  AppConfig cfg;
+  cfg.mode = BrokerMode::Live;
+  cfg.paper_port = 7001;
+  cfg.live_port = 7002;
+  hft::test::require(cfg.port() == 7002, "live mode should return live port");
 }
 
 HFT_TEST(test_app_config_ignores_comments_and_blank_lines) {
-    const std::string path = "tmp_test_config_comments.ini";
-    {
-        std::ofstream out(path);
-        out << "\n";
-        out << "# comment line\n";
-        out << "   \n";
-        out << "mode=paper\n";
-        out << "client_id=123\n";
-    }
-    const auto cfg = AppConfig::load_from_file(path);
-    hft::test::require(cfg.mode == BrokerMode::Paper,
-                       "paper mode should parse through comments and blanks");
-    hft::test::require(cfg.client_id == 123, "client id should parse after comments");
-    std::remove(path.c_str());
+  const std::string path = "tmp_test_config_comments.ini";
+  {
+    std::ofstream out(path);
+    out << "\n";
+    out << "# comment line\n";
+    out << "   \n";
+    out << "mode=paper\n";
+    out << "client_id=123\n";
+  }
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::Paper,
+                     "paper mode should parse through comments and blanks");
+  hft::test::require(cfg.client_id == 123,
+                     "client id should parse after comments");
+  std::remove(path.c_str());
 }
 
 HFT_TEST(test_app_config_unknown_key_is_ignored) {
-    const std::string path = "tmp_test_config_unknown_key.ini";
-    {
-        std::ofstream out(path);
-        out << "mode=paper\n";
-        out << "unknown_key=abc\n";
-        out << "top_k=11\n";
-    }
-    const auto cfg = AppConfig::load_from_file(path);
-    hft::test::require(cfg.mode == BrokerMode::Paper, "paper mode should parse");
-    hft::test::require(cfg.top_k == 11, "known keys should still parse with unknown keys present");
+  const std::string path = "tmp_test_config_unknown_key.ini";
+  {
+    std::ofstream out(path);
+    out << "mode=paper\n";
+    out << "unknown_key=abc\n";
+    out << "top_k=11\n";
+  }
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::Paper, "paper mode should parse");
+  hft::test::require(cfg.top_k == 11,
+                     "known keys should still parse with unknown keys present");
 }

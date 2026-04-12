@@ -44,6 +44,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--info", required=True)
     ap.add_argument("--threshold", type=float, default=70.0)
+    ap.add_argument("--branch-threshold", type=float, default=50.0)
     args = ap.parse_args()
 
     stats = parse_lcov(Path(args.info))
@@ -57,6 +58,11 @@ def main():
     if stats["line_pct"] < args.threshold:
         raise SystemExit(
             f"Line coverage {stats['line_pct']:.2f}% is below threshold {args.threshold:.2f}%"
+        )
+
+    if stats["branch_pct"] < args.branch_threshold:
+        raise SystemExit(
+            f"Branch coverage {stats['branch_pct']:.2f}% is below threshold {args.branch_threshold:.2f}%"
         )
 
 if __name__ == "__main__":

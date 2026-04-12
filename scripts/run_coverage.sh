@@ -33,7 +33,8 @@ genhtml coverage.filtered.info \
 
 python3 "${ROOT_DIR}/scripts/coverage_summary.py" \
     --info coverage.filtered.info \
-    --threshold 70
+    --threshold 70 \
+    --branch-threshold 50
 
 echo "Coverage artifacts:"
 echo "  ${BUILD_DIR}/coverage.filtered.info"

@@ -15,6 +15,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ lcov
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          chmod +x scripts/check_clang_format.sh
+          ./scripts/check_clang_format.sh
 
       - name: Configure
         run: |
@@ -39,6 +45,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ lcov
+          sudo apt-get install -y clang-format
 
       - name: Run coverage
         run: |

@@ -49,9 +49,9 @@ jobs:
 
       - name: Run coverage
         run: |
-          chmod +x scripts/run_coverage.sh
+          chmod +x scripts/run_coverage_ci.sh
           python3 --version
-          ./scripts/run_coverage.sh
+          ./scripts/run_coverage_ci.sh
 
       - name: Upload HTML coverage artifact
         uses: actions/upload-artifact@v4

@@ -75,9 +75,3 @@ When enabled:
 - `IBKRClient` compiles against the official IBKR C++ API
 - live mode uses `IBKRClient`
 - paper/sim mode uses `PaperBrokerSim`
-
-
-## Coverage diagnostics
-
-For CI runners where `lcov` omits branch counters, use `scripts/run_coverage_ci.sh`.
-It enables both `branch_coverage=1` and `lcov_branch_coverage=1`, checks for `BRF/BRH`, and only then enforces the branch threshold.

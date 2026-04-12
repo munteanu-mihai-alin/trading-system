@@ -82,10 +82,12 @@ jobs:
           PROTOBUF_VERSION=29.3
           curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/protobuf-${PROTOBUF_VERSION}.tar.gz
           tar -xzf protobuf-${PROTOBUF_VERSION}.tar.gz
-          cd protobuf-${PROTOBUF_VERSION}
-          ./configure
-          make -j"$(nproc)"
-          sudo make install
+          cmake -S protobuf-${PROTOBUF_VERSION} -B protobuf-build \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build protobuf-build -j"$(nproc)"
+          sudo cmake --install protobuf-build
           sudo ldconfig
 
       - name: Show protobuf version

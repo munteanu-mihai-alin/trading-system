@@ -115,3 +115,8 @@ Build with:
 ## Exact protobuf version for this TWS API bundle
 
 The vendored TWS API protobuf-generated headers require **protobuf 29.3** (C++ runtime 5.29.3). Older distro packages may be missing `google/protobuf/runtime_version.h`, and newer protobuf releases may fail the exact generated-code version check.
+
+
+## Protobuf 29.3 installation note
+
+In CI, protobuf 29.3 should be built with **CMake**, not `./configure`, for the release tarball used here.

@@ -72,10 +72,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ protobuf-compiler libprotobuf-dev
+          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip
+
+      - name: Install protobuf 29.3 from source
+        run: |
+          PROTOBUF_VERSION=29.3
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOBUF_VERSION}/protobuf-${PROTOBUF_VERSION}.tar.gz
+          tar -xzf protobuf-${PROTOBUF_VERSION}.tar.gz
+          cd protobuf-${PROTOBUF_VERSION}
+          ./configure
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+
+      - name: Show protobuf version
+        run: |
+          protoc --version
+          test -f /usr/local/include/google/protobuf/runtime_version.h
 
       - name: Configure IBKR build
         run: |

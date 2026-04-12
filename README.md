@@ -110,3 +110,8 @@ Build with:
 ```bash
 ./scripts/build_vendored_ibkr_with_protobuf.sh
 ```
+
+
+## Exact protobuf version for this TWS API bundle
+
+The vendored TWS API protobuf-generated headers require **protobuf 29.3** (C++ runtime 5.29.3). Older distro packages may be missing `google/protobuf/runtime_version.h`, and newer protobuf releases may fail the exact generated-code version check.

@@ -37,11 +37,8 @@ inline LatencySummary summarize_cycles(std::vector<std::uint64_t> samples) {
 }
 
 inline std::ostream& operator<<(std::ostream& os, const LatencySummary& s) {
-    os << "Latency (cycles): p50=" << s.p50
-       << " p99=" << s.p99
-       << " p999=" << s.p999
-       << " max=" << s.max
-       << " avg=" << s.avg;
+    os << "Latency (cycles): p50=" << s.p50 << " p99=" << s.p99 << " p999=" << s.p999
+       << " max=" << s.max << " avg=" << s.avg;
     return os;
 }
 

@@ -14,7 +14,7 @@ namespace hft {
 class PaperBrokerSim : public IBroker {
     bool connected_ = false;
 
-public:
+   public:
     std::vector<OrderRequest> placed;
     std::vector<int> cancelled;
     std::deque<OrderUpdate> updates;
@@ -24,13 +24,9 @@ public:
         return true;
     }
 
-    void disconnect() override {
-        connected_ = false;
-    }
+    void disconnect() override { connected_ = false; }
 
-    bool is_connected() const override {
-        return connected_;
-    }
+    bool is_connected() const override { return connected_; }
 
     void place_limit_order(const OrderRequest& req) override {
         placed.push_back(req);

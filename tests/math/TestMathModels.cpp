@@ -1,5 +1,4 @@
 #include "common/TestFramework.hpp"
-
 #include "execution/fill_model.hpp"
 #include "execution/score.hpp"
 #include "models/hawkes.hpp"
@@ -19,7 +18,8 @@ HFT_TEST(test_hawkes_decays_toward_mu_without_event) {
     h.lambda = 25.0;
     const double next = h.one_step_decay(0.1);
     hft::test::require(next < h.lambda, "hawkes should decay toward baseline without event");
-    hft::test::require(next > h.mu, "hawkes decay should stay above baseline if starting above baseline");
+    hft::test::require(next > h.mu,
+                       "hawkes decay should stay above baseline if starting above baseline");
 }
 
 HFT_TEST(test_ou_moves_toward_mean) {

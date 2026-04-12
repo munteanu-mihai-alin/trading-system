@@ -42,8 +42,8 @@ int main() {
     std::cout << summary << "\n";
     std::cout << "Validation: calibration=" << engine.ranking.validation.calibration_error()
               << " rolling=" << engine.ranking.validation.rolling_error_mean()
-              << " ks=" << engine.ranking.validation.ks_statistic()
-              << " alarm=" << (engine.ranking.validation.degradation_alarm(0.35, 0.35, 0.60) ? "ON" : "OFF")
+              << " ks=" << engine.ranking.validation.ks_statistic() << " alarm="
+              << (engine.ranking.validation.degradation_alarm(0.35, 0.35, 0.60) ? "ON" : "OFF")
               << "\n";
     std::cout << "Mode: " << live_cfg.mode_name() << "\n";
     std::cout << "Done. Results in shadow_results.csv\n";

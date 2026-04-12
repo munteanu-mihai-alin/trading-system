@@ -27,7 +27,7 @@ struct OrderLifecycleState {
 class OrderLifecycleBook {
     std::unordered_map<int, OrderLifecycleState> states_;
 
-public:
+   public:
     void on_submitted(int id, const std::string& symbol, double qty) {
         auto& s = states_[id];
         s.id = id;
@@ -37,10 +37,7 @@ public:
         s.status = OrderLifecycleStatus::Submitted;
     }
 
-    void on_status(int id,
-                   const std::string& status,
-                   double filled,
-                   double remaining,
+    void on_status(int id, const std::string& status, double filled, double remaining,
                    double avg_fill_price) {
         auto& s = states_[id];
         s.id = id;
@@ -63,9 +60,7 @@ public:
         }
     }
 
-    [[nodiscard]] bool has(int id) const {
-        return states_.find(id) != states_.end();
-    }
+    [[nodiscard]] bool has(int id) const { return states_.find(id) != states_.end(); }
 
     [[nodiscard]] const OrderLifecycleState* get(int id) const {
         const auto it = states_.find(id);

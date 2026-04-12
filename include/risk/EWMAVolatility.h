@@ -1,5 +1,6 @@
 #pragma once
 #include <cmath>
+
 #include "risk/IVolatilityModel.h"
 
 namespace hft {
@@ -8,9 +9,8 @@ class EWMAVolatility : public IVolatilityModel {
     double lambda_;
     double tradingDays_;
 
-public:
-    EWMAVolatility(double lambda = 0.94, double td = 252.0)
-        : lambda_(lambda), tradingDays_(td) {}
+   public:
+    EWMAVolatility(double lambda = 0.94, double td = 252.0) : lambda_(lambda), tradingDays_(td) {}
 
     [[nodiscard]] double annualizedVol(const std::vector<double>& returns) const override {
         double var = 0.0;

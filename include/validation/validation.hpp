@@ -18,13 +18,13 @@ class ValidationMetrics {
     std::vector<double> rolling_error_;
     std::vector<CalibrationBin> bins_{10};
 
-public:
+   public:
     void add(double predicted, double realized) {
         predicted_.push_back(predicted);
         realized_.push_back(realized);
 
-        const std::size_t idx = std::min<std::size_t>(
-            9, static_cast<std::size_t>(predicted * 10.0));
+        const std::size_t idx =
+            std::min<std::size_t>(9, static_cast<std::size_t>(predicted * 10.0));
         bins_[idx].count += 1;
         bins_[idx].predicted_sum += predicted;
         bins_[idx].realized_sum += realized;
@@ -76,16 +76,12 @@ public:
         return max_diff;
     }
 
-    [[nodiscard]] std::vector<CalibrationBin> calibration_bins() const {
-        return bins_;
-    }
+    [[nodiscard]] std::vector<CalibrationBin> calibration_bins() const { return bins_; }
 
-    [[nodiscard]] bool degradation_alarm(double calibration_threshold,
-                                         double rolling_threshold,
+    [[nodiscard]] bool degradation_alarm(double calibration_threshold, double rolling_threshold,
                                          double ks_threshold) const {
         return calibration_error() > calibration_threshold ||
-               rolling_error_mean() > rolling_threshold ||
-               ks_statistic() > ks_threshold;
+               rolling_error_mean() > rolling_threshold || ks_statistic() > ks_threshold;
     }
 
     [[nodiscard]] std::size_t size() const { return predicted_.size(); }

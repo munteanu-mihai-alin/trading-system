@@ -1,9 +1,8 @@
-#include "common/TestFramework.hpp"
-
 #include <cstdio>
 #include <fstream>
 #include <vector>
 
+#include "common/TestFramework.hpp"
 #include "config/AppConfig.hpp"
 #include "core/ForecastNormalizer.h"
 #include "execution/InstitutionalTransactionCostModel.h"
@@ -42,7 +41,8 @@ HFT_TEST(test_ewma_vol_positive) {
 
 HFT_TEST(test_trade_stats_zero_win_rate_when_no_trades) {
     TradeStats s;
-    hft::test::require_close(s.win_rate(), 0.0, 1e-12, "empty trade stats should have zero win rate");
+    hft::test::require_close(s.win_rate(), 0.0, 1e-12,
+                             "empty trade stats should have zero win rate");
 }
 
 HFT_TEST(test_trade_stats_win_rate_updates) {
@@ -50,7 +50,8 @@ HFT_TEST(test_trade_stats_win_rate_updates) {
     s.update(1.0);
     s.update(-1.0);
     s.update(2.0);
-    hft::test::require_close(s.win_rate(), 2.0 / 3.0, 1e-12, "win rate should reflect positive pnl trades");
+    hft::test::require_close(s.win_rate(), 2.0 / 3.0, 1e-12,
+                             "win rate should reflect positive pnl trades");
 }
 
 HFT_TEST(test_app_config_loads_live_mode_and_values) {
@@ -92,7 +93,6 @@ HFT_TEST(test_app_config_loads_sim_mode) {
     std::remove(path.c_str());
 }
 
-
 // ===== Additional coverage cases =====
 
 HFT_TEST(test_app_config_unknown_mode_falls_back_to_paper) {
@@ -111,7 +111,6 @@ HFT_TEST(test_app_config_unknown_mode_falls_back_to_paper) {
     std::remove(path.c_str());
 }
 
-
 HFT_TEST(test_app_config_explicit_paper_mode_uses_paper_port) {
     const std::string path = "tmp_test_config_paper.ini";
     {
@@ -125,7 +124,6 @@ HFT_TEST(test_app_config_explicit_paper_mode_uses_paper_port) {
     hft::test::require(cfg.port() == 7123, "paper mode should use paper port");
     std::remove(path.c_str());
 }
-
 
 HFT_TEST(test_app_config_default_port_uses_paper) {
     AppConfig cfg;

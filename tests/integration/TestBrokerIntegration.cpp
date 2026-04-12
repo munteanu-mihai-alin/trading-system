@@ -1,14 +1,13 @@
-#include "common/TestFramework.hpp"
-
 #include <memory>
 
 #include "broker/ConnectionSupervisor.hpp"
 #include "broker/IBKRClient.hpp"
 #include "broker/OrderLifecycle.hpp"
 #include "broker/PaperBrokerSim.hpp"
+#include "common/TestFramework.hpp"
 #include "config/AppConfig.hpp"
-#include "core/portfolio.hpp"
 #include "config/LiveTradingConfig.hpp"
+#include "core/portfolio.hpp"
 #include "engine/LiveExecutionEngine.hpp"
 #include "engine/RankingEngine.hpp"
 
@@ -68,7 +67,8 @@ HFT_TEST(test_ibkr_stub_snapshot_and_reconnect_interfaces) {
 HFT_TEST(test_ranking_engine_initialize_and_step_paths) {
     RankingEngine engine(3, "tmp_shadow_results.csv");
     engine.initialize(8);
-    hft::test::require(engine.portfolio.items.size() == 8, "engine should initialize requested universe size");
+    hft::test::require(engine.portfolio.items.size() == 8,
+                       "engine should initialize requested universe size");
 
     for (int t = 0; t < 5; ++t) {
         engine.step(t);
@@ -78,7 +78,6 @@ HFT_TEST(test_ranking_engine_initialize_and_step_paths) {
     hft::test::require(engine.validation.size() > 0, "engine should accumulate validation samples");
 }
 
-
 HFT_TEST(test_order_lifecycle_transitions_cover_status_paths) {
     OrderLifecycleBook book;
     book.on_submitted(1, "AAPL", 10.0);
@@ -86,25 +85,32 @@ HFT_TEST(test_order_lifecycle_transitions_cover_status_paths) {
     hft::test::require(book.get(999) == nullptr, "missing order should return null");
 
     book.on_status(1, "Submitted", 0.0, 10.0, 0.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Submitted, "submitted status should map");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Submitted,
+                       "submitted status should map");
 
     book.on_status(1, "Filled", 10.0, 0.0, 101.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Filled, "filled status should map");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Filled,
+                       "filled status should map");
 
     book.on_status(1, "Cancelled", 0.0, 0.0, 0.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Cancelled, "cancelled status should map");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Cancelled,
+                       "cancelled status should map");
 
     book.on_status(1, "ApiCancelled", 0.0, 0.0, 0.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Cancelled, "ApiCancelled should map to cancelled");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Cancelled,
+                       "ApiCancelled should map to cancelled");
 
     book.on_status(1, "Inactive", 0.0, 0.0, 0.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Rejected, "inactive should map to rejected");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Rejected,
+                       "inactive should map to rejected");
 
     book.on_status(1, "Other", 5.0, 5.0, 100.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::PartiallyFilled, "filled+remaining should map to partial");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::PartiallyFilled,
+                       "filled+remaining should map to partial");
 
     book.on_status(1, "Weird", 0.0, 0.0, 0.0);
-    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Unknown, "unrecognized status should map to unknown");
+    hft::test::require(book.get(1)->status == OrderLifecycleStatus::Unknown,
+                       "unrecognized status should map to unknown");
 }
 
 HFT_TEST(test_connection_supervisor_backoff_and_reset_paths) {
@@ -142,8 +148,10 @@ HFT_TEST(test_ibkr_stub_place_order_records_lifecycle_and_ack_miss) {
     hft::test::require(client.lifecycle().has(42), "placing order should create lifecycle entry");
     const auto* state = client.lifecycle().get(42);
     hft::test::require(state != nullptr, "lifecycle state should exist");
-    hft::test::require(state->status == OrderLifecycleStatus::Submitted, "new order should start as submitted");
-    hft::test::require_close(client.ack_latency_ms(999), 0.0, 1e-12, "missing ack latency should be zero");
+    hft::test::require(state->status == OrderLifecycleStatus::Submitted,
+                       "new order should start as submitted");
+    hft::test::require_close(client.ack_latency_ms(999), 0.0, 1e-12,
+                             "missing ack latency should be zero");
     hft::test::require(client.reconnect_once(), "stub reconnect should succeed");
     client.disconnect();
 }
@@ -162,7 +170,6 @@ HFT_TEST(test_live_execution_engine_start_step_stop_paths) {
     eng.step(1);
     eng.stop();
 }
-
 
 HFT_TEST(test_order_lifecycle_initial_missing_state) {
     OrderLifecycleBook book;
@@ -201,7 +208,8 @@ HFT_TEST(test_ibkr_stub_snapshot_default_and_ack_latency_default) {
     const auto b = client.snapshot_book(999);
     hft::test::require_close(b.best_bid(), 0.0, 1e-12, "missing stub snapshot should be empty");
     hft::test::require_close(b.best_ask(), 0.0, 1e-12, "missing stub snapshot should be empty");
-    hft::test::require_close(client.ack_latency_ms(555), 0.0, 1e-12, "missing ack latency should be zero");
+    hft::test::require_close(client.ack_latency_ms(555), 0.0, 1e-12,
+                             "missing ack latency should be zero");
     client.disconnect();
 }
 
@@ -229,7 +237,8 @@ HFT_TEST(test_live_execution_engine_step_routes_only_top_k_orders) {
     hft::test::require(eng.start(), "paper engine should start");
     eng.initialize_universe(6);
     eng.step(0);
-    hft::test::require(static_cast<int>(raw->placed.size()) == 2, "step should route exactly top_k orders");
+    hft::test::require(static_cast<int>(raw->placed.size()) == 2,
+                       "step should route exactly top_k orders");
     eng.stop();
 }
 
@@ -268,9 +277,9 @@ HFT_TEST(test_ranked_portfolio_rank_handles_empty_and_singleton) {
     p.items.push_back(s);
     p.rank();
     hft::test::require(p.items.size() == 1, "singleton portfolio should remain size one");
-    hft::test::require_close(p.items[0].score, 5.0, 1e-12, "singleton portfolio score should remain unchanged");
+    hft::test::require_close(p.items[0].score, 5.0, 1e-12,
+                             "singleton portfolio score should remain unchanged");
 }
-
 
 HFT_TEST(test_live_execution_engine_with_ibkr_stub_reconcile_path) {
     AppConfig cfg;
@@ -309,7 +318,8 @@ HFT_TEST(test_ranking_engine_cooldown_decrements_across_step) {
     engine.initialize(3);
     engine.portfolio.items[0].cooldown = 2;
     engine.step(0);
-    hft::test::require(engine.portfolio.items[0].cooldown <= 1, "cooldown should decrement during step");
+    hft::test::require(engine.portfolio.items[0].cooldown <= 1,
+                       "cooldown should decrement during step");
 }
 
 HFT_TEST(test_ibkr_stub_reconnect_when_connected_short_circuits_true) {
@@ -323,7 +333,8 @@ HFT_TEST(test_ibkr_stub_reconnect_when_disconnected_uses_stored_params) {
     IBKRClient client;
     hft::test::require(client.connect("127.0.0.1", 4002, 7), "initial stub connect should succeed");
     client.disconnect();
-    hft::test::require(client.reconnect_once(), "disconnected stub should reconnect using stored params");
+    hft::test::require(client.reconnect_once(),
+                       "disconnected stub should reconnect using stored params");
     client.disconnect();
 }
 
@@ -344,9 +355,9 @@ HFT_TEST(test_order_lifecycle_keeps_requested_qty_after_status_updates) {
     book.on_status(5, "Submitted", 0.0, 11.0, 0.0);
     const auto* state = book.get(5);
     hft::test::require(state != nullptr, "state should exist");
-    hft::test::require_close(state->requested_qty, 11.0, 1e-12, "requested qty should remain stored");
+    hft::test::require_close(state->requested_qty, 11.0, 1e-12,
+                             "requested qty should remain stored");
 }
-
 
 HFT_TEST(test_order_lifecycle_status_without_prior_submit_creates_state) {
     OrderLifecycleBook book;
@@ -354,7 +365,8 @@ HFT_TEST(test_order_lifecycle_status_without_prior_submit_creates_state) {
     hft::test::require(book.has(33), "status update should create state if missing");
     const auto* s = book.get(33);
     hft::test::require(s != nullptr, "created state should be accessible");
-    hft::test::require(s->status == OrderLifecycleStatus::Filled, "filled status should map correctly");
+    hft::test::require(s->status == OrderLifecycleStatus::Filled,
+                       "filled status should map correctly");
 }
 
 HFT_TEST(test_paper_broker_update_queue_drains_to_empty) {
@@ -394,6 +406,7 @@ HFT_TEST(test_ibkr_stub_market_depth_subscription_on_connected_client) {
     hft::test::require(client.connect("127.0.0.1", 4002, 1), "stub connect should succeed");
     client.subscribe_market_depth(MarketDepthRequest{7, "IBM", 5});
     const auto snap = client.snapshot_book(7);
-    hft::test::require_close(snap.best_bid(), 0.0, 1e-12, "stub market depth snapshot remains empty without sdk");
+    hft::test::require_close(snap.best_bid(), 0.0, 1e-12,
+                             "stub market depth snapshot remains empty without sdk");
     client.disconnect();
 }

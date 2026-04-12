@@ -22,7 +22,7 @@ class RankingEngine {
 
     int my_id_counter_ = 100000;
 
-public:
+   public:
     RankedPortfolio<Stock> portfolio;
     ValidationMetrics validation;
     std::vector<std::uint64_t> cycle_samples;

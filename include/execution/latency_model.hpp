@@ -6,7 +6,7 @@ namespace hft {
 class LatencyModel {
     std::vector<double> samples_;
 
-public:
+   public:
     void record(double ms) { samples_.push_back(ms); }
 
     [[nodiscard]] double mean_latency() const {

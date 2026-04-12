@@ -1,5 +1,4 @@
 #include "common/TestFramework.hpp"
-
 #include "sim/orderbook.hpp"
 #include "sim/queue_tracker.hpp"
 
@@ -12,7 +11,8 @@ HFT_TEST(test_fifo_match_fills_front_order_first) {
     ob.add(OBOrder{3, 100.0, 50.0, false, false});
 
     const auto res = ob.match_at_price(100.0, 2);
-    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12, "our order should not fill before front order");
+    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12,
+                             "our order should not fill before front order");
 }
 
 HFT_TEST(test_queue_ahead_reports_front_volume) {
@@ -28,7 +28,8 @@ HFT_TEST(test_match_reports_traded_volume_at_watch_price) {
     ob.add(OBOrder{1, 100.0, 100.0, true, false});
     ob.add(OBOrder{2, 100.0, 100.0, false, false});
     const auto res = ob.match_at_price(100.0, 999);
-    hft::test::require_close(res.traded_at_price, 100.0, 1e-12, "traded volume at watch price should equal matched quantity");
+    hft::test::require_close(res.traded_at_price, 100.0, 1e-12,
+                             "traded volume at watch price should equal matched quantity");
 }
 
 // ===== Branch coverage cases =====
@@ -63,14 +64,15 @@ HFT_TEST(test_match_reports_my_fill_when_front_order_is_mine) {
     hft::test::require_close(res.my_filled_qty, 25.0, 1e-12, "my front order should fill");
 }
 
-
 HFT_TEST(test_match_at_price_zero_when_books_do_not_cross) {
     OrderBook ob;
     ob.add(OBOrder{1, 99.0, 10.0, true, false});
     ob.add(OBOrder{2, 101.0, 10.0, false, false});
     const auto res = ob.match_at_price(100.0, 999);
-    hft::test::require_close(res.traded_at_price, 0.0, 1e-12, "non-crossing books should not trade");
-    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12, "non-crossing books should not fill my order");
+    hft::test::require_close(res.traded_at_price, 0.0, 1e-12,
+                             "non-crossing books should not trade");
+    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12,
+                             "non-crossing books should not fill my order");
 }
 
 HFT_TEST(test_queue_tracker_reset_overwrites_state) {
@@ -84,7 +86,6 @@ HFT_TEST(test_queue_tracker_reset_overwrites_state) {
     hft::test::require_close(s.filled_qty, 0.0, 1e-12, "reset should zero filled quantity");
 }
 
-
 HFT_TEST(test_cancel_existing_ask_side_order) {
     OrderBook ob;
     ob.add(OBOrder{11, 101.0, 8.0, false, false});
@@ -96,9 +97,11 @@ HFT_TEST(test_match_partial_fill_leaves_remaining_volume) {
     ob.add(OBOrder{1, 100.0, 100.0, true, false});
     ob.add(OBOrder{2, 100.0, 40.0, false, false});
     const auto res = ob.match_at_price(100.0, 999);
-    hft::test::require_close(res.traded_at_price, 40.0, 1e-12, "partial cross should trade min quantity");
+    hft::test::require_close(res.traded_at_price, 40.0, 1e-12,
+                             "partial cross should trade min quantity");
     const double ahead = ob.queue_ahead_at_level(100.0, 999, true);
-    hft::test::require_close(ahead, 60.0, 1e-12, "missing order query should accumulate remaining queue at that level");
+    hft::test::require_close(ahead, 60.0, 1e-12,
+                             "missing order query should accumulate remaining queue at that level");
 }
 
 HFT_TEST(test_match_my_order_on_ask_side_fills) {
@@ -106,7 +109,8 @@ HFT_TEST(test_match_my_order_on_ask_side_fills) {
     ob.add(OBOrder{1, 100.0, 20.0, true, false});
     ob.add(OBOrder{2, 100.0, 20.0, false, true});
     const auto res = ob.match_at_price(100.0, 2);
-    hft::test::require_close(res.my_filled_qty, 20.0, 1e-12, "my ask-side order should be counted as filled");
+    hft::test::require_close(res.my_filled_qty, 20.0, 1e-12,
+                             "my ask-side order should be counted as filled");
 }
 
 HFT_TEST(test_queue_tracker_zero_fill_keeps_realized_fill_false) {

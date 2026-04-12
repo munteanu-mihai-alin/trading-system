@@ -1,4 +1,5 @@
 #include "common/TestFramework.hpp"
+
 #include "engine/RankingEngine.hpp"
 
 using namespace hft;
@@ -6,8 +7,7 @@ using namespace hft;
 HFT_TEST(test_ranking_engine_initialize_and_step_paths) {
     RankingEngine engine(3, "tmp_shadow_results.csv");
     engine.initialize(8);
-    hft::test::require(engine.portfolio.items.size() == 8,
-                       "engine should initialize requested universe size");
+    hft::test::require(engine.portfolio.items.size() == 8, "engine should initialize requested universe size");
 
     for (int t = 0; t < 5; ++t) {
         engine.step(t);

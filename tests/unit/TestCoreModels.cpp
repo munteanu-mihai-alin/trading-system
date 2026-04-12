@@ -1,6 +1,7 @@
+#include "common/TestFramework.hpp"
+
 #include <vector>
 
-#include "common/TestFramework.hpp"
 #include "core/ForecastNormalizer.h"
 #include "execution/InstitutionalTransactionCostModel.h"
 #include "execution/MarketImpactSlippageModel.h"

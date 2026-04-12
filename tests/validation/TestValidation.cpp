@@ -82,3 +82,19 @@ HFT_TEST(test_validation_gets_unknown_bin_clamped_to_last_bucket) {
     const auto bins = v.calibration_bins();
     hft::test::require(bins[9].count == 1, "probability of 1.0 should map to last bin");
 }
+
+HFT_TEST(test_degradation_alarm_triggers_on_calibration_only) {
+    ValidationMetrics v;
+    for (int i = 0; i < 20; ++i) {
+        v.add(1.0, 0.0);
+    }
+    hft::test::require(v.degradation_alarm(0.10, 2.0, 2.0),
+                       "calibration threshold alone should trigger alarm");
+}
+
+HFT_TEST(test_degradation_alarm_triggers_on_ks_only) {
+    ValidationMetrics v;
+    for (int i = 0; i < 10; ++i) v.add(0.0, 1.0);
+    hft::test::require(v.degradation_alarm(2.0, 2.0, 0.10),
+                       "ks threshold alone should trigger alarm");
+}

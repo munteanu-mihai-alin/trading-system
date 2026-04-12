@@ -280,3 +280,81 @@ HFT_TEST(test_ranked_portfolio_rank_handles_empty_and_singleton) {
     hft::test::require_close(p.items[0].score, 5.0, 1e-12,
                              "singleton portfolio score should remain unchanged");
 }
+
+HFT_TEST(test_live_execution_engine_with_ibkr_stub_reconcile_path) {
+    AppConfig cfg;
+    cfg.mode = BrokerMode::Live;
+    cfg.top_k = 1;
+
+    auto broker = std::make_unique<IBKRClient>();
+    LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
+
+    hft::test::require(eng.start(), "ibkr stub engine should start");
+    eng.initialize_universe(4);
+    eng.subscribe_live_books({"AAPL", "MSFT", "NVDA", "AMD"});
+    eng.reconcile_broker_state();
+    eng.step(1);
+    eng.stop();
+}
+
+HFT_TEST(test_live_execution_engine_zero_top_k_places_no_orders) {
+    AppConfig cfg;
+    cfg.mode = BrokerMode::Paper;
+    cfg.top_k = 0;
+
+    auto broker = std::make_unique<PaperBrokerSim>();
+    auto* raw = broker.get();
+    LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
+
+    hft::test::require(eng.start(), "paper engine should start");
+    eng.initialize_universe(5);
+    eng.step(2);
+    hft::test::require(raw->placed.empty(), "top_k zero should place no orders");
+    eng.stop();
+}
+
+HFT_TEST(test_ranking_engine_cooldown_decrements_across_step) {
+    RankingEngine engine(2, "tmp_shadow_results_3.csv");
+    engine.initialize(3);
+    engine.portfolio.items[0].cooldown = 2;
+    engine.step(0);
+    hft::test::require(engine.portfolio.items[0].cooldown <= 1,
+                       "cooldown should decrement during step");
+}
+
+HFT_TEST(test_ibkr_stub_reconnect_when_connected_short_circuits_true) {
+    IBKRClient client;
+    hft::test::require(client.connect("127.0.0.1", 4002, 1), "stub connect should succeed");
+    hft::test::require(client.reconnect_once(), "connected stub should return true on reconnect");
+    client.disconnect();
+}
+
+HFT_TEST(test_ibkr_stub_reconnect_when_disconnected_uses_stored_params) {
+    IBKRClient client;
+    hft::test::require(client.connect("127.0.0.1", 4002, 7), "initial stub connect should succeed");
+    client.disconnect();
+    hft::test::require(client.reconnect_once(),
+                       "disconnected stub should reconnect using stored params");
+    client.disconnect();
+}
+
+HFT_TEST(test_ibkr_stub_start_stop_event_loops_are_reentrant) {
+    IBKRClient client;
+    hft::test::require(client.connect("127.0.0.1", 4002, 1), "stub connect should succeed");
+    client.start_event_loop();
+    client.start_event_loop();
+    client.stop_event_loop();
+    client.stop_event_loop();
+    client.start_production_event_loop();
+    client.disconnect();
+}
+
+HFT_TEST(test_order_lifecycle_keeps_requested_qty_after_status_updates) {
+    OrderLifecycleBook book;
+    book.on_submitted(5, "TSLA", 11.0);
+    book.on_status(5, "Submitted", 0.0, 11.0, 0.0);
+    const auto* state = book.get(5);
+    hft::test::require(state != nullptr, "state should exist");
+    hft::test::require_close(state->requested_qty, 11.0, 1e-12,
+                             "requested qty should remain stored");
+}

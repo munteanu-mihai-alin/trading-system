@@ -110,3 +110,17 @@ HFT_TEST(test_app_config_unknown_mode_falls_back_to_paper) {
     hft::test::require(cfg.port() == cfg.paper_port, "paper path should use paper port");
     std::remove(path.c_str());
 }
+
+HFT_TEST(test_app_config_explicit_paper_mode_uses_paper_port) {
+    const std::string path = "tmp_test_config_paper.ini";
+    {
+        std::ofstream out(path);
+        out << "mode=paper\n";
+        out << "paper_port=7123\n";
+        out << "live_port=7999\n";
+    }
+    const auto cfg = AppConfig::load_from_file(path);
+    hft::test::require(cfg.mode == BrokerMode::Paper, "explicit paper mode should parse");
+    hft::test::require(cfg.port() == 7123, "paper mode should use paper port");
+    std::remove(path.c_str());
+}

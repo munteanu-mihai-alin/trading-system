@@ -66,3 +66,19 @@ HFT_TEST(test_validation_rolling_window_cap) {
     }
     hft::test::require(v.rolling_error_mean() > 0.0, "rolling error should remain positive");
 }
+
+HFT_TEST(test_degradation_alarm_false_for_clean_metrics) {
+    ValidationMetrics v;
+    for (int i = 0; i < 10; ++i) {
+        v.add(0.0, 0.0);
+    }
+    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60),
+                       "clean metrics should not trigger alarm");
+}
+
+HFT_TEST(test_validation_gets_unknown_bin_clamped_to_last_bucket) {
+    ValidationMetrics v;
+    v.add(1.0, 1.0);
+    const auto bins = v.calibration_bins();
+    hft::test::require(bins[9].count == 1, "probability of 1.0 should map to last bin");
+}

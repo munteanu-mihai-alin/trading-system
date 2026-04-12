@@ -63,3 +63,25 @@ HFT_TEST(test_match_reports_my_fill_when_front_order_is_mine) {
     const auto res = ob.match_at_price(100.0, 10);
     hft::test::require_close(res.my_filled_qty, 25.0, 1e-12, "my front order should fill");
 }
+
+HFT_TEST(test_match_at_price_zero_when_books_do_not_cross) {
+    OrderBook ob;
+    ob.add(OBOrder{1, 99.0, 10.0, true, false});
+    ob.add(OBOrder{2, 101.0, 10.0, false, false});
+    const auto res = ob.match_at_price(100.0, 999);
+    hft::test::require_close(res.traded_at_price, 0.0, 1e-12,
+                             "non-crossing books should not trade");
+    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12,
+                             "non-crossing books should not fill my order");
+}
+
+HFT_TEST(test_queue_tracker_reset_overwrites_state) {
+    MyOrderState s;
+    s.reset(1, 100.0, 40.0);
+    s.on_traded(10.0, 1.0);
+    s.reset(2, 101.0, 5.0);
+    hft::test::require(s.id == 2, "reset should update id");
+    hft::test::require_close(s.price, 101.0, 1e-12, "reset should update price");
+    hft::test::require_close(s.queue_ahead, 5.0, 1e-12, "reset should update queue ahead");
+    hft::test::require_close(s.filled_qty, 0.0, 1e-12, "reset should zero filled quantity");
+}

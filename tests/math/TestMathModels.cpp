@@ -1,10 +1,14 @@
 #include "bench/bench.hpp"
 #include "common/TestFramework.hpp"
+#include "config/LiveTradingConfig.hpp"
+#include "core/portfolio.hpp"
 #include "execution/fill_model.hpp"
 #include "execution/score.hpp"
 #include "models/hawkes.hpp"
+#include "models/l2_book.hpp"
 #include "models/micro.hpp"
 #include "models/ou.hpp"
+#include "models/stock.hpp"
 #include "validation/validation.hpp"
 
 using namespace hft;
@@ -99,4 +103,45 @@ HFT_TEST(test_latency_summary_empty_and_nonempty) {
     const auto filled = summarize_cycles({10, 20, 30, 40, 50});
     hft::test::require(filled.max == 50.0, "max should be computed");
     hft::test::require(filled.avg > 0.0, "avg should be positive");
+}
+
+HFT_TEST(test_live_trading_config_mode_names) {
+    AppConfig live_cfg;
+    live_cfg.mode = BrokerMode::Live;
+    hft::test::require(LiveTradingConfig::from_app(live_cfg).mode_name() == "live",
+                       "live mode name should be live");
+
+    AppConfig sim_cfg;
+    sim_cfg.mode = BrokerMode::Sim;
+    hft::test::require(LiveTradingConfig::from_app(sim_cfg).mode_name() == "sim",
+                       "sim mode name should be sim");
+
+    AppConfig paper_cfg;
+    paper_cfg.mode = BrokerMode::Paper;
+    hft::test::require(LiveTradingConfig::from_app(paper_cfg).mode_name() == "paper",
+                       "paper mode name should be paper");
+}
+
+HFT_TEST(test_ranked_portfolio_sorts_descending_by_score) {
+    RankedPortfolio<Stock> p;
+    Stock a;
+    a.score = 1.0;
+    Stock b;
+    b.score = 3.0;
+    Stock c;
+    c.score = 2.0;
+    p.items = {a, b, c};
+    p.rank();
+    hft::test::require(p.items[0].score == 3.0, "highest score should sort first");
+    hft::test::require(p.items[2].score == 1.0, "lowest score should sort last");
+}
+
+HFT_TEST(test_l2_book_best_prices_default_and_set) {
+    L2Book book;
+    hft::test::require_close(book.best_bid(), 0.0, 1e-12, "default best bid should be zero");
+    hft::test::require_close(book.best_ask(), 0.0, 1e-12, "default best ask should be zero");
+    book.bids[0] = {101.0, 10.0};
+    book.asks[0] = {101.5, 12.0};
+    hft::test::require_close(book.best_bid(), 101.0, 1e-12, "best bid should reflect first level");
+    hft::test::require_close(book.best_ask(), 101.5, 1e-12, "best ask should reflect first level");
 }

@@ -92,3 +92,21 @@ HFT_TEST(test_app_config_loads_sim_mode) {
     hft::test::require(cfg.port() == cfg.paper_port, "sim should use paper port path");
     std::remove(path.c_str());
 }
+
+// ===== Additional coverage cases =====
+
+HFT_TEST(test_app_config_unknown_mode_falls_back_to_paper) {
+    const std::string path = "tmp_test_config_unknown.ini";
+    {
+        std::ofstream out(path);
+        out << "# comment\n";
+        out << "[broker]\n";
+        out << "mode=weird\n";
+        out << "badlinewithoutseparator\n";
+        out << "\n";
+    }
+    const auto cfg = AppConfig::load_from_file(path);
+    hft::test::require(cfg.mode == BrokerMode::Paper, "unknown mode should fall back to paper");
+    hft::test::require(cfg.port() == cfg.paper_port, "paper path should use paper port");
+    std::remove(path.c_str());
+}

@@ -1,5 +1,6 @@
-#include "bench/bench.hpp"
 #include "common/TestFramework.hpp"
+
+#include "bench/bench.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "core/ForecastNormalizer.h"
 #include "core/portfolio.hpp"

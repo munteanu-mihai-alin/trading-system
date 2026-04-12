@@ -1,8 +1,9 @@
+#include "common/TestFramework.hpp"
+
 #include <cstdio>
 #include <fstream>
 #include <vector>
 
-#include "common/TestFramework.hpp"
 #include "config/AppConfig.hpp"
 #include "core/ForecastNormalizer.h"
 #include "execution/InstitutionalTransactionCostModel.h"

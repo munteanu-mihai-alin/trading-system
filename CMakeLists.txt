@@ -11,7 +11,12 @@ else()
   add_compile_options(-O3 -DNDEBUG)
 endif()
 
-include_directories(include tests)
+option(HFT_ENABLE_IBKR "Enable real IBKR integration using vendored TWS API" OFF)
+
+set(HFT_INCLUDE_DIRS
+    include
+    tests
+)
 
 set(LIB_SOURCES
     src/lib/AppConfig.cpp
@@ -21,6 +26,41 @@ set(LIB_SOURCES
 )
 
 add_library(hft_lib ${LIB_SOURCES})
+target_include_directories(hft_lib PUBLIC ${HFT_INCLUDE_DIRS})
+
+if (HFT_ENABLE_IBKR)
+  find_path(PROTOBUF_INCLUDE_DIR google/protobuf/message.h)
+  find_library(PROTOBUF_LIBRARY protobuf)
+
+  if (NOT PROTOBUF_INCLUDE_DIR OR NOT PROTOBUF_LIBRARY)
+    message(FATAL_ERROR "HFT_ENABLE_IBKR=ON requires protobuf C++ development headers and library. Missing google/protobuf headers or libprotobuf.")
+  endif()
+
+  file(GLOB TWSAPI_CLIENT_SOURCES
+      third_party/twsapi/client/*.cpp
+      third_party/twsapi/client/protobuf/*.pb.cc
+  )
+
+  add_library(twsapi_vendor ${TWSAPI_CLIENT_SOURCES})
+  target_include_directories(twsapi_vendor PUBLIC
+      third_party/twsapi/client
+      third_party/twsapi/client/protobuf
+      ${PROTOBUF_INCLUDE_DIR}
+  )
+  target_link_libraries(twsapi_vendor PUBLIC ${PROTOBUF_LIBRARY})
+  if (UNIX AND NOT APPLE)
+    find_package(Threads REQUIRED)
+    target_link_libraries(twsapi_vendor PUBLIC Threads::Threads)
+  endif()
+
+  target_compile_definitions(hft_lib PUBLIC HFT_ENABLE_IBKR=1)
+  target_include_directories(hft_lib PUBLIC
+      third_party/twsapi/client
+      third_party/twsapi/client/protobuf
+      ${PROTOBUF_INCLUDE_DIR}
+  )
+  target_link_libraries(hft_lib PUBLIC twsapi_vendor)
+endif()
 
 add_executable(hft_app
     src/app/main.cpp
@@ -39,3 +79,22 @@ target_link_libraries(hft_tests PRIVATE hft_lib)
 
 enable_testing()
 add_test(NAME hft_tests COMMAND hft_tests)
+
+
+if(HFT_ENABLE_IBKR)
+  find_package(Protobuf REQUIRED)
+  message(STATUS "Found Protobuf ${Protobuf_VERSION}")
+
+  target_include_directories(hft_lib PUBLIC ${Protobuf_INCLUDE_DIRS})
+  target_link_libraries(hft_lib PUBLIC ${Protobuf_LIBRARIES})
+
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client)
+    file(GLOB TWSAPI_SRC
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client/*.cpp
+    )
+    target_include_directories(hft_lib PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client
+    )
+    target_sources(hft_lib PRIVATE ${TWSAPI_SRC})
+  endif()
+endif()

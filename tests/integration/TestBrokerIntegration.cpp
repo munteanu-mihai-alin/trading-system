@@ -1,10 +1,11 @@
+#include "common/TestFramework.hpp"
+
 #include <memory>
 
 #include "broker/ConnectionSupervisor.hpp"
 #include "broker/IBKRClient.hpp"
 #include "broker/OrderLifecycle.hpp"
 #include "broker/PaperBrokerSim.hpp"
-#include "common/TestFramework.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "core/portfolio.hpp"

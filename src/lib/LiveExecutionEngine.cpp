@@ -1,8 +1,7 @@
 #include "engine/LiveExecutionEngine.hpp"
+#include "broker/IBKRClient.hpp"
 
 #include <utility>
-
-#include "broker/IBKRClient.hpp"
 
 namespace hft {
 

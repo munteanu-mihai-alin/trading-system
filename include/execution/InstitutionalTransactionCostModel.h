@@ -1,6 +1,5 @@
 #pragma once
 #include <cmath>
-
 #include "execution/ITransactionCostModel.h"
 
 namespace hft {

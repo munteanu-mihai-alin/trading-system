@@ -1,6 +1,5 @@
 #pragma once
 #include <cmath>
-
 #include "risk/IVolatilityModel.h"
 
 namespace hft {

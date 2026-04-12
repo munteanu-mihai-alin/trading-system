@@ -1,4 +1,5 @@
 #include "common/TestFramework.hpp"
+
 #include "validation/validation.hpp"
 
 using namespace hft;

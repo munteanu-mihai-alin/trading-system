@@ -75,3 +75,38 @@ When enabled:
 - `IBKRClient` compiles against the official IBKR C++ API
 - live mode uses `IBKRClient`
 - paper/sim mode uses `PaperBrokerSim`
+
+
+## Vendored TWS API
+
+The project now vendors the uploaded official IBKR C++ client under `third_party/twsapi/client`.
+These files were copied verbatim from `TWS API/source/CppClient/client`.
+
+To try a real IBKR build with the vendored SDK:
+
+```bash
+./scripts/build_vendored_ibkr.sh
+```
+
+Requirements for a real IBKR build:
+- protobuf C++ development headers
+- protobuf runtime library
+
+If those dependencies are unavailable, the project still builds in stub mode with `HFT_ENABLE_IBKR=OFF`.
+
+
+## Protobuf for vendored TWS API
+
+The vendored TWS API C++ client requires protobuf development headers and library when `HFT_ENABLE_IBKR=ON`.
+
+Ubuntu/Debian:
+
+```bash
+sudo apt-get install -y protobuf-compiler libprotobuf-dev
+```
+
+Build with:
+
+```bash
+./scripts/build_vendored_ibkr_with_protobuf.sh
+```

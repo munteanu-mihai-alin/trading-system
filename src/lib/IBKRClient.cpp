@@ -1,15 +1,12 @@
-
 #include "broker/IBKRClient.hpp"
 
 #include <chrono>
-
-#ifdef HFT_ENABLE_IBKR
 #include <thread>
-#endif
 
 namespace hft {
 
 IBKRClient::~IBKRClient() {
+  stop_event_loop();
   disconnect();
 }
 
@@ -38,10 +35,13 @@ bool IBKRClient::connect(const std::string& host, int port, int client_id) {
 void IBKRClient::disconnect() {
 #ifdef HFT_ENABLE_IBKR
   if (reader_ != nullptr) {
+    reader_->stop();
     delete reader_;
     reader_ = nullptr;
   }
-  client_.eDisconnect();
+  if (client_.isConnected()) {
+    client_.eDisconnect();
+  }
 #endif
   connected_ = false;
 }
@@ -79,7 +79,8 @@ void IBKRClient::place_limit_order(const OrderRequest& req) {
 
 void IBKRClient::cancel_order(int order_id) {
 #ifdef HFT_ENABLE_IBKR
-  client_.cancelOrder(order_id, "");
+  OrderCancel cancel;
+  client_.cancelOrder(order_id, cancel);
 #else
   (void)order_id;
 #endif
@@ -87,20 +88,21 @@ void IBKRClient::cancel_order(int order_id) {
 
 double IBKRClient::ack_latency_ms(int order_id) const {
   const auto it = ack_latency_ms_cache_.find(order_id);
-  if (it == ack_latency_ms_cache_.end())
+  if (it == ack_latency_ms_cache_.end()) {
     return 0.0;
+  }
   return it->second;
 }
 
 void IBKRClient::start_event_loop() {
 #ifdef HFT_ENABLE_IBKR
-  if (reader_running_.exchange(true))
+  if (reader_running_.exchange(true)) {
     return;
-
+  }
   reader_thread_ = std::thread([this]() {
     while (reader_running_.load() && connected_) {
       signal_.waitForSignal();
-      if (reader_) {
+      if (reader_ != nullptr) {
         reader_->processMsgs();
       }
     }
@@ -110,10 +112,12 @@ void IBKRClient::start_event_loop() {
 
 void IBKRClient::stop_event_loop() {
 #ifdef HFT_ENABLE_IBKR
-  if (!reader_running_.exchange(false))
+  if (!reader_running_.exchange(false)) {
     return;
-  if (reader_thread_.joinable())
+  }
+  if (reader_thread_.joinable()) {
     reader_thread_.join();
+  }
 #endif
 }
 
@@ -124,68 +128,27 @@ void IBKRClient::subscribe_market_depth(const MarketDepthRequest& req) {
   contract.secType = "STK";
   contract.exchange = "SMART";
   contract.currency = "USD";
-  client_.reqMktDepth(req.ticker_id, contract, req.depth, false, {});
+  client_.reqMktDepth(req.ticker_id, contract, req.depth, false,
+                      TagValueListSPtr());
 #else
   (void)req;
 #endif
 }
 
-#ifdef HFT_ENABLE_IBKR
-void IBKRClient::updateMktDepth(TickerId id, int position, int operation,
-                                int side, double price, Decimal size) {
-  std::lock_guard<std::mutex> lock(books_mutex_);
-  auto& book = books_[id];
-  if (position < 0 || position >= L2Book::DEPTH)
-    return;
-  L2Level level{price, DecimalFunctions::decimalToDouble(size)};
-  if (side == 0) {
-    if (operation == 2)
-      book.bids[position] = {};
-    else
-      book.bids[position] = level;
-  } else {
-    if (operation == 2)
-      book.asks[position] = {};
-    else
-      book.asks[position] = level;
-  }
-}
-
-void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
-                             Decimal filled, Decimal remaining,
-                             double avgFillPrice, int, int, double, int,
-                             const std::string&, double) {
-  lifecycle_.on_status(
-      orderId, status, DecimalFunctions::decimalToDouble(filled),
-      DecimalFunctions::decimalToDouble(remaining), avgFillPrice);
-  if (status == "Submitted" || status == "PreSubmitted") {
-    const auto it = send_ts_.find(orderId);
-    if (it != send_ts_.end()) {
-      const auto now = std::chrono::high_resolution_clock::now();
-      const double ms =
-          std::chrono::duration<double, std::milli>(now - it->second).count();
-      ack_latency_ms_cache_[orderId] = ms;
-    }
-  }
-}
-#endif
-
-}  // namespace hft
-
-namespace hft {
-
 L2Book IBKRClient::snapshot_book(int ticker_id) const {
   std::lock_guard<std::mutex> lock(books_mutex_);
   const auto it = books_.find(ticker_id);
-  if (it == books_.end())
+  if (it == books_.end()) {
     return {};
+  }
   return it->second;
 }
 
 void IBKRClient::pump_once() {
 #ifdef HFT_ENABLE_IBKR
-  if (!connected_)
+  if (!connected_) {
     return;
+  }
   signal_.waitForSignal();
   if (reader_ != nullptr) {
     reader_->processMsgs();
@@ -208,8 +171,9 @@ bool IBKRClient::reconnect_once() {
 
 void IBKRClient::start_production_event_loop() {
 #ifdef HFT_ENABLE_IBKR
-  if (reader_running_.exchange(true))
+  if (reader_running_.exchange(true)) {
     return;
+  }
   reader_thread_ = std::thread([this]() {
     while (reader_running_.load()) {
       if (!is_connected()) {
@@ -224,10 +188,47 @@ void IBKRClient::start_production_event_loop() {
 #endif
 }
 
-}  // namespace hft
+#ifdef HFT_ENABLE_IBKR
+void IBKRClient::updateMktDepth(TickerId id, int position, int operation,
+                                int side, double price, Decimal size) {
+  std::lock_guard<std::mutex> lock(books_mutex_);
+  auto& book = books_[id];
+  if (position < 0 || position >= L2Book::DEPTH) {
+    return;
+  }
+  const L2Level level{price, DecimalFunctions::decimalToDouble(size)};
+  if (side == 0) {
+    if (operation == 2) {
+      book.bids[position] = {};
+    } else {
+      book.bids[position] = level;
+    }
+  } else {
+    if (operation == 2) {
+      book.asks[position] = {};
+    } else {
+      book.asks[position] = level;
+    }
+  }
+}
 
-#if 0  // preserve baseline lines for additive-only guard
-                             Decimal,
-                             Decimal,
-                             double,
+void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
+                             Decimal filled, Decimal remaining,
+                             double avgFillPrice, long long, int, double, int,
+                             const std::string&, double) {
+  lifecycle_.on_status(
+      orderId, status, DecimalFunctions::decimalToDouble(filled),
+      DecimalFunctions::decimalToDouble(remaining), avgFillPrice);
+  if (status == "Submitted" || status == "PreSubmitted") {
+    const auto it = send_ts_.find(orderId);
+    if (it != send_ts_.end()) {
+      const auto now = std::chrono::high_resolution_clock::now();
+      const double ms =
+          std::chrono::duration<double, std::milli>(now - it->second).count();
+      ack_latency_ms_cache_[orderId] = ms;
+    }
+  }
+}
 #endif
+
+}  // namespace hft

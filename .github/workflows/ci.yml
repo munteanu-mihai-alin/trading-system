@@ -64,3 +64,23 @@ jobs:
         with:
           name: coverage-lcov
           path: build-coverage/coverage.filtered.info
+
+
+  ibkr-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ protobuf-compiler libprotobuf-dev
+
+      - name: Configure IBKR build
+        run: |
+          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON
+
+      - name: Build IBKR target
+        run: |
+          cmake --build build-ibkr-ci -j"$(nproc)"

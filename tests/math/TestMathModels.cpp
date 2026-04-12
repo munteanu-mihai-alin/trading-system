@@ -1,8 +1,10 @@
 #include "bench/bench.hpp"
 #include "common/TestFramework.hpp"
 #include "config/LiveTradingConfig.hpp"
+#include "core/ForecastNormalizer.h"
 #include "core/portfolio.hpp"
 #include "execution/fill_model.hpp"
+#include "execution/latency_model.hpp"
 #include "execution/score.hpp"
 #include "models/hawkes.hpp"
 #include "models/l2_book.hpp"
@@ -144,4 +146,27 @@ HFT_TEST(test_l2_book_best_prices_default_and_set) {
     book.asks[0] = {101.5, 12.0};
     hft::test::require_close(book.best_bid(), 101.0, 1e-12, "best bid should reflect first level");
     hft::test::require_close(book.best_ask(), 101.5, 1e-12, "best ask should reflect first level");
+}
+
+HFT_TEST(test_forecast_normalizer_zero_abs_mean_returns_zero) {
+    ForecastNormalizer n;
+    hft::test::require_close(n.normalize(5.0, 0.0), 0.0, 1e-12,
+                             "zero historical abs mean should return zero");
+}
+
+HFT_TEST(test_fill_model_clamps_extreme_inputs) {
+    FillModel m;
+    const double low = m.compute(-100.0, 1.0, -1.0);
+    const double high = m.compute(1e9, 1e-9, 1e9);
+    hft::test::require(low >= 0.0 && low <= 1.0, "fill model should clamp low extreme");
+    hft::test::require(high >= 0.0 && high <= 1.0, "fill model should clamp high extreme");
+}
+
+HFT_TEST(test_latency_model_mean_defaults_then_updates) {
+    LatencyModel l;
+    hft::test::require_close(l.mean_latency(), 1.0, 1e-12,
+                             "empty latency model should default to 1ms");
+    l.record(2.0);
+    l.record(4.0);
+    hft::test::require_close(l.mean_latency(), 3.0, 1e-12, "mean latency should average samples");
 }

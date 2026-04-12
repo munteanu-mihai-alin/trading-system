@@ -7,6 +7,7 @@
 #include "common/TestFramework.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
+#include "core/portfolio.hpp"
 #include "engine/LiveExecutionEngine.hpp"
 #include "engine/RankingEngine.hpp"
 
@@ -168,4 +169,114 @@ HFT_TEST(test_live_execution_engine_start_step_stop_paths) {
     eng.reconcile_broker_state();
     eng.step(1);
     eng.stop();
+}
+
+HFT_TEST(test_order_lifecycle_initial_missing_state) {
+    OrderLifecycleBook book;
+    hft::test::require(!book.has(7), "missing order should not exist");
+    hft::test::require(book.get(7) == nullptr, "missing order should return null state");
+}
+
+HFT_TEST(test_paper_broker_cancel_creates_update) {
+    PaperBrokerSim broker;
+    broker.connect("127.0.0.1", 7497, 1);
+    broker.place_limit_order(OrderRequest{12, "MSFT", true, 3.0, 250.0});
+    broker.cancel_order(12);
+
+    OrderUpdate u{};
+    hft::test::require(broker.poll_update(u), "submitted update should exist");
+    hft::test::require(u.status == "Submitted", "first update should be submitted");
+    hft::test::require(broker.poll_update(u), "cancel update should exist");
+    hft::test::require(u.status == "Cancelled", "second update should be cancelled");
+}
+
+HFT_TEST(test_ibkr_stub_order_lifecycle_entry_created_on_place) {
+    IBKRClient client;
+    hft::test::require(client.connect("127.0.0.1", 4002, 1), "stub connect should succeed");
+    client.place_limit_order(OrderRequest{77, "NVDA", true, 4.0, 900.0});
+    hft::test::require(client.lifecycle().has(77), "placing order should create lifecycle entry");
+    const auto* state = client.lifecycle().get(77);
+    hft::test::require(state != nullptr, "lifecycle state should exist");
+    hft::test::require(state->requested_qty == 4.0, "requested qty should be stored");
+    hft::test::require(state->symbol == "NVDA", "symbol should be stored");
+    client.disconnect();
+}
+
+HFT_TEST(test_ibkr_stub_snapshot_default_and_ack_latency_default) {
+    IBKRClient client;
+    hft::test::require(client.connect("127.0.0.1", 4002, 1), "stub connect should succeed");
+    const auto b = client.snapshot_book(999);
+    hft::test::require_close(b.best_bid(), 0.0, 1e-12, "missing stub snapshot should be empty");
+    hft::test::require_close(b.best_ask(), 0.0, 1e-12, "missing stub snapshot should be empty");
+    hft::test::require_close(client.ack_latency_ms(555), 0.0, 1e-12,
+                             "missing ack latency should be zero");
+    client.disconnect();
+}
+
+HFT_TEST(test_live_execution_engine_reconcile_without_ibkr_book_data) {
+    AppConfig cfg;
+    cfg.mode = BrokerMode::Paper;
+    cfg.top_k = 2;
+    auto broker = std::make_unique<PaperBrokerSim>();
+    LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
+
+    hft::test::require(eng.start(), "paper engine should start");
+    eng.initialize_universe(5);
+    eng.reconcile_broker_state();
+    eng.stop();
+}
+
+HFT_TEST(test_live_execution_engine_step_routes_only_top_k_orders) {
+    AppConfig cfg;
+    cfg.mode = BrokerMode::Paper;
+    cfg.top_k = 2;
+    auto broker = std::make_unique<PaperBrokerSim>();
+    auto* raw = broker.get();
+
+    LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
+    hft::test::require(eng.start(), "paper engine should start");
+    eng.initialize_universe(6);
+    eng.step(0);
+    hft::test::require(static_cast<int>(raw->placed.size()) == 2,
+                       "step should route exactly top_k orders");
+    eng.stop();
+}
+
+HFT_TEST(test_ranking_engine_step_generates_real_and_shadow_activity_over_time) {
+    RankingEngine engine(2, "tmp_shadow_results_2.csv");
+    engine.initialize(10);
+
+    for (int t = 0; t < 20; ++t) {
+        engine.step(t);
+    }
+
+    int active_count = 0;
+    int real_trades = 0;
+    int shadow_trades = 0;
+    int cooldown_count = 0;
+    for (const auto& s : engine.portfolio.items) {
+        if (s.active) active_count++;
+        real_trades += s.real.trades;
+        shadow_trades += s.shadow.trades;
+        if (s.cooldown > 0) cooldown_count++;
+    }
+
+    hft::test::require(active_count == 2, "ranking engine should keep exactly top_k active");
+    hft::test::require(real_trades > 0, "there should be real trades over time");
+    hft::test::require(shadow_trades > 0, "there should be shadow trades over time");
+    hft::test::require(cooldown_count >= 0, "cooldown scan should be reachable");
+}
+
+HFT_TEST(test_ranked_portfolio_rank_handles_empty_and_singleton) {
+    RankedPortfolio<Stock> p;
+    p.rank();
+    hft::test::require(p.items.empty(), "empty portfolio should remain empty");
+
+    Stock s;
+    s.score = 5.0;
+    p.items.push_back(s);
+    p.rank();
+    hft::test::require(p.items.size() == 1, "singleton portfolio should remain size one");
+    hft::test::require_close(p.items[0].score, 5.0, 1e-12,
+                             "singleton portfolio score should remain unchanged");
 }

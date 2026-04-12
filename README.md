@@ -125,3 +125,9 @@ In CI, protobuf 29.3 should be built with **CMake**, not `./configure`, for the 
 ## Protobuf 29.3 source retrieval note
 
 For CI, protobuf 29.3 should be cloned with `--recurse-submodules` instead of using the release tarball, so the expected dependency tree is present during the CMake build.
+
+
+## IBKR vendor linkage notes
+
+The vendored TWS API is built as a dedicated `twsapi_vendor` static library and linked into `hft_lib`.
+This avoids compiling vendor sources twice and makes protobuf/Abseil/BID dependency handling explicit.

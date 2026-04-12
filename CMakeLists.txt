@@ -89,12 +89,63 @@ if(HFT_ENABLE_IBKR)
   target_link_libraries(hft_lib PUBLIC ${Protobuf_LIBRARIES})
 
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client)
-    file(GLOB TWSAPI_SRC
-      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client/*.cpp
-    )
     target_include_directories(hft_lib PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client/protobuf
     )
-    target_sources(hft_lib PRIVATE ${TWSAPI_SRC})
+  endif()
+endif()
+
+
+# TWS vendor linkage fix
+if(HFT_ENABLE_IBKR)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client)
+    file(GLOB TWSAPI_VENDOR_SRC
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client/*.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client/protobuf/*.pb.cc
+    )
+
+    if(NOT TARGET twsapi_vendor)
+      add_library(twsapi_vendor STATIC ${TWSAPI_VENDOR_SRC})
+      target_include_directories(twsapi_vendor PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client/protobuf
+      )
+      target_compile_options(twsapi_vendor PRIVATE
+        -Wno-stringop-overflow
+        -Wno-array-bounds
+      )
+    endif()
+
+    if(TARGET protobuf::libprotobuf)
+      target_link_libraries(twsapi_vendor PUBLIC protobuf::libprotobuf)
+    else()
+      target_include_directories(twsapi_vendor PUBLIC ${Protobuf_INCLUDE_DIRS})
+      target_link_libraries(twsapi_vendor PUBLIC ${Protobuf_LIBRARIES})
+    endif()
+
+    find_package(absl CONFIG QUIET)
+    if(TARGET absl::base)
+      target_link_libraries(twsapi_vendor PUBLIC
+        absl::base
+        absl::strings
+        absl::log_initialize
+        absl::log
+        absl::log_internal_check_op
+        absl::log_internal_message
+        absl::log_internal_format
+        absl::hash
+        absl::raw_hash_set
+        absl::city
+        absl::low_level_hash
+      )
+    endif()
+
+    find_library(BID_LIBRARY NAMES bid)
+    if(BID_LIBRARY)
+      target_link_libraries(twsapi_vendor PUBLIC ${BID_LIBRARY})
+    endif()
+
+    target_link_libraries(hft_lib PUBLIC twsapi_vendor)
   endif()
 endif()

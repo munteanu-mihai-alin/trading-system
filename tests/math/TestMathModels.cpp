@@ -1,15 +1,14 @@
-#include "common/TestFramework.hpp"
-
 #include "bench/bench.hpp"
+#include "common/TestFramework.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "core/portfolio.hpp"
-#include "models/l2_book.hpp"
-#include "models/stock.hpp"
 #include "execution/fill_model.hpp"
 #include "execution/score.hpp"
 #include "models/hawkes.hpp"
+#include "models/l2_book.hpp"
 #include "models/micro.hpp"
 #include "models/ou.hpp"
+#include "models/stock.hpp"
 #include "validation/validation.hpp"
 
 using namespace hft;
@@ -26,7 +25,8 @@ HFT_TEST(test_hawkes_decays_toward_mu_without_event) {
     h.lambda = 25.0;
     const double next = h.one_step_decay(0.1);
     hft::test::require(next < h.lambda, "hawkes should decay toward baseline without event");
-    hft::test::require(next > h.mu, "hawkes decay should stay above baseline if starting above baseline");
+    hft::test::require(next > h.mu,
+                       "hawkes decay should stay above baseline if starting above baseline");
 }
 
 HFT_TEST(test_ou_moves_toward_mean) {
@@ -65,8 +65,10 @@ HFT_TEST(test_microprice_between_bid_and_ask) {
 }
 
 HFT_TEST(test_imbalance_positive_and_negative_paths) {
-    hft::test::require(imbalance(200.0, 100.0) > 0.0, "higher bid volume should mean positive imbalance");
-    hft::test::require(imbalance(100.0, 200.0) < 0.0, "higher ask volume should mean negative imbalance");
+    hft::test::require(imbalance(200.0, 100.0) > 0.0,
+                       "higher bid volume should mean positive imbalance");
+    hft::test::require(imbalance(100.0, 200.0) < 0.0,
+                       "higher ask volume should mean negative imbalance");
 }
 
 HFT_TEST(test_ou_update_moves_toward_observed) {
@@ -80,7 +82,8 @@ HFT_TEST(test_fill_probability_increases_when_distance_grows_cross_branch) {
     FillModel m;
     const double near_p = m.compute(0.0, 1000.0, 0.001);
     const double far_p = m.compute(0.0, 1000.0, 0.1);
-    hft::test::require(far_p > near_p, "crossing component should rise with distance parameter in current model");
+    hft::test::require(far_p > near_p,
+                       "crossing component should rise with distance parameter in current model");
 }
 
 HFT_TEST(test_validation_alarm_false_for_good_predictions) {
@@ -89,7 +92,8 @@ HFT_TEST(test_validation_alarm_false_for_good_predictions) {
         const double p = (i % 2 == 0) ? 0.0 : 1.0;
         v.add(p, p);
     }
-    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60), "good predictions should not trigger alarm");
+    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60),
+                       "good predictions should not trigger alarm");
 }
 
 HFT_TEST(test_latency_summary_empty_and_nonempty) {
@@ -101,26 +105,31 @@ HFT_TEST(test_latency_summary_empty_and_nonempty) {
     hft::test::require(filled.avg > 0.0, "avg should be positive");
 }
 
-
 HFT_TEST(test_live_trading_config_mode_names) {
     AppConfig live_cfg;
     live_cfg.mode = BrokerMode::Live;
-    hft::test::require(LiveTradingConfig::from_app(live_cfg).mode_name() == "live", "live mode name should be live");
+    hft::test::require(LiveTradingConfig::from_app(live_cfg).mode_name() == "live",
+                       "live mode name should be live");
 
     AppConfig sim_cfg;
     sim_cfg.mode = BrokerMode::Sim;
-    hft::test::require(LiveTradingConfig::from_app(sim_cfg).mode_name() == "sim", "sim mode name should be sim");
+    hft::test::require(LiveTradingConfig::from_app(sim_cfg).mode_name() == "sim",
+                       "sim mode name should be sim");
 
     AppConfig paper_cfg;
     paper_cfg.mode = BrokerMode::Paper;
-    hft::test::require(LiveTradingConfig::from_app(paper_cfg).mode_name() == "paper", "paper mode name should be paper");
+    hft::test::require(LiveTradingConfig::from_app(paper_cfg).mode_name() == "paper",
+                       "paper mode name should be paper");
 }
 
 HFT_TEST(test_ranked_portfolio_sorts_descending_by_score) {
     RankedPortfolio<Stock> p;
-    Stock a; a.score = 1.0;
-    Stock b; b.score = 3.0;
-    Stock c; c.score = 2.0;
+    Stock a;
+    a.score = 1.0;
+    Stock b;
+    b.score = 3.0;
+    Stock c;
+    c.score = 2.0;
     p.items = {a, b, c};
     p.rank();
     hft::test::require(p.items[0].score == 3.0, "highest score should sort first");

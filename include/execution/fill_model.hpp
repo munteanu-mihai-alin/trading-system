@@ -7,9 +7,8 @@ namespace hft {
 // p_queue captures depletion at our price level.
 // p_cross captures the chance price moves through our order.
 class FillModel {
-public:
-    [[nodiscard]] double compute(double tradedAtLevel,
-                                 double queueAhead,
+   public:
+    [[nodiscard]] double compute(double tradedAtLevel, double queueAhead,
                                  double distanceFromMid) const {
         const double p_queue = 1.0 - std::exp(-tradedAtLevel / (queueAhead + 1e-9));
         const double p_cross = 1.0 - std::exp(-5.0 * distanceFromMid);

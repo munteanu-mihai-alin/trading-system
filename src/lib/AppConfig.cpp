@@ -26,9 +26,12 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         const auto val = trim(line.substr(pos + 1));
 
         if (key == "mode") {
-            if (val == "live") cfg.mode = BrokerMode::Live;
-            else if (val == "sim") cfg.mode = BrokerMode::Sim;
-            else cfg.mode = BrokerMode::Paper;
+            if (val == "live")
+                cfg.mode = BrokerMode::Live;
+            else if (val == "sim")
+                cfg.mode = BrokerMode::Sim;
+            else
+                cfg.mode = BrokerMode::Paper;
         } else if (key == "host") {
             cfg.host = val;
         } else if (key == "paper_port") {

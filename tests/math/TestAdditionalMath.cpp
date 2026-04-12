@@ -1,6 +1,5 @@
-#include "common/TestFramework.hpp"
-
 #include "bench/bench.hpp"
+#include "common/TestFramework.hpp"
 #include "execution/fill_model.hpp"
 #include "models/micro.hpp"
 #include "models/ou.hpp"
@@ -14,8 +13,10 @@ HFT_TEST(test_microprice_between_bid_and_ask) {
 }
 
 HFT_TEST(test_imbalance_positive_and_negative_paths) {
-    hft::test::require(imbalance(200.0, 100.0) > 0.0, "higher bid volume should mean positive imbalance");
-    hft::test::require(imbalance(100.0, 200.0) < 0.0, "higher ask volume should mean negative imbalance");
+    hft::test::require(imbalance(200.0, 100.0) > 0.0,
+                       "higher bid volume should mean positive imbalance");
+    hft::test::require(imbalance(100.0, 200.0) < 0.0,
+                       "higher ask volume should mean negative imbalance");
 }
 
 HFT_TEST(test_ou_update_moves_toward_observed) {
@@ -29,7 +30,8 @@ HFT_TEST(test_fill_probability_increases_when_distance_grows_cross_branch) {
     FillModel m;
     const double near_p = m.compute(0.0, 1000.0, 0.001);
     const double far_p = m.compute(0.0, 1000.0, 0.1);
-    hft::test::require(far_p > near_p, "crossing component should rise with distance parameter in current model");
+    hft::test::require(far_p > near_p,
+                       "crossing component should rise with distance parameter in current model");
 }
 
 HFT_TEST(test_validation_alarm_false_for_good_predictions) {
@@ -38,7 +40,8 @@ HFT_TEST(test_validation_alarm_false_for_good_predictions) {
         const double p = (i % 2 == 0) ? 0.0 : 1.0;
         v.add(p, p);
     }
-    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60), "good predictions should not trigger alarm");
+    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60),
+                       "good predictions should not trigger alarm");
 }
 
 HFT_TEST(test_latency_summary_empty_and_nonempty) {

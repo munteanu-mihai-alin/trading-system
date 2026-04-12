@@ -7,7 +7,7 @@ class ForecastNormalizer {
     double targetAbsMean_;
     double cap_;
 
-public:
+   public:
     ForecastNormalizer(double target = 10.0, double cap = 20.0)
         : targetAbsMean_(target), cap_(cap) {}
 

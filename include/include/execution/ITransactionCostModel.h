@@ -3,11 +3,9 @@
 namespace hft {
 
 class ITransactionCostModel {
-public:
+   public:
     virtual ~ITransactionCostModel() = default;
-    virtual double estimateCost(double currentPosition,
-                                double targetPosition,
-                                double price,
+    virtual double estimateCost(double currentPosition, double targetPosition, double price,
                                 double dailyVolume) const = 0;
 };
 

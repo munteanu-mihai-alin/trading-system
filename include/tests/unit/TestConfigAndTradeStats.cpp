@@ -1,16 +1,16 @@
-#include "common/TestFramework.hpp"
-
-#include "config/AppConfig.hpp"
-#include "models/trade.hpp"
-
 #include <cstdio>
 #include <fstream>
+
+#include "common/TestFramework.hpp"
+#include "config/AppConfig.hpp"
+#include "models/trade.hpp"
 
 using namespace hft;
 
 HFT_TEST(test_trade_stats_zero_win_rate_when_no_trades) {
     TradeStats s;
-    hft::test::require_close(s.win_rate(), 0.0, 1e-12, "empty trade stats should have zero win rate");
+    hft::test::require_close(s.win_rate(), 0.0, 1e-12,
+                             "empty trade stats should have zero win rate");
 }
 
 HFT_TEST(test_trade_stats_win_rate_updates) {
@@ -18,7 +18,8 @@ HFT_TEST(test_trade_stats_win_rate_updates) {
     s.update(1.0);
     s.update(-1.0);
     s.update(2.0);
-    hft::test::require_close(s.win_rate(), 2.0 / 3.0, 1e-12, "win rate should reflect positive pnl trades");
+    hft::test::require_close(s.win_rate(), 2.0 / 3.0, 1e-12,
+                             "win rate should reflect positive pnl trades");
 }
 
 HFT_TEST(test_app_config_loads_live_mode_and_values) {

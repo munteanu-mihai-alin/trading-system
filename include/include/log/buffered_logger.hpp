@@ -8,7 +8,7 @@ namespace hft {
 class BufferedLogger {
     std::vector<std::string> buffer_;
 
-public:
+   public:
     void log(const std::string& msg) {
         buffer_.push_back(msg);
         if (buffer_.size() >= 1024) flush();

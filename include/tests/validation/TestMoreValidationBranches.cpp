@@ -1,5 +1,4 @@
 #include "common/TestFramework.hpp"
-
 #include "validation/validation.hpp"
 
 using namespace hft;
@@ -7,7 +6,8 @@ using namespace hft;
 HFT_TEST(test_validation_empty_paths) {
     ValidationMetrics v;
     hft::test::require_close(v.calibration_error(), 0.0, 1e-12, "empty calibration should be zero");
-    hft::test::require_close(v.rolling_error_mean(), 0.0, 1e-12, "empty rolling error should be zero");
+    hft::test::require_close(v.rolling_error_mean(), 0.0, 1e-12,
+                             "empty rolling error should be zero");
     hft::test::require_close(v.ks_statistic(), 0.0, 1e-12, "empty ks should be zero");
 }
 

@@ -131,3 +131,10 @@ For CI, protobuf 29.3 should be cloned with `--recurse-submodules` instead of us
 
 The vendored TWS API is built as a dedicated `twsapi_vendor` static library and linked into `hft_lib`.
 This avoids compiling vendor sources twice and makes protobuf/Abseil/BID dependency handling explicit.
+
+
+## IBKR link dependencies on Linux
+
+The IBKR-enabled build now expects two extra link dependencies in CI:
+1. Matching Abseil, installed from the protobuf 29.3 source tree submodule.
+2. Intel decimal floating-point math runtime, provided on Debian/Ubuntu by `libintelrdfpmath-dev`.

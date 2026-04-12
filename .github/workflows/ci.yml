@@ -75,11 +75,24 @@ jobs:
       - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip
+          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev
+
+      - name: Install protobuf 29.3 source tree
+        run: |
+          git clone --branch v29.3 --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git protobuf-29.3
+
+      - name: Install matching Abseil from protobuf submodule
+        run: |
+          cmake -S protobuf-29.3/third_party/abseil-cpp -B absl-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DABSL_PROPAGATE_CXX_STD=ON
+          cmake --build absl-build -j"$(nproc)"
+          sudo cmake --install absl-build
+          sudo ldconfig
 
       - name: Install protobuf 29.3 from source
         run: |
-          git clone --branch v29.3 --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git protobuf-29.3
           cmake -S protobuf-29.3 -B protobuf-build \
             -Dprotobuf_BUILD_TESTS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
@@ -88,10 +101,12 @@ jobs:
           sudo cmake --install protobuf-build
           sudo ldconfig
 
-      - name: Show protobuf version
+      - name: Show protobuf and dependency artifacts
         run: |
           protoc --version
           test -f /usr/local/include/google/protobuf/runtime_version.h
+          test -f /usr/local/lib/cmake/absl/abslConfig.cmake
+          ldconfig -p | grep -E 'intelrdfpmath|libbid' || true
 
       - name: Configure IBKR build
         run: |

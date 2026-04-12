@@ -124,7 +124,7 @@ if(HFT_ENABLE_IBKR)
       target_link_libraries(twsapi_vendor PUBLIC ${Protobuf_LIBRARIES})
     endif()
 
-    find_package(absl CONFIG QUIET)
+    find_package(absl CONFIG REQUIRED)
     if(TARGET absl::base)
       target_link_libraries(twsapi_vendor PUBLIC
         absl::base
@@ -141,7 +141,7 @@ if(HFT_ENABLE_IBKR)
       )
     endif()
 
-    find_library(BID_LIBRARY NAMES bid)
+    find_library(BID_LIBRARY NAMES bid intelrdfpmath)
     if(BID_LIBRARY)
       target_link_libraries(twsapi_vendor PUBLIC ${BID_LIBRARY})
     endif()

@@ -1,4 +1,5 @@
 #include "common/TestFramework.hpp"
+
 #include "sim/orderbook.hpp"
 #include "sim/queue_tracker.hpp"
 
@@ -11,8 +12,7 @@ HFT_TEST(test_fifo_match_fills_front_order_first) {
     ob.add(OBOrder{3, 100.0, 50.0, false, false});
 
     const auto res = ob.match_at_price(100.0, 2);
-    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12,
-                             "our order should not fill before front order");
+    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12, "our order should not fill before front order");
 }
 
 HFT_TEST(test_queue_ahead_reports_front_volume) {
@@ -28,8 +28,7 @@ HFT_TEST(test_match_reports_traded_volume_at_watch_price) {
     ob.add(OBOrder{1, 100.0, 100.0, true, false});
     ob.add(OBOrder{2, 100.0, 100.0, false, false});
     const auto res = ob.match_at_price(100.0, 999);
-    hft::test::require_close(res.traded_at_price, 100.0, 1e-12,
-                             "traded volume at watch price should equal matched quantity");
+    hft::test::require_close(res.traded_at_price, 100.0, 1e-12, "traded volume at watch price should equal matched quantity");
 }
 
 // ===== Branch coverage cases =====
@@ -64,15 +63,14 @@ HFT_TEST(test_match_reports_my_fill_when_front_order_is_mine) {
     hft::test::require_close(res.my_filled_qty, 25.0, 1e-12, "my front order should fill");
 }
 
+
 HFT_TEST(test_match_at_price_zero_when_books_do_not_cross) {
     OrderBook ob;
     ob.add(OBOrder{1, 99.0, 10.0, true, false});
     ob.add(OBOrder{2, 101.0, 10.0, false, false});
     const auto res = ob.match_at_price(100.0, 999);
-    hft::test::require_close(res.traded_at_price, 0.0, 1e-12,
-                             "non-crossing books should not trade");
-    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12,
-                             "non-crossing books should not fill my order");
+    hft::test::require_close(res.traded_at_price, 0.0, 1e-12, "non-crossing books should not trade");
+    hft::test::require_close(res.my_filled_qty, 0.0, 1e-12, "non-crossing books should not fill my order");
 }
 
 HFT_TEST(test_queue_tracker_reset_overwrites_state) {

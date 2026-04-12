@@ -3,9 +3,10 @@
 namespace hft {
 
 class ISlippageModel {
-   public:
+public:
     virtual ~ISlippageModel() = default;
-    virtual double adjustExecutionPrice(double midPrice, bool isBuy,
+    virtual double adjustExecutionPrice(double midPrice,
+                                        bool isBuy,
                                         double participationRate) const = 0;
 };
 

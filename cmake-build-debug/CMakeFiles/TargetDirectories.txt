@@ -1,6 +1,0 @@
-D:/trading-system/cmake-build-debug/CMakeFiles/hft_lib.dir
-D:/trading-system/cmake-build-debug/CMakeFiles/hft_app.dir
-D:/trading-system/cmake-build-debug/CMakeFiles/hft_tests.dir
-D:/trading-system/cmake-build-debug/CMakeFiles/test.dir
-D:/trading-system/cmake-build-debug/CMakeFiles/edit_cache.dir
-D:/trading-system/cmake-build-debug/CMakeFiles/rebuild_cache.dir

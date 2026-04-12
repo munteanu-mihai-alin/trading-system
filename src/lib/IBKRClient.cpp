@@ -1,6 +1,5 @@
 
 #include "broker/IBKRClient.hpp"
-
 #include <chrono>
 
 #ifdef HFT_ENABLE_IBKR
@@ -9,7 +8,9 @@
 
 namespace hft {
 
-IBKRClient::~IBKRClient() { disconnect(); }
+IBKRClient::~IBKRClient() {
+    disconnect();
+}
 
 bool IBKRClient::connect(const std::string& host, int port, int client_id) {
     host_ = host;
@@ -25,9 +26,7 @@ bool IBKRClient::connect(const std::string& host, int port, int client_id) {
     connected_ = false;
     return false;
 #else
-    (void)host;
-    (void)port;
-    (void)client_id;
+    (void)host; (void)port; (void)client_id;
     connected_ = true;
     return true;
 #endif
@@ -89,6 +88,7 @@ double IBKRClient::ack_latency_ms(int order_id) const {
     return it->second;
 }
 
+
 void IBKRClient::start_event_loop() {
 #ifdef HFT_ENABLE_IBKR
     if (reader_running_.exchange(true)) return;
@@ -125,35 +125,47 @@ void IBKRClient::subscribe_market_depth(const MarketDepthRequest& req) {
 }
 
 #ifdef HFT_ENABLE_IBKR
-void IBKRClient::updateMktDepth(TickerId id, int position, int operation, int side, double price,
+void IBKRClient::updateMktDepth(TickerId id,
+                                int position,
+                                int operation,
+                                int side,
+                                double price,
                                 Decimal size) {
     std::lock_guard<std::mutex> lock(books_mutex_);
     auto& book = books_[id];
     if (position < 0 || position >= L2Book::DEPTH) return;
     L2Level level{price, DecimalFunctions::decimalToDouble(size)};
     if (side == 0) {
-        if (operation == 2)
-            book.bids[position] = {};
-        else
-            book.bids[position] = level;
+        if (operation == 2) book.bids[position] = {};
+        else book.bids[position] = level;
     } else {
-        if (operation == 2)
-            book.asks[position] = {};
-        else
-            book.asks[position] = level;
+        if (operation == 2) book.asks[position] = {};
+        else book.asks[position] = level;
     }
 }
 
-void IBKRClient::orderStatus(OrderId orderId, const std::string& status, Decimal filled,
-                             Decimal remaining, double avgFillPrice, int, int, double, int,
-                             const std::string&, double) {
-    lifecycle_.on_status(orderId, status, DecimalFunctions::decimalToDouble(filled),
-                         DecimalFunctions::decimalToDouble(remaining), avgFillPrice);
+void IBKRClient::orderStatus(OrderId orderId,
+                             const std::string& status,
+                             Decimal filled,
+                             Decimal remaining,
+                             double avgFillPrice,
+                             int,
+                             int,
+                             double,
+                             int,
+                             const std::string&,
+                             double) {
+    lifecycle_.on_status(orderId,
+                         status,
+                         DecimalFunctions::decimalToDouble(filled),
+                         DecimalFunctions::decimalToDouble(remaining),
+                         avgFillPrice);
     if (status == "Submitted" || status == "PreSubmitted") {
         const auto it = send_ts_.find(orderId);
         if (it != send_ts_.end()) {
             const auto now = std::chrono::high_resolution_clock::now();
-            const double ms = std::chrono::duration<double, std::milli>(now - it->second).count();
+            const double ms =
+                std::chrono::duration<double, std::milli>(now - it->second).count();
             ack_latency_ms_cache_[orderId] = ms;
         }
     }
@@ -211,7 +223,9 @@ void IBKRClient::start_production_event_loop() {
 #endif
 }
 
+
 }  // namespace hft
+
 
 #if 0  // preserve baseline lines for additive-only guard
                              Decimal,

@@ -4,8 +4,12 @@
 namespace hft {
 
 // Execution-adjusted score with latency and a simple reward/loss model.
-inline double compute_execution_score(double mid, double limit, double mu, double lambda,
-                                      double queue, double latency_ms) {
+inline double compute_execution_score(double mid,
+                                      double limit,
+                                      double mu,
+                                      double lambda,
+                                      double queue,
+                                      double latency_ms) {
     const double dist = std::abs(mid - limit);
     const double p_touch = std::exp(-5.0 * dist);
     const double effective_queue = queue + lambda * (latency_ms / 1000.0);

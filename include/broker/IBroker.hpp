@@ -26,7 +26,7 @@ struct OrderUpdate {
 };
 
 class IBroker {
-   public:
+public:
     virtual ~IBroker() = default;
     virtual bool connect(const std::string& host, int port, int client_id) = 0;
     virtual void disconnect() = 0;

@@ -9,7 +9,7 @@ class SPSCQueue {
     std::atomic<int> head_{0};
     std::atomic<int> tail_{0};
 
-public:
+   public:
     bool push(const T& v) {
         const auto h = head_.load(std::memory_order_relaxed);
         const auto next = (h + 1) % N;

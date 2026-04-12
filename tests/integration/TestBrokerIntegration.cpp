@@ -1,10 +1,9 @@
 
-#include "common/TestFramework.hpp"
-
 #include <memory>
 
-#include "broker/PaperBrokerSim.hpp"
 #include "broker/IBKRClient.hpp"
+#include "broker/PaperBrokerSim.hpp"
+#include "common/TestFramework.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "engine/LiveExecutionEngine.hpp"
@@ -46,7 +45,6 @@ HFT_TEST(test_paper_broker_supports_event_loop_and_depth_subscribe) {
     broker.disconnect();
     hft::test::require(!broker.is_connected(), "paper broker should disconnect cleanly");
 }
-
 
 HFT_TEST(test_ibkr_stub_snapshot_and_reconnect_interfaces) {
     IBKRClient client;

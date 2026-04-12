@@ -4,7 +4,7 @@
 namespace hft {
 
 class IVolatilityModel {
-public:
+   public:
     virtual ~IVolatilityModel() = default;
     virtual double annualizedVol(const std::vector<double>& returns) const = 0;
 };

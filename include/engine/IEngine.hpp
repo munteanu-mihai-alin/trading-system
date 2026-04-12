@@ -3,7 +3,7 @@
 namespace hft {
 
 class IEngine {
-public:
+   public:
     virtual ~IEngine() = default;
     virtual void step(int t) = 0;
 };

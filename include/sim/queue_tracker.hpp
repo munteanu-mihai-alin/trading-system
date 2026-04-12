@@ -21,9 +21,7 @@ struct MyOrderState {
         filled_qty += my_fill_qty;
     }
 
-    [[nodiscard]] bool realized_fill() const {
-        return filled_qty > 0.0;
-    }
+    [[nodiscard]] bool realized_fill() const { return filled_qty > 0.0; }
 };
 
 }  // namespace hft

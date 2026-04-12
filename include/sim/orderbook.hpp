@@ -29,7 +29,7 @@ class OrderBook {
                   [](const Level& a, const Level& b) { return a.price < b.price; });
     }
 
-public:
+   public:
     void add(const OBOrder& o) {
         auto& side = o.is_buy ? bids_ : asks_;
         for (auto& lvl : side) {
@@ -84,8 +84,14 @@ public:
         while (!bids_.empty() && !asks_.empty() && bids_.front().price >= asks_.front().price) {
             auto& bl = bids_.front();
             auto& al = asks_.front();
-            if (bl.queue.empty()) { bids_.erase(bids_.begin()); continue; }
-            if (al.queue.empty()) { asks_.erase(asks_.begin()); continue; }
+            if (bl.queue.empty()) {
+                bids_.erase(bids_.begin());
+                continue;
+            }
+            if (al.queue.empty()) {
+                asks_.erase(asks_.begin());
+                continue;
+            }
 
             auto& b = bl.queue.front();
             auto& a = al.queue.front();

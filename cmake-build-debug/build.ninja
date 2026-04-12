@@ -143,46 +143,6 @@ build hft_app.exe: CXX_EXECUTABLE_LINKER__hft_app_Debug CMakeFiles/hft_app.dir/s
 
 build cmake_object_order_depends_target_hft_tests: phony || cmake_object_order_depends_target_hft_lib
 
-build CMakeFiles/hft_tests.dir/tests/unit/TestConfigAndTradeStats.cpp.obj: CXX_COMPILER__hft_tests_unscanned_Debug D$:/trading-system/tests/unit/TestConfigAndTradeStats.cpp || cmake_object_order_depends_target_hft_tests
-  CONFIG = Debug
-  DEP_FILE = CMakeFiles\hft_tests.dir\tests\unit\TestConfigAndTradeStats.cpp.obj.d
-  FLAGS = -g -std=c++20 -fdiagnostics-color=always -O3 -DNDEBUG
-  INCLUDES = -ID:/trading-system/include -ID:/trading-system/tests
-  OBJECT_DIR = CMakeFiles\hft_tests.dir
-  OBJECT_FILE_DIR = CMakeFiles\hft_tests.dir\tests\unit
-
-build CMakeFiles/hft_tests.dir/tests/math/TestAdditionalMath.cpp.obj: CXX_COMPILER__hft_tests_unscanned_Debug D$:/trading-system/tests/math/TestAdditionalMath.cpp || cmake_object_order_depends_target_hft_tests
-  CONFIG = Debug
-  DEP_FILE = CMakeFiles\hft_tests.dir\tests\math\TestAdditionalMath.cpp.obj.d
-  FLAGS = -g -std=c++20 -fdiagnostics-color=always -O3 -DNDEBUG
-  INCLUDES = -ID:/trading-system/include -ID:/trading-system/tests
-  OBJECT_DIR = CMakeFiles\hft_tests.dir
-  OBJECT_FILE_DIR = CMakeFiles\hft_tests.dir\tests\math
-
-build CMakeFiles/hft_tests.dir/tests/sim/TestMoreSimulatorBranches.cpp.obj: CXX_COMPILER__hft_tests_unscanned_Debug D$:/trading-system/tests/sim/TestMoreSimulatorBranches.cpp || cmake_object_order_depends_target_hft_tests
-  CONFIG = Debug
-  DEP_FILE = CMakeFiles\hft_tests.dir\tests\sim\TestMoreSimulatorBranches.cpp.obj.d
-  FLAGS = -g -std=c++20 -fdiagnostics-color=always -O3 -DNDEBUG
-  INCLUDES = -ID:/trading-system/include -ID:/trading-system/tests
-  OBJECT_DIR = CMakeFiles\hft_tests.dir
-  OBJECT_FILE_DIR = CMakeFiles\hft_tests.dir\tests\sim
-
-build CMakeFiles/hft_tests.dir/tests/validation/TestMoreValidationBranches.cpp.obj: CXX_COMPILER__hft_tests_unscanned_Debug D$:/trading-system/tests/validation/TestMoreValidationBranches.cpp || cmake_object_order_depends_target_hft_tests
-  CONFIG = Debug
-  DEP_FILE = CMakeFiles\hft_tests.dir\tests\validation\TestMoreValidationBranches.cpp.obj.d
-  FLAGS = -g -std=c++20 -fdiagnostics-color=always -O3 -DNDEBUG
-  INCLUDES = -ID:/trading-system/include -ID:/trading-system/tests
-  OBJECT_DIR = CMakeFiles\hft_tests.dir
-  OBJECT_FILE_DIR = CMakeFiles\hft_tests.dir\tests\validation
-
-build CMakeFiles/hft_tests.dir/tests/integration/TestEnginePaths.cpp.obj: CXX_COMPILER__hft_tests_unscanned_Debug D$:/trading-system/tests/integration/TestEnginePaths.cpp || cmake_object_order_depends_target_hft_tests
-  CONFIG = Debug
-  DEP_FILE = CMakeFiles\hft_tests.dir\tests\integration\TestEnginePaths.cpp.obj.d
-  FLAGS = -g -std=c++20 -fdiagnostics-color=always -O3 -DNDEBUG
-  INCLUDES = -ID:/trading-system/include -ID:/trading-system/tests
-  OBJECT_DIR = CMakeFiles\hft_tests.dir
-  OBJECT_FILE_DIR = CMakeFiles\hft_tests.dir\tests\integration
-
 build CMakeFiles/hft_tests.dir/tests/common/TestMain.cpp.obj: CXX_COMPILER__hft_tests_unscanned_Debug D$:/trading-system/tests/common/TestMain.cpp || cmake_object_order_depends_target_hft_tests
   CONFIG = Debug
   DEP_FILE = CMakeFiles\hft_tests.dir\tests\common\TestMain.cpp.obj.d
@@ -239,7 +199,7 @@ build CMakeFiles/hft_tests.dir/tests/integration/TestBrokerIntegration.cpp.obj: 
 #############################################
 # Link the executable hft_tests.exe
 
-build hft_tests.exe: CXX_EXECUTABLE_LINKER__hft_tests_Debug CMakeFiles/hft_tests.dir/tests/unit/TestConfigAndTradeStats.cpp.obj CMakeFiles/hft_tests.dir/tests/math/TestAdditionalMath.cpp.obj CMakeFiles/hft_tests.dir/tests/sim/TestMoreSimulatorBranches.cpp.obj CMakeFiles/hft_tests.dir/tests/validation/TestMoreValidationBranches.cpp.obj CMakeFiles/hft_tests.dir/tests/integration/TestEnginePaths.cpp.obj CMakeFiles/hft_tests.dir/tests/common/TestMain.cpp.obj CMakeFiles/hft_tests.dir/tests/unit/TestCoreModels.cpp.obj CMakeFiles/hft_tests.dir/tests/math/TestMathModels.cpp.obj CMakeFiles/hft_tests.dir/tests/sim/TestSimulator.cpp.obj CMakeFiles/hft_tests.dir/tests/validation/TestValidation.cpp.obj CMakeFiles/hft_tests.dir/tests/integration/TestBrokerIntegration.cpp.obj | libhft_lib.a || libhft_lib.a
+build hft_tests.exe: CXX_EXECUTABLE_LINKER__hft_tests_Debug CMakeFiles/hft_tests.dir/tests/common/TestMain.cpp.obj CMakeFiles/hft_tests.dir/tests/unit/TestCoreModels.cpp.obj CMakeFiles/hft_tests.dir/tests/math/TestMathModels.cpp.obj CMakeFiles/hft_tests.dir/tests/sim/TestSimulator.cpp.obj CMakeFiles/hft_tests.dir/tests/validation/TestValidation.cpp.obj CMakeFiles/hft_tests.dir/tests/integration/TestBrokerIntegration.cpp.obj | libhft_lib.a || libhft_lib.a
   CONFIG = Debug
   FLAGS = -g
   LINK_LIBRARIES = libhft_lib.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32

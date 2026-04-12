@@ -8,7 +8,7 @@
 namespace hft::test {
 
 struct Registry {
-    using Fn = void (*)();
+    using Fn = void(*)();
     std::vector<std::pair<std::string, Fn>> tests;
 
     static Registry& instance() {
@@ -20,7 +20,9 @@ struct Registry {
 };
 
 struct Registrar {
-    Registrar(const std::string& name, Registry::Fn fn) { Registry::instance().add(name, fn); }
+    Registrar(const std::string& name, Registry::Fn fn) {
+        Registry::instance().add(name, fn);
+    }
 };
 
 inline void require(bool cond, const std::string& msg) {
@@ -36,7 +38,7 @@ inline void require_close(double a, double b, double eps, const std::string& msg
 
 }  // namespace hft::test
 
-#define HFT_TEST(name)                                    \
-    void name();                                          \
+#define HFT_TEST(name) \
+    void name(); \
     static hft::test::Registrar reg_##name(#name, &name); \
     void name()

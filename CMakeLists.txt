@@ -28,6 +28,11 @@ add_executable(hft_app
 target_link_libraries(hft_app PRIVATE hft_lib)
 
 add_executable(hft_tests
+    tests/unit/TestConfigAndTradeStats.cpp
+    tests/math/TestAdditionalMath.cpp
+    tests/sim/TestMoreSimulatorBranches.cpp
+    tests/validation/TestMoreValidationBranches.cpp
+    tests/integration/TestEnginePaths.cpp
     tests/common/TestMain.cpp
     tests/unit/TestCoreModels.cpp
     tests/math/TestMathModels.cpp

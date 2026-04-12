@@ -3,7 +3,11 @@
 
 namespace hft {
 
-enum class BrokerMode { Paper, Live, Sim };
+enum class BrokerMode {
+    Paper,
+    Live,
+    Sim
+};
 
 struct AppConfig {
     BrokerMode mode = BrokerMode::Paper;

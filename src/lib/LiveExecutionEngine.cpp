@@ -1,12 +1,12 @@
 #include "engine/LiveExecutionEngine.hpp"
+#include "broker/IBKRClient.hpp"
 
 #include <utility>
 
-#include "broker/IBKRClient.hpp"
-
 namespace hft {
 
-LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg, std::unique_ptr<IBroker> broker)
+LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
+                                         std::unique_ptr<IBroker> broker)
     : cfg_(std::move(cfg)),
       broker_(std::move(broker)),
       ranking(cfg_.app.top_k, "shadow_results.csv") {}
@@ -15,9 +15,13 @@ bool LiveExecutionEngine::start() {
     return broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id);
 }
 
-void LiveExecutionEngine::stop() { broker_->disconnect(); }
+void LiveExecutionEngine::stop() {
+    broker_->disconnect();
+}
 
-void LiveExecutionEngine::initialize_universe(int n_stocks) { ranking.initialize(n_stocks); }
+void LiveExecutionEngine::initialize_universe(int n_stocks) {
+    ranking.initialize(n_stocks);
+}
 
 void LiveExecutionEngine::step(int t) {
     reconcile_broker_state();
@@ -63,5 +67,6 @@ void LiveExecutionEngine::reconcile_broker_state() {
     }
     ranking.portfolio.rank();
 }
+
 
 }  // namespace hft

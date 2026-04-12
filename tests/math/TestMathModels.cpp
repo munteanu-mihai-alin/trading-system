@@ -1,18 +1,19 @@
-#include "bench/bench.hpp"
 #include "common/TestFramework.hpp"
-#include "config/LiveTradingConfig.hpp"
+
+#include "bench/bench.hpp"
 #include "core/ForecastNormalizer.h"
-#include "core/portfolio.hpp"
-#include "execution/fill_model.hpp"
 #include "execution/latency_model.hpp"
+#include "config/LiveTradingConfig.hpp"
+#include "core/portfolio.hpp"
+#include "models/l2_book.hpp"
+#include "models/stock.hpp"
+#include "execution/fill_model.hpp"
 #include "execution/score.hpp"
 #include "models/hawkes.hpp"
-#include "models/l2_book.hpp"
 #include "models/micro.hpp"
 #include "models/ou.hpp"
-#include "models/stock.hpp"
-#include "sim/queue_tracker.hpp"
 #include "validation/validation.hpp"
+#include "sim/queue_tracker.hpp"
 
 using namespace hft;
 
@@ -28,8 +29,7 @@ HFT_TEST(test_hawkes_decays_toward_mu_without_event) {
     h.lambda = 25.0;
     const double next = h.one_step_decay(0.1);
     hft::test::require(next < h.lambda, "hawkes should decay toward baseline without event");
-    hft::test::require(next > h.mu,
-                       "hawkes decay should stay above baseline if starting above baseline");
+    hft::test::require(next > h.mu, "hawkes decay should stay above baseline if starting above baseline");
 }
 
 HFT_TEST(test_ou_moves_toward_mean) {
@@ -68,10 +68,8 @@ HFT_TEST(test_microprice_between_bid_and_ask) {
 }
 
 HFT_TEST(test_imbalance_positive_and_negative_paths) {
-    hft::test::require(imbalance(200.0, 100.0) > 0.0,
-                       "higher bid volume should mean positive imbalance");
-    hft::test::require(imbalance(100.0, 200.0) < 0.0,
-                       "higher ask volume should mean negative imbalance");
+    hft::test::require(imbalance(200.0, 100.0) > 0.0, "higher bid volume should mean positive imbalance");
+    hft::test::require(imbalance(100.0, 200.0) < 0.0, "higher ask volume should mean negative imbalance");
 }
 
 HFT_TEST(test_ou_update_moves_toward_observed) {
@@ -85,8 +83,7 @@ HFT_TEST(test_fill_probability_increases_when_distance_grows_cross_branch) {
     FillModel m;
     const double near_p = m.compute(0.0, 1000.0, 0.001);
     const double far_p = m.compute(0.0, 1000.0, 0.1);
-    hft::test::require(far_p > near_p,
-                       "crossing component should rise with distance parameter in current model");
+    hft::test::require(far_p > near_p, "crossing component should rise with distance parameter in current model");
 }
 
 HFT_TEST(test_validation_alarm_false_for_good_predictions) {
@@ -95,8 +92,7 @@ HFT_TEST(test_validation_alarm_false_for_good_predictions) {
         const double p = (i % 2 == 0) ? 0.0 : 1.0;
         v.add(p, p);
     }
-    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60),
-                       "good predictions should not trigger alarm");
+    hft::test::require(!v.degradation_alarm(0.35, 0.35, 0.60), "good predictions should not trigger alarm");
 }
 
 HFT_TEST(test_latency_summary_empty_and_nonempty) {
@@ -108,31 +104,26 @@ HFT_TEST(test_latency_summary_empty_and_nonempty) {
     hft::test::require(filled.avg > 0.0, "avg should be positive");
 }
 
+
 HFT_TEST(test_live_trading_config_mode_names) {
     AppConfig live_cfg;
     live_cfg.mode = BrokerMode::Live;
-    hft::test::require(LiveTradingConfig::from_app(live_cfg).mode_name() == "live",
-                       "live mode name should be live");
+    hft::test::require(LiveTradingConfig::from_app(live_cfg).mode_name() == "live", "live mode name should be live");
 
     AppConfig sim_cfg;
     sim_cfg.mode = BrokerMode::Sim;
-    hft::test::require(LiveTradingConfig::from_app(sim_cfg).mode_name() == "sim",
-                       "sim mode name should be sim");
+    hft::test::require(LiveTradingConfig::from_app(sim_cfg).mode_name() == "sim", "sim mode name should be sim");
 
     AppConfig paper_cfg;
     paper_cfg.mode = BrokerMode::Paper;
-    hft::test::require(LiveTradingConfig::from_app(paper_cfg).mode_name() == "paper",
-                       "paper mode name should be paper");
+    hft::test::require(LiveTradingConfig::from_app(paper_cfg).mode_name() == "paper", "paper mode name should be paper");
 }
 
 HFT_TEST(test_ranked_portfolio_sorts_descending_by_score) {
     RankedPortfolio<Stock> p;
-    Stock a;
-    a.score = 1.0;
-    Stock b;
-    b.score = 3.0;
-    Stock c;
-    c.score = 2.0;
+    Stock a; a.score = 1.0;
+    Stock b; b.score = 3.0;
+    Stock c; c.score = 2.0;
     p.items = {a, b, c};
     p.rank();
     hft::test::require(p.items[0].score == 3.0, "highest score should sort first");
@@ -149,10 +140,10 @@ HFT_TEST(test_l2_book_best_prices_default_and_set) {
     hft::test::require_close(book.best_ask(), 101.5, 1e-12, "best ask should reflect first level");
 }
 
+
 HFT_TEST(test_forecast_normalizer_zero_abs_mean_returns_zero) {
     ForecastNormalizer n;
-    hft::test::require_close(n.normalize(5.0, 0.0), 0.0, 1e-12,
-                             "zero historical abs mean should return zero");
+    hft::test::require_close(n.normalize(5.0, 0.0), 0.0, 1e-12, "zero historical abs mean should return zero");
 }
 
 HFT_TEST(test_fill_model_clamps_extreme_inputs) {
@@ -165,19 +156,18 @@ HFT_TEST(test_fill_model_clamps_extreme_inputs) {
 
 HFT_TEST(test_latency_model_mean_defaults_then_updates) {
     LatencyModel l;
-    hft::test::require_close(l.mean_latency(), 1.0, 1e-12,
-                             "empty latency model should default to 1ms");
+    hft::test::require_close(l.mean_latency(), 1.0, 1e-12, "empty latency model should default to 1ms");
     l.record(2.0);
     l.record(4.0);
     hft::test::require_close(l.mean_latency(), 3.0, 1e-12, "mean latency should average samples");
 }
 
+
 HFT_TEST(test_hawkes_decay_rises_toward_mu_when_below_baseline) {
     Hawkes h;
     h.lambda = 2.0;
     const double next = h.one_step_decay(0.1);
-    hft::test::require(next > h.lambda,
-                       "hawkes decay should move upward toward baseline when below mu");
+    hft::test::require(next > h.lambda, "hawkes decay should move upward toward baseline when below mu");
 }
 
 HFT_TEST(test_ou_moves_downward_when_above_mean) {
@@ -194,4 +184,40 @@ HFT_TEST(test_queue_tracker_clamps_negative_queue_to_zero) {
     s.reset(1, 100.0, 1.0);
     s.on_traded(10.0, 0.0);
     hft::test::require_close(s.queue_ahead, 0.0, 1e-12, "queue ahead should clamp at zero");
+}
+
+
+HFT_TEST(test_ranked_portfolio_preserves_equal_scores_count) {
+    RankedPortfolio<Stock> p;
+    Stock a; a.score = 2.0;
+    Stock b; b.score = 2.0;
+    Stock c; c.score = 2.0;
+    p.items = {a, b, c};
+    p.rank();
+    hft::test::require(p.items.size() == 3, "equal-score ranking should preserve item count");
+    hft::test::require_close(p.items[0].score, 2.0, 1e-12, "equal-score ranking should keep valid values");
+}
+
+HFT_TEST(test_ranked_portfolio_handles_reverse_sorted_input) {
+    RankedPortfolio<Stock> p;
+    Stock a; a.score = 1.0;
+    Stock b; b.score = 2.0;
+    Stock c; c.score = 3.0;
+    p.items = {a, b, c};
+    p.rank();
+    hft::test::require_close(p.items[0].score, 3.0, 1e-12, "reverse input should sort descending");
+    hft::test::require_close(p.items[1].score, 2.0, 1e-12, "middle score should remain in middle");
+    hft::test::require_close(p.items[2].score, 1.0, 1e-12, "lowest score should end last");
+}
+
+HFT_TEST(test_latency_model_single_sample_mean) {
+    LatencyModel l;
+    l.record(7.5);
+    hft::test::require_close(l.mean_latency(), 7.5, 1e-12, "single-sample mean should equal sample");
+}
+
+HFT_TEST(test_forecast_normalizer_negative_input_scales_and_caps) {
+    ForecastNormalizer n;
+    const double x = n.normalize(-100.0, 1.0);
+    hft::test::require(x >= -20.0 && x <= 0.0, "negative normalized forecast should be capped within bounds");
 }

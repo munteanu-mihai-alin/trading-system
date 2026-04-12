@@ -16,10 +16,11 @@ class LiveExecutionEngine {
     std::unique_ptr<IBroker> broker_;
     int next_order_id_ = 1;
 
-   public:
+public:
     RankingEngine ranking;
 
-    LiveExecutionEngine(LiveTradingConfig cfg, std::unique_ptr<IBroker> broker);
+    LiveExecutionEngine(LiveTradingConfig cfg,
+                        std::unique_ptr<IBroker> broker);
 
     bool start();
     void stop();

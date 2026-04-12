@@ -4,22 +4,22 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <thread>
+#include <string>
 #include <unordered_map>
 
-#include "broker/ConnectionSupervisor.hpp"
 #include "broker/IBroker.hpp"
+#include "broker/ConnectionSupervisor.hpp"
 #include "broker/OrderLifecycle.hpp"
 #include "models/l2_book.hpp"
 
 #ifdef HFT_ENABLE_IBKR
-#include "Contract.h"
 #include "EClientSocket.h"
-#include "EReader.h"
 #include "EReaderOSSignal.h"
 #include "EWrapper.h"
+#include "Contract.h"
 #include "Order.h"
+#include "EReader.h"
 #endif
 
 namespace hft {
@@ -29,8 +29,7 @@ namespace hft {
 // - With HFT_ENABLE_IBKR: wraps the official IBKR C++ SDK.
 class IBKRClient
 #ifdef HFT_ENABLE_IBKR
-    : public IBroker,
-      public EWrapper
+    : public IBroker, public EWrapper
 #else
     : public IBroker
 #endif
@@ -54,7 +53,7 @@ class IBKRClient
     std::thread reader_thread_;
 #endif
 
-   public:
+public:
     IBKRClient() = default;
     ~IBKRClient() override;
 
@@ -76,12 +75,24 @@ class IBKRClient
 
 #ifdef HFT_ENABLE_IBKR
     // Core callbacks we actively use.
-    void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining,
-                     double avgFillPrice, int permId, int parentId, double lastFillPrice,
-                     int clientId, const std::string& whyHeld, double mktCapPrice) override;
+    void orderStatus(OrderId orderId,
+                     const std::string& status,
+                     Decimal filled,
+                     Decimal remaining,
+                     double avgFillPrice,
+                     int permId,
+                     int parentId,
+                     double lastFillPrice,
+                     int clientId,
+                     const std::string& whyHeld,
+                     double mktCapPrice) override;
 
     void nextValidId(OrderId orderId) override {}
-    void updateMktDepth(TickerId id, int position, int operation, int side, double price,
+    void updateMktDepth(TickerId id,
+                        int position,
+                        int operation,
+                        int side,
+                        double price,
                         Decimal size) override;
 
     // Required no-op overrides to satisfy EWrapper.
@@ -89,16 +100,13 @@ class IBKRClient
     void tickSize(TickerId, TickType, Decimal) override {}
     void tickString(TickerId, TickType, const std::string&) override {}
     void tickGeneric(TickerId, TickType, double) override {}
-    void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&,
-                 double, double) override {}
+    void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&, double, double) override {}
     void openOrder(OrderId, const Contract&, const Order&, const OrderState&) override {}
     void openOrderEnd() override {}
     void winError(const std::string&, int) override {}
     void connectionClosed() override { connected_ = false; }
-    void updateAccountValue(const std::string&, const std::string&, const std::string&,
-                            const std::string&) override {}
-    void updatePortfolio(const Contract&, Decimal, double, double, double, double, double,
-                         const std::string&) override {}
+    void updateAccountValue(const std::string&, const std::string&, const std::string&, const std::string&) override {}
+    void updatePortfolio(const Contract&, Decimal, double, double, double, double, double, const std::string&) override {}
     void updateAccountTime(const std::string&) override {}
     void accountDownloadEnd(const std::string&) override {}
     void contractDetails(int, const ContractDetails&) override {}
@@ -107,19 +115,16 @@ class IBKRClient
     void execDetails(int, const Contract&, const Execution&) override {}
     void execDetailsEnd(int) override {}
     void updateMktDepth(TickerId, int, int, int, double, Decimal) override {}
-    void updateMktDepthL2(TickerId, int, const std::string&, int, int, double, Decimal,
-                          bool) override {}
+    void updateMktDepthL2(TickerId, int, const std::string&, int, int, double, Decimal, bool) override {}
     void updateNewsBulletin(int, int, const std::string&, const std::string&) override {}
     void managedAccounts(const std::string&) override {}
     void receiveFA(faDataType, const std::string&) override {}
     void historicalData(TickerId, const Bar&) override {}
     void historicalDataEnd(int, const std::string&, const std::string&) override {}
     void scannerParameters(const std::string&) override {}
-    void scannerData(int, int, const ContractDetails&, const std::string&, const std::string&,
-                     const std::string&, const std::string&) override {}
+    void scannerData(int, int, const ContractDetails&, const std::string&, const std::string&, const std::string&, const std::string&) override {}
     void scannerDataEnd(int) override {}
-    void realtimeBar(TickerId, long, double, double, double, double, Decimal, Decimal,
-                     int) override {}
+    void realtimeBar(TickerId, long, double, double, double, double, Decimal, Decimal, int) override {}
     void currentTime(long) override {}
     void fundamentalData(TickerId, const std::string&) override {}
     void deltaNeutralValidation(int, const DeltaNeutralContract&) override {}
@@ -128,8 +133,7 @@ class IBKRClient
     void commissionReport(const CommissionReport&) override {}
     void position(const std::string&, const Contract&, Decimal, double) override {}
     void positionEnd() override {}
-    void accountSummary(int, const std::string&, const std::string&, const std::string&,
-                        const std::string&) override {}
+    void accountSummary(int, const std::string&, const std::string&, const std::string&, const std::string&) override {}
     void accountSummaryEnd(int) override {}
     void verifyMessageAPI(const std::string&) override {}
     void verifyCompleted(bool, const std::string&) override {}
@@ -141,28 +145,22 @@ class IBKRClient
     void error(const std::exception&) override {}
     void error(const std::string&) override {}
     void connectAck() override {}
-    void positionMulti(int, const std::string&, const std::string&, const Contract&, Decimal,
-                       double) override {}
+    void positionMulti(int, const std::string&, const std::string&, const Contract&, Decimal, double) override {}
     void positionMultiEnd(int) override {}
-    void accountUpdateMulti(int, const std::string&, const std::string&, const std::string&,
-                            const std::string&, const std::string&) override {}
+    void accountUpdateMulti(int, const std::string&, const std::string&, const std::string&, const std::string&, const std::string&) override {}
     void accountUpdateMultiEnd(int) override {}
-    void securityDefinitionOptionalParameter(int, const std::string&, int, const std::string&,
-                                             const std::string&, const std::set<std::string>&,
-                                             const std::set<double>&) override {}
+    void securityDefinitionOptionalParameter(int, const std::string&, int, const std::string&, const std::string&, const std::set<std::string>&, const std::set<double>&) override {}
     void securityDefinitionOptionalParameterEnd(int) override {}
     void softDollarTiers(int, const std::vector<SoftDollarTier>&) override {}
     void familyCodes(const std::vector<FamilyCode>&) override {}
     void symbolSamples(int, const std::vector<ContractDescription>&) override {}
     void mktDepthExchanges(const std::vector<DepthMktDataDescription>&) override {}
-    void tickNews(int, time_t, const std::string&, const std::string&, const std::string&,
-                  const std::string&) override {}
+    void tickNews(int, time_t, const std::string&, const std::string&, const std::string&, const std::string&) override {}
     void smartComponents(int, const SmartComponentsMap&) override {}
     void tickReqParams(int, double, const std::string&, int) override {}
     void newsProviders(const std::vector<NewsProvider>&) override {}
     void newsArticle(int, int, const std::string&) override {}
-    void historicalNews(int, const std::string&, const std::string&, const std::string&,
-                        const std::string&) override {}
+    void historicalNews(int, const std::string&, const std::string&, const std::string&, const std::string&) override {}
     void historicalNewsEnd(int, bool) override {}
     void headTimestamp(int, const std::string&) override {}
     void histogramData(int, const HistogramDataVector&) override {}
@@ -175,10 +173,8 @@ class IBKRClient
     void historicalTicks(int, const std::vector<HistoricalTick>&, bool) override {}
     void historicalTicksBidAsk(int, const std::vector<HistoricalTickBidAsk>&, bool) override {}
     void historicalTicksLast(int, const std::vector<HistoricalTickLast>&, bool) override {}
-    void tickByTickAllLast(int, int, time_t, double, Decimal, const TickAttribLast&,
-                           const std::string&, const std::string&) override {}
-    void tickByTickBidAsk(int, time_t, double, double, Decimal, Decimal,
-                          const TickAttribBidAsk&) override {}
+    void tickByTickAllLast(int, int, time_t, double, Decimal, const TickAttribLast&, const std::string&, const std::string&) override {}
+    void tickByTickBidAsk(int, time_t, double, double, Decimal, Decimal, const TickAttribBidAsk&) override {}
     void tickByTickMidPoint(int, time_t, double) override {}
     void orderBound(long long, int, int) override {}
     void completedOrder(const Contract&, const Order&, const OrderState&) override {}
@@ -186,8 +182,7 @@ class IBKRClient
     void replaceFAEnd(int, const std::string&) override {}
     void wshMetaData(int, const std::string&) override {}
     void wshEventData(int, const std::string&) override {}
-    void historicalSchedule(int, const std::string&, const std::string&, const std::string&,
-                            const std::vector<HistoricalSession>&) override {}
+    void historicalSchedule(int, const std::string&, const std::string&, const std::string&, const std::vector<HistoricalSession>&) override {}
     void userInfo(int, const std::string&) override {}
 #endif
 };

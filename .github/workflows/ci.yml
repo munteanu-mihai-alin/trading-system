@@ -1,0 +1,123 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          chmod +x scripts/check_clang_format.sh
+          ./scripts/check_clang_format.sh
+
+      - name: Configure
+        run: |
+          cmake -S . -B build
+
+      - name: Build
+        run: |
+          cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: |
+          cd build
+          ctest --output-on-failure
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ lcov
+          sudo apt-get install -y clang-format
+
+      - name: Run coverage
+        run: |
+          chmod +x scripts/run_coverage_ci.sh
+          python3 --version
+          ./scripts/run_coverage_ci.sh
+
+      - name: Upload HTML coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: build-coverage/coverage-html
+
+      - name: Upload LCOV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: build-coverage/coverage.filtered.info
+
+
+  ibkr-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install base dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev libintelrdfpmath-dev
+
+      - name: Install protobuf 29.3 source tree
+        run: |
+          git clone --branch v29.3 --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git protobuf-29.3
+
+      - name: Install matching Abseil from protobuf submodule
+        run: |
+          cmake -S protobuf-29.3/third_party/abseil-cpp -B absl-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DABSL_PROPAGATE_CXX_STD=ON
+          cmake --build absl-build -j"$(nproc)"
+          sudo cmake --install absl-build
+          sudo ldconfig
+
+      - name: Install protobuf 29.3 from source
+        run: |
+          cmake -S protobuf-29.3 -B protobuf-build \
+            -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_BUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build protobuf-build -j"$(nproc)"
+          sudo cmake --install protobuf-build
+          sudo ldconfig
+
+
+      - name: Show protobuf and dependency artifacts
+        run: |
+          protoc --version
+          test -f /usr/local/include/google/protobuf/runtime_version.h
+          test -f /usr/local/lib/cmake/absl/abslConfig.cmake
+          ldconfig -p | grep -E 'libprotobuf\.so' || true
+          dpkg -L libintelrdfpmath-dev || true
+          ldconfig -p | grep -i rdfp || true
+          find /usr /usr/local -type f \( -name '*rdfpmath*' -o -name '*bid*' \) 2>/dev/null | sort || true
+
+      - name: Configure IBKR build
+        run: |
+          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON
+
+      - name: Build IBKR target
+        run: |
+          cmake --build build-ibkr-ci -j"$(nproc)"
+

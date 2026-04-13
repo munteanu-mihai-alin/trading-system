@@ -95,6 +95,7 @@ jobs:
         run: |
           cmake -S protobuf-29.3 -B protobuf-build \
             -Dprotobuf_BUILD_TESTS=OFF \
+            -Dprotobuf_BUILD_SHARED_LIBS=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local
           cmake --build protobuf-build -j"$(nproc)"
@@ -106,6 +107,7 @@ jobs:
           protoc --version
           test -f /usr/local/include/google/protobuf/runtime_version.h
           test -f /usr/local/lib/cmake/absl/abslConfig.cmake
+          ldconfig -p | grep -E 'libprotobuf\.so' || true
           ldconfig -p | grep -E 'intelrdfpmath|libbid' || true
 
       - name: Configure IBKR build

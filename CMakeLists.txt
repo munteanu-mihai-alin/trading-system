@@ -149,3 +149,7 @@ if(HFT_ENABLE_IBKR)
     target_link_libraries(hft_lib PUBLIC twsapi_vendor)
   endif()
 endif()
+
+
+# protobuf shared-library note:
+# For HFT_ENABLE_IBKR=ON in CI, protobuf 29.3 is expected to be installed as a shared library.

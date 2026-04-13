@@ -15,3 +15,11 @@ cmake -DHFT_ENABLE_IBKR=ON ..
 cmake --build . -j"$(nproc)"
 
 echo "Built IBKR-enabled target successfully in ${BUILD_DIR}"
+
+
+# Recommended protobuf build settings for this project:
+# cmake -S protobuf-29.3 -B protobuf-build \
+#   -Dprotobuf_BUILD_TESTS=OFF \
+#   -Dprotobuf_BUILD_SHARED_LIBS=ON \
+#   -DCMAKE_BUILD_TYPE=Release \
+#   -DCMAKE_INSTALL_PREFIX=/usr/local

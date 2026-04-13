@@ -138,3 +138,8 @@ This avoids compiling vendor sources twice and makes protobuf/Abseil/BID depende
 The IBKR-enabled build now expects two extra link dependencies in CI:
 1. Matching Abseil, installed from the protobuf 29.3 source tree submodule.
 2. Intel decimal floating-point math runtime, provided on Debian/Ubuntu by `libintelrdfpmath-dev`.
+
+
+## Shared protobuf recommendation
+
+For the IBKR-enabled Linux build, protobuf 29.3 should be built as a shared library (`-Dprotobuf_BUILD_SHARED_LIBS=ON`). This keeps the generated-code/runtime version matched while reducing static-link Abseil dependency issues.

@@ -141,10 +141,15 @@ if(HFT_ENABLE_IBKR)
       )
     endif()
 
-    find_library(BID_LIBRARY NAMES bid intelrdfpmath)
-    if(BID_LIBRARY)
-      target_link_libraries(twsapi_vendor PUBLIC ${BID_LIBRARY})
+    find_library(BID_LIBRARY
+      NAMES intelrdfpmath bid libbid libintelrdfpmath
+      PATH_SUFFIXES lib lib64
+    )
+    if(NOT BID_LIBRARY)
+      message(FATAL_ERROR "Intel decimal runtime not found; install libintelrdfpmath-dev or provide a BID-compatible library")
     endif()
+    message(STATUS "Found Intel decimal runtime: ${BID_LIBRARY}")
+    target_link_libraries(twsapi_vendor PUBLIC ${BID_LIBRARY})
 
     target_link_libraries(hft_lib PUBLIC twsapi_vendor)
   endif()

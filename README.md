@@ -143,3 +143,9 @@ The IBKR-enabled build now expects two extra link dependencies in CI:
 ## Shared protobuf recommendation
 
 For the IBKR-enabled Linux build, protobuf 29.3 should be built as a shared library (`-Dprotobuf_BUILD_SHARED_LIBS=ON`). This keeps the generated-code/runtime version matched while reducing static-link Abseil dependency issues.
+
+
+## Intel decimal runtime detection
+
+CMake now fails explicitly if the BID/intel decimal runtime cannot be found, instead of silently continuing to the final link step.
+CI also prints the installed `libintelrdfpmath-dev` file list and linker cache matches to make Linux runner differences visible.

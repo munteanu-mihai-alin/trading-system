@@ -143,7 +143,8 @@ if(HFT_ENABLE_IBKR)
 
     find_library(BID_LIBRARY
       NAMES intelrdfpmath bid libbid libintelrdfpmath
-      PATH_SUFFIXES lib lib64
+      PATHS /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/local/lib
+      PATH_SUFFIXES lib lib64 x86_64-linux-gnu
     )
     if(NOT BID_LIBRARY)
       message(FATAL_ERROR "Intel decimal runtime not found; install libintelrdfpmath-dev or provide a BID-compatible library")

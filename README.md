@@ -149,3 +149,8 @@ For the IBKR-enabled Linux build, protobuf 29.3 should be built as a shared libr
 
 CMake now fails explicitly if the BID/intel decimal runtime cannot be found, instead of silently continuing to the final link step.
 CI also prints the installed `libintelrdfpmath-dev` file list and linker cache matches to make Linux runner differences visible.
+
+
+## Wider Linux decimal runtime search
+
+CMake now searches common Linux library directories directly for the Intel decimal runtime, and CI prints the installed package file list plus linker cache entries before configuring the IBKR build.

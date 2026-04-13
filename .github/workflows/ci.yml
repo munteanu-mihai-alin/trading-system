@@ -75,7 +75,7 @@ jobs:
       - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev
+          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev libintelrdfpmath-dev
 
       - name: Install protobuf 29.3 source tree
         run: |
@@ -119,3 +119,10 @@ jobs:
       - name: Build IBKR target
         run: |
           cmake --build build-ibkr-ci -j"$(nproc)"
+
+
+      - name: Show decimal runtime files
+        run: |
+          dpkg -L libintelrdfpmath-dev || true
+          ldconfig -p | grep -i rdfp || true
+          find /usr /usr/local -type f \( -name '*rdfpmath*' -o -name '*bid*' \) 2>/dev/null | sort || true

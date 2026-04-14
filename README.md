@@ -159,3 +159,8 @@ CMake now searches common Linux library directories directly for the Intel decim
 ## CI ordering fix for decimal runtime diagnostics
 
 The protobuf/decimal diagnostics now run before the IBKR configure step, so missing decimal-runtime details are visible even when configuration fails early.
+
+
+## Dedicated CI decimal-runtime inspection step
+
+The IBKR CI job now includes a standalone `Inspect decimal runtime package` step before configuration.

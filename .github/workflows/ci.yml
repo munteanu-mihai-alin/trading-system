@@ -103,12 +103,8 @@ jobs:
           sudo ldconfig
 
 
-      - name: Show protobuf and dependency artifacts
+      - name: Inspect decimal runtime package
         run: |
-          protoc --version
-          test -f /usr/local/include/google/protobuf/runtime_version.h
-          test -f /usr/local/lib/cmake/absl/abslConfig.cmake
-          ldconfig -p | grep -E 'libprotobuf\.so' || true
           dpkg -L libintelrdfpmath-dev || true
           ldconfig -p | grep -i rdfp || true
           find /usr /usr/local -type f \( -name '*rdfpmath*' -o -name '*bid*' \) 2>/dev/null | sort || true

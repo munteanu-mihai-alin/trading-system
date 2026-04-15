@@ -142,7 +142,16 @@ if(HFT_ENABLE_IBKR)
     endif()
 
     find_library(BID_LIBRARY
-      NAMES intelrdfpmath bid libbid libintelrdfpmath
+      NAMES
+        intelrdfpmath bid libbid libintelrdfpmath
+        bidgcc000 bidgcc000b
+        bidgcc001 bidgcc001b
+        bidgcc010 bidgcc010b
+        bidgcc011 bidgcc011b
+        bidgcc100 bidgcc100b
+        bidgcc101 bidgcc101b
+        bidgcc110 bidgcc110b
+        bidgcc111 bidgcc111b
       PATHS /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/local/lib
       PATH_SUFFIXES lib lib64 x86_64-linux-gnu
     )

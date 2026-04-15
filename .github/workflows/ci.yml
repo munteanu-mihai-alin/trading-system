@@ -108,6 +108,7 @@ jobs:
           dpkg -L libintelrdfpmath-dev || true
           ldconfig -p | grep -i rdfp || true
           find /usr /usr/local -type f \( -name '*rdfpmath*' -o -name '*bid*' \) 2>/dev/null | sort || true
+          nm -A /usr/lib/x86_64-linux-gnu/libbidgcc*.a 2>/dev/null | grep -E '__bid64_to_string|__bid64_from_string' || true
 
       - name: Configure IBKR build
         run: |

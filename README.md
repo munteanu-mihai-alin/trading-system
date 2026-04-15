@@ -164,3 +164,9 @@ The protobuf/decimal diagnostics now run before the IBKR configure step, so miss
 ## Dedicated CI decimal-runtime inspection step
 
 The IBKR CI job now includes a standalone `Inspect decimal runtime package` step before configuration.
+
+
+## Linux BID archive detection
+
+The CI decimal-runtime inspection now scans `/usr/lib/x86_64-linux-gnu/libbidgcc*.a` with `nm` to identify which archive exports `__bid64_to_string` and `__bid64_from_string`.
+CMake also searches the `bidgcc` archive names explicitly.

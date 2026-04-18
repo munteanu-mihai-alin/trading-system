@@ -26,7 +26,7 @@ DOWNLOADS_DIR="${THIRD_PARTY_DIR}/_downloads"
 PROTOBUF_TAG="${PROTOBUF_TAG:-v29.3}"
 PROTOBUF_REPO_URL="https://github.com/protocolbuffers/protobuf.git"
 INTEL_DEC_URL="${INTEL_DEC_URL:-https://www.netlib.org/misc/intel/IntelRDFPMathLib20U4.tar.gz}"
-IBKR_API_DIR="${THIRD_PARTY_DIR}/twsapi"
+IBKR_API_DIR="${THIRD_PARTY_DIR}/twsapi/client"
 
 if [[ -z "${IBKR_API_DIR}" ]]; then
   echo "Set IBKR_API_DIR first, for example:"
@@ -68,10 +68,6 @@ else
   tar -xzf "${DOWNLOADS_DIR}/IntelRDFPMathLib20U4.tar.gz" -C "${THIRD_PARTY_DIR}"
 fi
 
-IBKR_CLIENT_DIR="${IBKR_API_DIR}"
-if [[ -d "${IBKR_API_DIR}/client" ]]; then
-  IBKR_CLIENT_DIR="${IBKR_API_DIR}/client"
-fi
 
 echo "Done."
 echo "Staged source trees:"

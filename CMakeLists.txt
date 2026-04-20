@@ -47,6 +47,7 @@ target_link_libraries(hft_tests PRIVATE hft_lib)
 enable_testing()
 add_test(NAME hft_tests COMMAND hft_tests)
 
+# TWS vendor linkage fix
 if(HFT_ENABLE_IBKR)
   find_package(Protobuf CONFIG REQUIRED)
 
@@ -54,6 +55,19 @@ if(HFT_ENABLE_IBKR)
     message(FATAL_ERROR
             "HFT_ENABLE_IBKR=ON requires protobuf::libprotobuf from the installed "
             "protobuf CMake package. Check CMAKE_PREFIX_PATH."
+    )
+  endif()
+
+  find_library(INTEL_RDFP_LIBRARY
+          NAMES intelrdfpmath libintelrdfpmath
+          PATHS
+          "${CMAKE_PREFIX_PATH}/lib"
+          NO_DEFAULT_PATH
+  )
+
+  if(NOT INTEL_RDFP_LIBRARY)
+    message(FATAL_ERROR
+            "Intel decimal runtime not found. Expected libintelrdfpmath in CMAKE_PREFIX_PATH."
     )
   endif()
 
@@ -76,12 +90,28 @@ if(HFT_ENABLE_IBKR)
           ${TWSAPI_CLIENT_DIR}
           ${TWSAPI_CLIENT_DIR}/protobuf
   )
-  target_link_libraries(twsapi_vendor PUBLIC protobuf::libprotobuf)
+
+  target_link_libraries(twsapi_vendor PUBLIC
+          protobuf::libprotobuf
+          "${INTEL_RDFP_LIBRARY}"
+  )
+
+  if(WIN32)
+    target_link_libraries(twsapi_vendor PUBLIC ws2_32)
+  endif()
 
   target_compile_definitions(hft_lib PUBLIC HFT_ENABLE_IBKR=1)
   target_include_directories(hft_lib PUBLIC
           ${TWSAPI_CLIENT_DIR}
           ${TWSAPI_CLIENT_DIR}/protobuf
   )
-  target_link_libraries(hft_lib PUBLIC twsapi_vendor protobuf::libprotobuf)
+  target_link_libraries(hft_lib PUBLIC
+          twsapi_vendor
+          protobuf::libprotobuf
+          "${INTEL_RDFP_LIBRARY}"
+  )
+
+  if(WIN32)
+    target_link_libraries(hft_lib PUBLIC ws2_32)
+  endif()
 endif()

@@ -65,7 +65,6 @@ jobs:
           name: coverage-lcov
           path: build-coverage/coverage.filtered.info
 
-
   ibkr-build:
     runs-on: ubuntu-latest
     steps:
@@ -75,7 +74,7 @@ jobs:
       - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev libintelrdfpmath-dev
+          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev
 
       - name: Install protobuf 29.3 source tree
         run: |
@@ -83,25 +82,17 @@ jobs:
 
       - name: Install matching Abseil from protobuf submodule
         run: |
-          cmake -S protobuf-29.3/third_party/abseil-cpp -B absl-build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DABSL_PROPAGATE_CXX_STD=ON
+          cmake -S protobuf-29.3/third_party/abseil-cpp -B absl-build             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/usr/local             -DABSL_PROPAGATE_CXX_STD=ON
           cmake --build absl-build -j"$(nproc)"
           sudo cmake --install absl-build
           sudo ldconfig
 
       - name: Install protobuf 29.3 from source
         run: |
-          cmake -S protobuf-29.3 -B protobuf-build \
-            -Dprotobuf_BUILD_TESTS=OFF \
-            -Dprotobuf_BUILD_SHARED_LIBS=ON \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake -S protobuf-29.3 -B protobuf-build             -Dprotobuf_BUILD_TESTS=OFF             -Dprotobuf_BUILD_SHARED_LIBS=ON             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/usr/local
           cmake --build protobuf-build -j"$(nproc)"
           sudo cmake --install protobuf-build
           sudo ldconfig
-
 
       - name: Inspect decimal runtime package
         run: |
@@ -112,9 +103,8 @@ jobs:
 
       - name: Configure IBKR build
         run: |
-          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON
+          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH=/usr/local
 
       - name: Build IBKR target
         run: |
           cmake --build build-ibkr-ci -j"$(nproc)"
-

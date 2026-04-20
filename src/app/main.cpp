@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -11,38 +12,62 @@
 #include "models/symbol_universe.hpp"
 
 int main() {
-  const auto cfg = hft::AppConfig::load_from_file("config.ini");
+  const std::string config_path = "config.ini";
+  std::cout << "Loading config from: "
+            << std::filesystem::absolute(config_path).string() << std::endl;
+
+  const auto cfg = hft::AppConfig::load_from_file(config_path);
   const auto live_cfg = hft::LiveTradingConfig::from_app(cfg);
+  std::cout << "Config loaded. mode=" << live_cfg.mode_name()
+            << " steps=" << cfg.steps << " host=" << cfg.host
+            << " client_id=" << cfg.client_id << std::endl;
 
   std::unique_ptr<hft::IBroker> broker;
   hft::IBKRClient* raw_ibkr = nullptr;
   if (live_cfg.use_real_ibkr) {
+    std::cout << "Creating real IBKR broker" << std::endl;
     broker = std::make_unique<hft::IBKRClient>();
     raw_ibkr = static_cast<hft::IBKRClient*>(broker.get());
   } else {
+    std::cout << "Creating simulated/paper broker" << std::endl;
     broker = std::make_unique<hft::PaperBrokerSim>();
   }
 
   hft::LiveExecutionEngine engine(live_cfg, std::move(broker));
+  std::cout << "Starting engine..." << std::endl;
   if (!engine.start()) {
-    std::cerr << "Failed to connect broker\n";
+    std::cerr << "Failed to connect broker" << std::endl;
     return 1;
   }
+  std::cout << "Engine started." << std::endl;
 
   engine.initialize_universe(30);
+  std::cout << "Universe initialized." << std::endl;
   std::vector<std::string> symbols;
   for (const auto& item : hft::kSymbolCompanyList)
     symbols.push_back(item.first);
+  std::cout << "Subscribing live books for " << symbols.size() << " symbols..."
+            << std::endl;
   engine.subscribe_live_books(symbols);
-  if (raw_ibkr != nullptr)
+  std::cout << "Subscriptions requested." << std::endl;
+
+  if (raw_ibkr != nullptr) {
+    std::cout << "Entering IBKR production event loop. This may block until "
+                 "disconnect."
+              << std::endl;
     raw_ibkr->start_production_event_loop();
+    std::cout << "IBKR production event loop returned." << std::endl;
+  }
+
+  std::cout << "Running " << cfg.steps << " engine steps..." << std::endl;
   for (int t = 0; t < cfg.steps; ++t) {
     engine.step(t);
   }
   engine.stop();
+  std::cout << "Engine stopped." << std::endl;
 
   const auto summary = hft::summarize_cycles(engine.ranking.cycle_samples);
-  std::cout << summary << "\n";
+  std::cout << summary << std::endl;
   std::cout << "Validation: calibration="
             << engine.ranking.validation.calibration_error()
             << " rolling=" << engine.ranking.validation.rolling_error_mean()
@@ -50,8 +75,8 @@ int main() {
             << (engine.ranking.validation.degradation_alarm(0.35, 0.35, 0.60)
                     ? "ON"
                     : "OFF")
-            << "\n";
-  std::cout << "Mode: " << live_cfg.mode_name() << "\n";
-  std::cout << "Done. Results in shadow_results.csv\n";
+            << std::endl;
+  std::cout << "Mode: " << live_cfg.mode_name() << std::endl;
+  std::cout << "Done. Results in shadow_results.csv" << std::endl;
   return 0;
 }

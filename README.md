@@ -259,3 +259,43 @@ Deleted the original IBKR block at lines 31–63 of `CMakeLists.txt`, leaving on
 ## Protobuf linkage target fix
 
 Replaced `protobuf::libprotobuf` in the newer TWS linkage block with `${PROTOBUF_LIBRARY}` and added `${PROTOBUF_INCLUDE_DIR}` to the relevant include directories, matching the existing protobuf detection style in this project.
+
+
+## Regenerated protobuf include/library fix
+
+The IBKR/TWS block now uses `find_package(Protobuf REQUIRED)` with `Protobuf_INCLUDE_DIRS` and `Protobuf_LIBRARIES`, and any older protobuf-detection IBKR block was removed before writing the clean replacement.
+
+
+## Rebuilt clean CMake tail
+
+Replaced the malformed tail of `CMakeLists.txt` with one clean IBKR/TWS block after the test target section to fix residual unmatched flow-control statements.
+
+
+## Removed stray partial IBKR block
+
+Deleted the stray partial duplicate IBKR/TWS block at lines 51–80 of `CMakeLists.txt`. That block opened `if(HFT_ENABLE_IBKR)` but did not close it, which caused the flow-control nesting error.
+
+
+## Protobuf config-target linkage fix
+
+The IBKR/TWS block now uses `find_package(Protobuf CONFIG REQUIRED)` and links against `protobuf::libprotobuf` so CMake can carry protobuf's transitive Abseil dependencies on Windows/MinGW.
+
+
+## Removed stale protobuf duplicate block
+
+Deleted the stale duplicate IBKR/TWS protobuf block at lines 111–155 of `CMakeLists.txt`, leaving only the config-target-based block.
+
+
+## TWS API kept in repo
+
+The UCRT scripts now leave the TWS API in `third_party/twsapi/client` and do not stage or copy it. This avoids accidental `client/client` nesting when the IBKR API is already present in the repository.
+
+
+## Fixed UCRT staging script
+
+Rebuilt `scripts/stage_third_party_sources_ucrt.sh` as a small explicit script that validates `third_party/twsapi/client` and performs no TWS API copying.
+
+
+## UCRT dependency build script restored
+
+Restored the full `scripts/build_third_party_dependencies_ucrt.sh` structure and changed only the final IBKR/TWS handling so it no longer copies `third_party/twsapi/client` into `dependencies`.

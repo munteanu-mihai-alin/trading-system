@@ -42,28 +42,15 @@ cmake --version | head -n 1 || true
 
 echo "==> Building Abseil from third_party/abseil-cpp"
 rm -rf "${BUILD_DIR}/abseil"
-cmake -S "${ABSEIL_SRC}" -B "${BUILD_DIR}/abseil" \
-  -G "MinGW Makefiles" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-  -DBUILD_SHARED_LIBS=ON \
-  -DABSL_PROPAGATE_CXX_STD=ON
+cmake -S "${ABSEIL_SRC}" -B "${BUILD_DIR}/abseil"   -G "MinGW Makefiles"   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"   -DBUILD_SHARED_LIBS=ON   -DABSL_PROPAGATE_CXX_STD=ON
 cmake --build "${BUILD_DIR}/abseil" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/abseil"
 
 echo "==> Building protobuf 29.3 from third_party/protobuf-29.3 (static libs for MinGW stability)"
 rm -rf "${BUILD_DIR}/protobuf"
-cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf" \
-  -G "MinGW Makefiles" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-  -DCMAKE_PREFIX_PATH="${INSTALL_DIR}" \
-  -Dprotobuf_BUILD_TESTS=OFF \
-  -Dprotobuf_BUILD_SHARED_LIBS=OFF \
-  -Dprotobuf_ABSL_PROVIDER=package
+cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf"   -G "MinGW Makefiles"   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"   -DCMAKE_PREFIX_PATH="${INSTALL_DIR}"   -Dprotobuf_BUILD_TESTS=OFF   -Dprotobuf_BUILD_SHARED_LIBS=OFF   -Dprotobuf_ABSL_PROVIDER=package
 cmake --build "${BUILD_DIR}/protobuf" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/protobuf"
-
 
 echo "==> Building Intel decimal library from third_party/IntelRDFPMathLib20U4"
 
@@ -161,10 +148,7 @@ printf 'Generated wrapper path: %s
 ' "${RDFP_BUILD_SRC}/CMakeLists.txt"
 cat "${RDFP_BUILD_SRC}/CMakeLists.txt"
 
-cmake -S "${RDFP_BUILD_SRC}" -B "${RDFP_BUILD_DIR}" \
-  -G "MinGW Makefiles" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"
+cmake -S "${RDFP_BUILD_SRC}" -B "${RDFP_BUILD_DIR}"   -G "MinGW Makefiles"   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"
 
 cmake --build "${RDFP_BUILD_DIR}" -j"$(nproc)"
 cmake --install "${RDFP_BUILD_DIR}"
@@ -177,10 +161,8 @@ fi
 echo "==> Built Intel decimal library:"
 find "${INSTALL_DIR}/lib" -maxdepth 1 -type f \( -name 'libintelrdfpmath.a' -o -name 'libintelrdfpmath.dll.a' -o -name 'intelrdfpmath.lib' \) | sort || true
 
-echo "==> Copying IBKR headers/source snapshot into dependencies for local reference"
-mkdir -p "${DEPS_DIR}/ibkr-client"
-rm -rf "${DEPS_DIR}/ibkr-client/client"
-cp -R "${IBKR_SRC}" "${DEPS_DIR}/ibkr-client/client"
+echo "==> Leaving IBKR/TWS API in repo at third_party/twsapi/client"
+echo "==> No IBKR/TWS staging or copying performed"
 
 echo "Done."
 echo "Installed dependency prefix: ${INSTALL_DIR}"
@@ -191,26 +173,14 @@ find "${INSTALL_DIR}/lib" -maxdepth 1 -type f | sort || true
 
 cat <<EOF
 Next step for your project:
-  cmake -S . -B build-ucrt-ibkr \
-    -G "MinGW Makefiles" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DHFT_ENABLE_IBKR=ON \
-    -DCMAKE_PREFIX_PATH="${INSTALL_DIR}"
+  cmake -S . -B build-ucrt-ibkr     -G "MinGW Makefiles"     -DCMAKE_BUILD_TYPE=Release     -DHFT_ENABLE_IBKR=ON     -DCMAKE_PREFIX_PATH="${INSTALL_DIR}"
 EOF
-
 
 # Note:
 # protobuf is built as static libraries on MinGW/UCRT because shared libprotoc/libprotobuf
 # linking can fail on this toolchain with unresolved internal template symbols.
 
-
-# Note:
-# On MinGW/UCRT, the Intel decimal source tree is not built by this script.
-# Instead, headers are copied from third_party/IntelRDFPMathLib20U4 and BID
-# archives (libbidgcc*.a) are collected from MSYS2 library directories.
-
-
 # Note:
 # On MinGW/UCRT, this script now builds the Intel decimal library from
-# third_party/IntelRDFPMathLib20U4/LIBRARY/src using a generated CMake wrapper
+# third_party/IntelRDFPMathLib20U4 source using a generated CMake wrapper
 # and installs libintelrdfpmath.a into dependencies/ucrt64/install/lib.

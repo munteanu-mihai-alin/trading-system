@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -65,6 +68,36 @@ jobs:
           name: coverage-lcov
           path: build-coverage/coverage.filtered.info
 
+  linux-deps-release:
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '%REBUILD_DEPS')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install base dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ git curl tar gh libintelrdfpmath-dev
+
+      - name: Build Linux dependency bundle
+        run: |
+          chmod +x scripts/rebuild_linux_deps_ci.sh
+          ./scripts/rebuild_linux_deps_ci.sh
+
+      - name: Upload Linux dependency artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deps-ubuntu-latest
+          path: dependencies/linux/linux-deps-ubuntu-latest.tar.gz
+
+      - name: Create or update linux-deps release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view linux-deps >/dev/null 2>&1 ||             gh release create linux-deps --title "linux-deps" --notes "Latest reusable Linux dependency bundle for IBKR CI."
+          gh release upload linux-deps dependencies/linux/linux-deps-ubuntu-latest.tar.gz --clobber
+
   ibkr-build:
     runs-on: ubuntu-latest
     steps:
@@ -74,36 +107,20 @@ jobs:
       - name: Install base dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip libintelrdfpmath-dev
+          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip gh libintelrdfpmath-dev
 
-      - name: Install protobuf 29.3 source tree
+      - name: Download prebuilt Linux dependency bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --branch v29.3 --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git protobuf-29.3
-
-      - name: Install matching Abseil from protobuf submodule
-        run: |
-          cmake -S protobuf-29.3/third_party/abseil-cpp -B absl-build             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/usr/local             -DABSL_PROPAGATE_CXX_STD=ON
-          cmake --build absl-build -j"$(nproc)"
-          sudo cmake --install absl-build
-          sudo ldconfig
-
-      - name: Install protobuf 29.3 from source
-        run: |
-          cmake -S protobuf-29.3 -B protobuf-build             -Dprotobuf_BUILD_TESTS=OFF             -Dprotobuf_BUILD_SHARED_LIBS=ON             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/usr/local
-          cmake --build protobuf-build -j"$(nproc)"
-          sudo cmake --install protobuf-build
-          sudo ldconfig
-
-      - name: Inspect decimal runtime package
-        run: |
-          dpkg -L libintelrdfpmath-dev || true
-          ldconfig -p | grep -i rdfp || true
-          find /usr /usr/local -type f \( -name '*rdfpmath*' -o -name '*bid*' \) 2>/dev/null | sort || true
-          nm -A /usr/lib/x86_64-linux-gnu/libbidgcc*.a 2>/dev/null | grep -E '__bid64_to_string|__bid64_from_string' || true
+          mkdir -p dependencies/linux
+          gh release download linux-deps -p 'linux-deps-ubuntu-latest.tar.gz' -D dependencies/linux
+          tar -xzf dependencies/linux/linux-deps-ubuntu-latest.tar.gz -C .
+          find dependencies/linux/install -maxdepth 2 -type f | sort | head -n 50 || true
 
       - name: Configure IBKR build
         run: |
-          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH=/usr/local
+          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/dependencies/linux/install"
 
       - name: Build IBKR target
         run: |

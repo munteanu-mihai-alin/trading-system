@@ -95,33 +95,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view linux-deps >/dev/null 2>&1 ||             gh release create linux-deps --title "linux-deps" --notes "Latest reusable Linux dependency bundle for IBKR CI."
+          gh release view linux-deps >/dev/null 2>&1 || gh release create linux-deps --title "linux-deps" --notes "Latest reusable Linux dependency bundle for IBKR CI."
           gh release upload linux-deps dependencies/linux/linux-deps-ubuntu-latest.tar.gz --clobber
 
-  ibkr-build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+ibkr-build:
+  runs-on: ubuntu-latest
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Install base dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip gh libintelrdfpmath-dev
+    - name: Install base dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ make autoconf automake libtool pkg-config curl unzip gh libintelrdfpmath-dev
 
-      - name: Download prebuilt Linux dependency bundle
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p dependencies/linux
-          gh release download linux-deps -p 'linux-deps-ubuntu-latest.tar.gz' -D dependencies/linux
-          tar -xzf dependencies/linux/linux-deps-ubuntu-latest.tar.gz -C .
-          find dependencies/linux/install -maxdepth 2 -type f | sort | head -n 50 || true
+    - name: Restore or rebuild Linux dependency bundle
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        mkdir -p dependencies/linux
+        if gh release download linux-deps -p 'linux-deps-ubuntu-latest.tar.gz' -D dependencies/linux; then
+          echo "Using prebuilt linux-deps release asset"
+        else
+          echo "linux-deps release asset not found; rebuilding dependencies"
+          chmod +x scripts/rebuild_linux_deps_ci.sh
+          ./scripts/rebuild_linux_deps_ci.sh
+          gh release view linux-deps >/dev/null 2>&1 || gh release create linux-deps --title "linux-deps" --notes "Latest reusable Linux dependency bundle for IBKR CI."
+          gh release upload linux-deps dependencies/linux/linux-deps-ubuntu-latest.tar.gz --clobber
+        fi
+        tar -xzf dependencies/linux/linux-deps-ubuntu-latest.tar.gz -C .
+        test -d dependencies/linux/install
+        find dependencies/linux/install -maxdepth 2 -type f | sort | head -n 50 || true
 
-      - name: Configure IBKR build
-        run: |
-          cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/dependencies/linux/install"
+    - name: Configure IBKR build
+      run: |
+        cmake -S . -B build-ibkr-ci -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/dependencies/linux/install"
 
-      - name: Build IBKR target
-        run: |
-          cmake --build build-ibkr-ci -j"$(nproc)"
+    - name: Build IBKR target
+      run: |
+        cmake --build build-ibkr-ci -j"$(nproc)"

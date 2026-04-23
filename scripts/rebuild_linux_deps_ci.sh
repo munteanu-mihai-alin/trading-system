@@ -9,7 +9,7 @@ set -euo pipefail
 # Environment overrides:
 #   PROTOBUF_TAG=v29.3
 #   ROOT_DIR=/path/to/repo
-#   DRY_RUN=1        # print planned work and exit before cloning/building
+#   DRY_RUN=1  # print planned work and exit before cloning/building
 
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 DEPS_DIR="${ROOT_DIR}/dependencies/linux"
@@ -44,7 +44,7 @@ which git || true
 git --version || true
 
 echo "==> Cloning protobuf ${PROTOBUF_TAG} with submodules"
-git clone --branch "${PROTOBUF_TAG}" --depth 1 --recurse-submodules   https://github.com/protocolbuffers/protobuf.git "${PROTOBUF_SRC}"
+git clone --branch "${PROTOBUF_TAG}" --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git "${PROTOBUF_SRC}"
 
 test -d "${ABSEIL_SRC}" || { echo "Missing ${ABSEIL_SRC}"; exit 1; }
 
@@ -67,11 +67,13 @@ for hdr in /usr/include/bid_conf.h /usr/include/bid_functions.h; do
 done
 
 copied_bid=0
-for lib in /usr/lib/x86_64-linux-gnu/libbidgcc*.a /usr/lib/x86_64-linux-gnu/libintelrdfpmath*; do
-  if compgen -G "${lib}" > /dev/null; then
-    cp -f ${lib} "${INSTALL_DIR}/lib/"
+for pattern in /usr/lib/x86_64-linux-gnu/libbidgcc*.a /usr/lib/x86_64-linux-gnu/libintelrdfpmath*; do
+  shopt -s nullglob
+  for lib in ${pattern}; do
+    cp -f "${lib}" "${INSTALL_DIR}/lib/"
     copied_bid=1
-  fi
+  done
+  shopt -u nullglob
 done
 
 if [[ ${copied_bid} -eq 0 ]]; then

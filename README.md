@@ -1,301 +1,238 @@
-# HFT Merged Recovered
+# trading-system
 
-This project consolidates the previously generated code into a single modular codebase.
+A compact research and integration project for ranking, simulation, validation, and optional Interactive Brokers / TWS connectivity. The default build works without IBKR. The IBKR-enabled build uses the vendored TWS API under `third_party/twsapi/client` together with protobuf and the Intel decimal runtime.
 
-## Main components
+## Project layout
 
-- `include/models/`:
-  Hawkes, OU, microstructure helpers, stock state, trade stats
-- `include/execution/`:
-  latency model, transaction cost model, slippage model, fill model, execution score
-- `include/sim/`:
-  FIFO order book, queue tracking, simulator
-- `include/validation/`:
-  calibration bins, KS statistic, rolling error, degradation alarm
-- `include/engine/`:
-  ranking engine interface and implementation
-- `include/bench/`:
-  RDTSC utilities and latency summary
-- `tests/`:
-  unit, math, simulator, and validation tests
+Top-level structure:
 
-## Build
+- `include/`
+  - public headers for models, execution, simulation, validation, engine, config, and broker abstractions
+- `src/lib/`
+  - reusable library code such as configuration loading, ranking, IBKR integration, and live execution wiring
+- `src/app/`
+  - application entry point (`hft_app`)
+- `tests/`
+  - unit, math, simulation, validation, and integration tests (`hft_tests`)
+- `third_party/`
+  - vendored or staged source trees
+  - expected IBKR/TWS location: `third_party/twsapi/client`
+- `scripts/`
+  - local helper scripts for formatting, coverage, dependency staging, dependency builds, and CI bundle generation
+- `.github/workflows/`
+  - GitHub Actions workflows
+
+## Build targets
+
+Root `CMakeLists.txt` defines:
+
+- `hft_lib`
+  - main project library
+- `hft_app`
+  - application executable
+- `hft_tests`
+  - test executable
+- `twsapi_vendor`
+  - only when `HFT_ENABLE_IBKR=ON`; builds the vendored TWS API as a dedicated static library
+
+## Default local build
+
+This is the simplest build and does not require IBKR dependencies.
 
 ```bash
-mkdir build
-cd build
-cmake ..
-make -j
-ctest --output-on-failure
-./hft_app
+cmake -S . -B build
+cmake --build build -j"$(nproc)"
+ctest --test-dir build --output-on-failure
 ```
+
+Expected outputs with a single-config generator such as Unix Makefiles or MinGW Makefiles:
+
+- `build/hft_app` or `build/hft_app.exe`
+- `build/hft_tests` or `build/hft_tests.exe`
+
+## IBKR-enabled local build
+
+The IBKR build expects:
+
+- vendored TWS API at `third_party/twsapi/client`
+- protobuf available through `CMAKE_PREFIX_PATH`
+- Intel decimal runtime available through `CMAKE_PREFIX_PATH` or system library paths
+
+Example:
+
+```bash
+cmake -S . -B build-ibkr -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH="/path/to/deps/install"
+cmake --build build-ibkr -j"$(nproc)"
+```
+
+The app loads `config.ini` using a relative path, so run it from a working directory that contains the config file.
+
+## MinGW / UCRT local build
+
+The Windows/MSYS2 UCRT flow is split into two phases:
+
+1. stage or validate source trees in `third_party/`
+2. build third-party dependencies into `dependencies/ucrt64/install`
+
+Stage/validate:
+
+```bash
+./scripts/stage_third_party_sources_ucrt.sh
+```
+
+Build dependencies:
+
+```bash
+./scripts/build_third_party_dependencies_ucrt.sh
+```
+
+Then configure the project:
+
+```bash
+cmake -S . -B build-ucrt-ibkr \
+  -G "MinGW Makefiles" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHFT_ENABLE_IBKR=ON \
+  -DCMAKE_PREFIX_PATH="/path/to/repo/dependencies/ucrt64/install"
+cmake --build build-ucrt-ibkr -j"$(nproc)"
+```
+
+### Expected UCRT locations
+
+- staged source trees:
+  - `third_party/protobuf-29.3`
+  - `third_party/abseil-cpp`
+  - `third_party/IntelRDFPMathLib20U4`
+  - `third_party/twsapi/client`
+- dependency build tree:
+  - `dependencies/ucrt64/build`
+- installed UCRT dependency prefix:
+  - `dependencies/ucrt64/install`
+- installed headers:
+  - `dependencies/ucrt64/install/include`
+- installed libraries:
+  - `dependencies/ucrt64/install/lib`
+
+## Linux CI dependency bundle
+
+CI can build a reusable Linux dependency bundle for the IBKR-enabled build.
+
+Producer script:
+
+```bash
+./scripts/rebuild_linux_deps_ci.sh
+```
+
+This script produces:
+
+- install prefix:
+  - `dependencies/linux/install`
+- archive:
+  - `dependencies/linux/linux-deps-ubuntu-latest.tar.gz`
+
+The script builds:
+
+- Abseil from protobuf's submodule
+- protobuf 29.3
+- Intel decimal runtime bundle contents copied into the install prefix
+
+### Linux CI release asset
+
+The CI workflow can publish the archive as a release asset named:
+
+- `linux-deps-ubuntu-latest.tar.gz`
+
+under the GitHub release:
+
+- `linux-deps`
+
+The intended flow is:
+
+- normal CI runs try to download the existing `linux-deps` asset
+- if the asset does not exist yet, CI can rebuild and republish it
+- an explicit refresh path is gated by commit messages containing `%REBUILD_DEPS`
+
+## CI overview
+
+Current workflow responsibilities are:
+
+- `build-and-test`
+  - default configure, build, and test path without special IBKR dependency setup
+- `coverage`
+  - runs the coverage helper script and uploads coverage artifacts
+- `linux-deps-release`
+  - builds the reusable Linux dependency bundle
+  - intended to run only on pushes whose commit message contains `%REBUILD_DEPS`
+- `ibkr-build`
+  - restores the Linux dependency bundle from the `linux-deps` release asset, or rebuilds it if missing
+  - configures the root project with `-DHFT_ENABLE_IBKR=ON`
+  - points `CMAKE_PREFIX_PATH` at `dependencies/linux/install`
+
+## Script reference
+
+### Formatting and coverage
+
+- `scripts/check_clang_format.sh`
+  - formatting check used by CI
+- `scripts/run_coverage_ci.sh`
+  - coverage helper used by the coverage workflow job
+
+### UCRT / Windows helper scripts
+
+- `scripts/stage_third_party_sources_ucrt.sh`
+  - prepares or validates required source trees under `third_party/`
+  - should leave the vendored TWS API in `third_party/twsapi/client`
+- `scripts/build_third_party_dependencies_ucrt.sh`
+  - builds third-party dependencies from `third_party/`
+  - installs them into `dependencies/ucrt64/install`
+
+### Linux CI dependency script
+
+- `scripts/rebuild_linux_deps_ci.sh`
+  - builds the Linux CI dependency bundle into `dependencies/linux/install`
+  - archives it as `dependencies/linux/linux-deps-ubuntu-latest.tar.gz`
+
+### Workflow generation helper
+
+- `scripts/generate_ci_workflow.sh`
+  - rewrites `.github/workflows/ci.yml` from a bash here-document
+  - useful if you want the workflow file to be regenerated from one script source
+
+## CMake notes
+
+- Root entry point:
+  - `CMakeLists.txt`
+- Main option:
+  - `HFT_ENABLE_IBKR`
+- Default:
+  - `OFF`
+- IBKR-enabled builds expect:
+  - vendored TWS API sources at `third_party/twsapi/client`
+  - protobuf available as a CMake package
+  - Intel decimal runtime library available to CMake/library search
+
+## Runtime notes
+
+- `hft_app` reads `config.ini` through a relative path
+- if `config.ini` cannot be opened, startup diagnostics should report that and the app falls back to defaults
+- if `mode=live`, the IBKR event loop may block before end-of-run summary output
+
+## Repository expectations
+
+For a healthy repo checkout, these locations should exist or be created by scripts:
+
+- root build:
+  - `build/`
+- IBKR build:
+  - `build-ibkr/` or `build-ucrt-ibkr/`
+- vendored TWS API:
+  - `third_party/twsapi/client`
+- Linux dependency bundle output:
+  - `dependencies/linux/install`
+  - `dependencies/linux/linux-deps-ubuntu-latest.tar.gz`
+- UCRT dependency output:
+  - `dependencies/ucrt64/install`
 
 ## Notes
 
-This is a research platform, not a production trading system.
-
-
-## Additive-only change policy
-
-A guard script is included at:
-
-```bash
-scripts/enforce_additive_only.py
-```
-
-Usage:
-
-```bash
-python3 scripts/enforce_additive_only.py --base /path/to/old --candidate /path/to/new
-```
-
-It fails if:
-- any file present in the base project is missing from the candidate project
-- any text line from the base project was removed in the candidate project
-
-This enforces "only add, do not remove" updates.
-
-## IBKR SDK wiring
-
-The project builds without the IBKR SDK by default.
-
-To enable the real SDK:
-
-```bash
-cmake -DHFT_ENABLE_IBKR=ON -DHFT_IBKR_SDK_DIR=/path/to/IBKR ..
-```
-
-Expected SDK layout:
-
-```text
-<IBKR>/source/cppclient/client/
-```
-
-When enabled:
-- `IBKRClient` compiles against the official IBKR C++ API
-- live mode uses `IBKRClient`
-- paper/sim mode uses `PaperBrokerSim`
-
-
-## Vendored TWS API
-
-The project now vendors the uploaded official IBKR C++ client under `third_party/twsapi/client`.
-These files were copied verbatim from `TWS API/source/CppClient/client`.
-
-To try a real IBKR build with the vendored SDK:
-
-```bash
-./scripts/build_vendored_ibkr.sh
-```
-
-Requirements for a real IBKR build:
-- protobuf C++ development headers
-- protobuf runtime library
-
-If those dependencies are unavailable, the project still builds in stub mode with `HFT_ENABLE_IBKR=OFF`.
-
-
-## Protobuf for vendored TWS API
-
-The vendored TWS API C++ client requires protobuf development headers and library when `HFT_ENABLE_IBKR=ON`.
-
-Ubuntu/Debian:
-
-```bash
-sudo apt-get install -y protobuf-compiler libprotobuf-dev
-```
-
-Build with:
-
-```bash
-./scripts/build_vendored_ibkr_with_protobuf.sh
-```
-
-
-## Exact protobuf version for this TWS API bundle
-
-The vendored TWS API protobuf-generated headers require **protobuf 29.3** (C++ runtime 5.29.3). Older distro packages may be missing `google/protobuf/runtime_version.h`, and newer protobuf releases may fail the exact generated-code version check.
-
-
-## Protobuf 29.3 installation note
-
-In CI, protobuf 29.3 should be built with **CMake**, not `./configure`, for the release tarball used here.
-
-
-## Protobuf 29.3 source retrieval note
-
-For CI, protobuf 29.3 should be cloned with `--recurse-submodules` instead of using the release tarball, so the expected dependency tree is present during the CMake build.
-
-
-## IBKR vendor linkage notes
-
-The vendored TWS API is built as a dedicated `twsapi_vendor` static library and linked into `hft_lib`.
-This avoids compiling vendor sources twice and makes protobuf/Abseil/BID dependency handling explicit.
-
-
-## IBKR link dependencies on Linux
-
-The IBKR-enabled build now expects two extra link dependencies in CI:
-1. Matching Abseil, installed from the protobuf 29.3 source tree submodule.
-2. Intel decimal floating-point math runtime, provided on Debian/Ubuntu by `libintelrdfpmath-dev`.
-
-
-## Shared protobuf recommendation
-
-For the IBKR-enabled Linux build, protobuf 29.3 should be built as a shared library (`-Dprotobuf_BUILD_SHARED_LIBS=ON`). This keeps the generated-code/runtime version matched while reducing static-link Abseil dependency issues.
-
-
-## Intel decimal runtime detection
-
-CMake now fails explicitly if the BID/intel decimal runtime cannot be found, instead of silently continuing to the final link step.
-CI also prints the installed `libintelrdfpmath-dev` file list and linker cache matches to make Linux runner differences visible.
-
-
-## Wider Linux decimal runtime search
-
-CMake now searches common Linux library directories directly for the Intel decimal runtime, and CI prints the installed package file list plus linker cache entries before configuring the IBKR build.
-
-
-## CI ordering fix for decimal runtime diagnostics
-
-The protobuf/decimal diagnostics now run before the IBKR configure step, so missing decimal-runtime details are visible even when configuration fails early.
-
-
-## Dedicated CI decimal-runtime inspection step
-
-The IBKR CI job now includes a standalone `Inspect decimal runtime package` step before configuration.
-
-
-## Linux BID archive detection
-
-The CI decimal-runtime inspection now scans `/usr/lib/x86_64-linux-gnu/libbidgcc*.a` with `nm` to identify which archive exports `__bid64_to_string` and `__bid64_from_string`.
-CMake also searches the `bidgcc` archive names explicitly.
-
-
-## UCRT helper scripts
-
-- `scripts/stage_third_party_sources_ucrt.sh` stages dependency source code into `third_party/`.
-- `scripts/build_third_party_dependencies_ucrt.sh` builds from `third_party/` into `dependencies/ucrt64/`.
-
-
-## MinGW/UCRT protobuf build fix
-
-`scripts/build_third_party_dependencies_ucrt.sh` now cleans only `dependencies/ucrt64/build` and `dependencies/ucrt64/install`, never `third_party/`, and builds protobuf 29.3 as static libraries on MinGW/UCRT to avoid shared `libprotoc.dll` link failures.
-
-
-## MinGW/UCRT BID runtime fix
-
-The UCRT dependency build script no longer tries to build the Intel decimal source tree with `make`. Instead it copies headers and collects `libbidgcc*.a` archives from MSYS2 library directories into `dependencies/ucrt64/install/lib`.
-The root `CMakeLists.txt` now also searches `/ucrt64/lib`, `/mingw64/lib`, and `${CMAKE_PREFIX_PATH}/lib` for BID archives.
-
-
-## MSYS2 GCC runtime package check
-
-`scripts/build_third_party_dependencies_ucrt.sh` now checks for `libbidgcc*.a` before the build, tries to install `mingw-w64-ucrt-x86_64-gcc-libs` and `mingw-w64-ucrt-x86_64-gcc` via `pacman` if they are missing, and gives a clearer failure message with a package-content check command if the archives still are not present.
-
-
-## MinGW/UCRT Intel decimal build
-
-`scripts/build_third_party_dependencies_ucrt.sh` now attempts to build the Intel Decimal Floating-Point Math Library from `third_party/IntelRDFPMathLib20U4/LIBRARY/src` using a generated CMake wrapper and installs `libintelrdfpmath.a` into `dependencies/ucrt64/install/lib`.
-This is intended to give the root project a real MinGW/UCRT-built decimal library instead of relying on MSYS2-provided BID archives.
-
-
-## Intel RDFP source directory detection
-
-The UCRT dependency build script now detects the actual `LIBRARY/src` directory under `third_party/IntelRDFPMathLib20U4` and enumerates the `.c` source files explicitly before generating the MinGW CMake wrapper.
-
-
-## Flexible Intel RDFP source detection
-
-The UCRT dependency build script now detects the Intel RDFP source directory by searching for `bid_functions.h`, `bid_conf.h`, or the densest directory of `.c` files under `third_party/IntelRDFPMathLib20U4`, instead of assuming `LIBRARY/src` exists at a fixed path.
-
-
-## Intel RDFP wrapper source glob fix
-
-The generated MinGW CMake wrapper now uses `file(GLOB ...)` inside CMake against the detected Intel RDFP source directory, instead of embedding a shell-generated explicit source list.
-
-
-## Intel RDFP recursive source build
-
-The UCRT dependency build script now detects an Intel RDFP source root and uses `file(GLOB_RECURSE ...)` to compile `.c` files recursively under that root, instead of requiring source files directly in one directory.
-
-
-## Intel RDFP path normalization for CMake
-
-The UCRT dependency build script now converts the detected Intel RDFP source root to a Windows-style path with `cygpath -m` before generating the wrapper CMake file. This avoids CMake glob failures on `/d/...` style MSYS paths.
-
-
-## Intel RDFP wrapper debug output
-
-The UCRT dependency build script now prints the detected Intel RDFP `.c` files and the generated wrapper `CMakeLists.txt` before invoking CMake for the Intel decimal library build.
-
-
-## Intel RDFP normalized wrapper variable
-
-The generated Intel RDFP wrapper now embeds the normalized Windows-style source path in a `RDFP_SRC_ROOT` CMake variable, converts it with `file(TO_CMAKE_PATH ...)`, and reports `RDFP_SOURCES_COUNT` during configure.
-
-
-## TWS API client layout detection
-
-The project now detects whether `third_party/twsapi/client` already contains the IBKR client sources or whether they are nested one level deeper under `third_party/twsapi/client/client`.
-The stage script also accepts either the `cppclient` root or the `client` directory directly.
-
-
-## CMake nesting fix
-
-The IBKR/TWS API block in `CMakeLists.txt` was rewritten as a clean balanced `if(HFT_ENABLE_IBKR) ... endif()` section to fix the malformed flow-control nesting.
-
-
-## Removed stray duplicate TWS block
-
-Deleted the broken duplicate IBKR/TWS snippet that remained between the test target section and the final `# TWS vendor linkage fix` block. That duplicate block contained the unmatched `endif()` causing the configure failure.
-
-
-## Removed old IBKR block
-
-Deleted the original IBKR block at lines 31–63 of `CMakeLists.txt`, leaving only the newer flexible TWS vendor linkage block.
-
-
-## Protobuf linkage target fix
-
-Replaced `protobuf::libprotobuf` in the newer TWS linkage block with `${PROTOBUF_LIBRARY}` and added `${PROTOBUF_INCLUDE_DIR}` to the relevant include directories, matching the existing protobuf detection style in this project.
-
-
-## Regenerated protobuf include/library fix
-
-The IBKR/TWS block now uses `find_package(Protobuf REQUIRED)` with `Protobuf_INCLUDE_DIRS` and `Protobuf_LIBRARIES`, and any older protobuf-detection IBKR block was removed before writing the clean replacement.
-
-
-## Rebuilt clean CMake tail
-
-Replaced the malformed tail of `CMakeLists.txt` with one clean IBKR/TWS block after the test target section to fix residual unmatched flow-control statements.
-
-
-## Removed stray partial IBKR block
-
-Deleted the stray partial duplicate IBKR/TWS block at lines 51–80 of `CMakeLists.txt`. That block opened `if(HFT_ENABLE_IBKR)` but did not close it, which caused the flow-control nesting error.
-
-
-## Protobuf config-target linkage fix
-
-The IBKR/TWS block now uses `find_package(Protobuf CONFIG REQUIRED)` and links against `protobuf::libprotobuf` so CMake can carry protobuf's transitive Abseil dependencies on Windows/MinGW.
-
-
-## Removed stale protobuf duplicate block
-
-Deleted the stale duplicate IBKR/TWS protobuf block at lines 111–155 of `CMakeLists.txt`, leaving only the config-target-based block.
-
-
-## TWS API kept in repo
-
-The UCRT scripts now leave the TWS API in `third_party/twsapi/client` and do not stage or copy it. This avoids accidental `client/client` nesting when the IBKR API is already present in the repository.
-
-
-## Fixed UCRT staging script
-
-Rebuilt `scripts/stage_third_party_sources_ucrt.sh` as a small explicit script that validates `third_party/twsapi/client` and performs no TWS API copying.
-
-
-## UCRT dependency build script restored
-
-Restored the full `scripts/build_third_party_dependencies_ucrt.sh` structure and changed only the final IBKR/TWS handling so it no longer copies `third_party/twsapi/client` into `dependencies`.
+This repository is a research/integration codebase. The default build path is the simplest way to work on the project. Use the IBKR-specific paths only when you need the vendored TWS API and its dependency stack.

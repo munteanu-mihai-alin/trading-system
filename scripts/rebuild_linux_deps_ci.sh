@@ -45,17 +45,29 @@ which git || true
 git --version || true
 
 echo "==> Cloning protobuf ${PROTOBUF_TAG} with submodules"
-git clone --branch "${PROTOBUF_TAG}" --depth 1 --recurse-submodules   https://github.com/protocolbuffers/protobuf.git "${PROTOBUF_SRC}"
+git clone --branch "${PROTOBUF_TAG}" --depth 1 --recurse-submodules \
+  https://github.com/protocolbuffers/protobuf.git "${PROTOBUF_SRC}"
 
 test -d "${ABSEIL_SRC}" || { echo "Missing ${ABSEIL_SRC}"; exit 1; }
 
 echo "==> Building Abseil from protobuf submodule"
-cmake -S "${ABSEIL_SRC}" -B "${BUILD_DIR}/abseil"   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"   -DABSL_PROPAGATE_CXX_STD=ON
+cmake -S "${ABSEIL_SRC}" -B "${BUILD_DIR}/abseil" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DABSL_PROPAGATE_CXX_STD=ON \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 cmake --build "${BUILD_DIR}/abseil" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/abseil"
 
 echo "==> Building protobuf ${PROTOBUF_TAG} as shared libraries"
-cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf"   -Dprotobuf_BUILD_TESTS=OFF   -Dprotobuf_BUILD_SHARED_LIBS=ON   -Dprotobuf_ABSL_PROVIDER=package   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_PREFIX_PATH="${INSTALL_DIR}"   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"
+cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf" \
+  -Dprotobuf_BUILD_TESTS=OFF \
+  -Dprotobuf_BUILD_SHARED_LIBS=ON \
+  -Dprotobuf_ABSL_PROVIDER=package \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="${INSTALL_DIR}" \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 cmake --build "${BUILD_DIR}/protobuf" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/protobuf"
 

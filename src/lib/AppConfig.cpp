@@ -2,22 +2,23 @@
 
 #include <fstream>
 #include <iostream>
-#include <sstream>
+#include <stdexcept>
+#include <string>
 
 namespace hft {
 
 static std::string trim(const std::string& s) {
-    const auto b = s.find_first_not_of(" 	
-");
-    if (b == std::string::npos) return "";
-    const auto e = s.find_last_not_of(" 	
-");
-    return s.substr(b, e - b + 1);
+  const auto b = s.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos)
+    return "";
+  const auto e = s.find_last_not_of(" \t\r\n");
+  return s.substr(b, e - b + 1);
 }
 
 AppConfig AppConfig::load_from_file(const std::string& path) {
   AppConfig cfg{};
   std::ifstream in(path);
+
   if (!in.is_open()) {
     std::cerr << "Warning: could not open config file: " << path
               << ". Using defaults." << std::endl;
@@ -29,6 +30,7 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
     line = trim(line);
     if (line.empty() || line[0] == '#' || line[0] == '[')
       continue;
+
     const auto pos = line.find('=');
     if (pos == std::string::npos)
       continue;
@@ -62,6 +64,7 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
                 << "' in " << path << ": " << ex.what() << std::endl;
     }
   }
+
   return cfg;
 }
 

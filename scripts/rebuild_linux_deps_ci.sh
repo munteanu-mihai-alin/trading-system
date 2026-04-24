@@ -17,6 +17,7 @@ BUILD_DIR="${DEPS_DIR}/build"
 INSTALL_DIR="${DEPS_DIR}/install"
 ARCHIVE_PATH="${DEPS_DIR}/linux-deps-ubuntu-latest.tar.gz"
 THIRD_PARTY_DIR="${DEPS_DIR}/src"
+
 PROTOBUF_TAG="${PROTOBUF_TAG:-v29.3}"
 PROTOBUF_SRC="${THIRD_PARTY_DIR}/protobuf-29.3"
 ABSEIL_SRC="${PROTOBUF_SRC}/third_party/abseil-cpp"
@@ -44,7 +45,7 @@ which git || true
 git --version || true
 
 echo "==> Cloning protobuf ${PROTOBUF_TAG} with submodules"
-git clone --branch "${PROTOBUF_TAG}" --depth 1 --recurse-submodules https://github.com/protocolbuffers/protobuf.git "${PROTOBUF_SRC}"
+git clone --branch "${PROTOBUF_TAG}" --depth 1 --recurse-submodules   https://github.com/protocolbuffers/protobuf.git "${PROTOBUF_SRC}"
 
 test -d "${ABSEIL_SRC}" || { echo "Missing ${ABSEIL_SRC}"; exit 1; }
 
@@ -60,6 +61,7 @@ cmake --install "${BUILD_DIR}/protobuf"
 
 echo "==> Copying Intel decimal runtime into install prefix"
 mkdir -p "${INSTALL_DIR}/include" "${INSTALL_DIR}/lib"
+
 for hdr in /usr/include/bid_conf.h /usr/include/bid_functions.h; do
   if [[ -f "${hdr}" ]]; then
     cp -f "${hdr}" "${INSTALL_DIR}/include/"

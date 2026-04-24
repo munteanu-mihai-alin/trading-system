@@ -65,7 +65,6 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
     }
   }
 
-  
   return cfg;
 }
 

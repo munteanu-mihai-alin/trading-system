@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
+
 project(HFTMergedRecovered LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if (MSVC)
+if(MSVC)
   add_compile_options(/O2)
 else()
   add_compile_options(-O3 -DNDEBUG)
@@ -14,47 +15,45 @@ endif()
 option(HFT_ENABLE_IBKR "Enable real IBKR integration using vendored TWS API" OFF)
 
 set(HFT_INCLUDE_DIRS
-    include
-    tests
+  include
+  tests
 )
 
 set(LIB_SOURCES
-    src/lib/AppConfig.cpp
-    src/lib/RankingEngine.cpp
-    src/lib/IBKRClient.cpp
-    src/lib/LiveExecutionEngine.cpp
+  src/lib/AppConfig.cpp
+  src/lib/RankingEngine.cpp
+  src/lib/IBKRClient.cpp
+  src/lib/LiveExecutionEngine.cpp
 )
 
 add_library(hft_lib ${LIB_SOURCES})
 target_include_directories(hft_lib PUBLIC ${HFT_INCLUDE_DIRS})
 
 add_executable(hft_app
-    src/app/main.cpp
+  src/app/main.cpp
 )
 target_link_libraries(hft_app PRIVATE hft_lib)
 
 add_executable(hft_tests
-    tests/common/TestMain.cpp
-    tests/unit/TestCoreModels.cpp
-    tests/math/TestMathModels.cpp
-    tests/sim/TestSimulator.cpp
-    tests/validation/TestValidation.cpp
-    tests/integration/TestBrokerIntegration.cpp
+  tests/common/TestMain.cpp
+  tests/unit/TestCoreModels.cpp
+  tests/math/TestMathModels.cpp
+  tests/sim/TestSimulator.cpp
+  tests/validation/TestValidation.cpp
+  tests/integration/TestBrokerIntegration.cpp
 )
 target_link_libraries(hft_tests PRIVATE hft_lib)
 
 enable_testing()
 add_test(NAME hft_tests COMMAND hft_tests)
 
-# TWS vendor linkage fix
 if(HFT_ENABLE_IBKR)
   find_package(Protobuf CONFIG REQUIRED)
 
   if(NOT TARGET protobuf::libprotobuf)
     message(FATAL_ERROR
-      "HFT_ENABLE_IBKR=ON requires the protobuf config package target "
-      "`protobuf::libprotobuf`, but it was not found. "
-      "Make sure CMAKE_PREFIX_PATH points to the dependency install prefix."
+      "HFT_ENABLE_IBKR=ON requires protobuf::libprotobuf from the installed protobuf CMake package. "
+      "Check CMAKE_PREFIX_PATH."
     )
   endif()
 
@@ -68,7 +67,7 @@ if(HFT_ENABLE_IBKR)
   if(NOT TWSAPI_VENDOR_SOURCES)
     message(FATAL_ERROR
       "No TWS API sources found under ${TWSAPI_CLIENT_DIR}. "
-      "Expected third_party/twsapi/client/*.cpp"
+      "Expected third_party/twsapi/client/*.cpp and protobuf/*.cc"
     )
   endif()
 
@@ -93,11 +92,12 @@ if(HFT_ENABLE_IBKR)
 
   message(STATUS "Using protobuf target: protobuf::libprotobuf")
   message(STATUS "Using Intel decimal runtime: ${HFT_INTEL_RDFP_LIBRARY}")
+  message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
   add_library(hft_ibkr_link_deps INTERFACE)
   target_link_libraries(hft_ibkr_link_deps INTERFACE
     protobuf::libprotobuf
-    ${HFT_INTEL_RDFP_LIBRARY}
+    "${HFT_INTEL_RDFP_LIBRARY}"
   )
 
   if(UNIX AND NOT APPLE)
@@ -111,21 +111,24 @@ if(HFT_ENABLE_IBKR)
 
   add_library(twsapi_vendor STATIC ${TWSAPI_VENDOR_SOURCES})
   target_include_directories(twsapi_vendor PUBLIC
-    ${TWSAPI_CLIENT_DIR}
-    ${TWSAPI_CLIENT_DIR}/protobuf
+    "${TWSAPI_CLIENT_DIR}"
+    "${TWSAPI_CLIENT_DIR}/protobuf"
   )
+
+  # Keep protobuf/decimal/socket requirements transitive for library consumers.
   target_link_libraries(twsapi_vendor PUBLIC hft_ibkr_link_deps)
 
   target_compile_definitions(hft_lib PUBLIC HFT_ENABLE_IBKR=1)
   target_include_directories(hft_lib PUBLIC
-    ${TWSAPI_CLIENT_DIR}
-    ${TWSAPI_CLIENT_DIR}/protobuf
+    "${TWSAPI_CLIENT_DIR}"
+    "${TWSAPI_CLIENT_DIR}/protobuf"
   )
   target_link_libraries(hft_lib PUBLIC twsapi_vendor hft_ibkr_link_deps)
 
-  target_link_libraries(hft_app PRIVATE hft_ibkr_link_deps)
-  target_link_libraries(hft_tests PRIVATE hft_ibkr_link_deps)
+  # MinGW static archive ordering can still leave BID symbols unresolved if the
+  # decimal archive appears too early on the final executable link line. Attach
+  # the dependency bundle directly after the app/test object and project library
+  # as well, so libintelrdfpmath.a is seen after libtwsapi_vendor.a.
+  target_link_libraries(hft_app PRIVATE twsapi_vendor hft_ibkr_link_deps)
+  target_link_libraries(hft_tests PRIVATE twsapi_vendor hft_ibkr_link_deps)
 endif()
-
-# protobuf shared-library note:
-# For HFT_ENABLE_IBKR=ON in CI, protobuf 29.3 is expected to be installed as a shared library.

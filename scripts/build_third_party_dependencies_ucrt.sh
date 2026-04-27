@@ -12,6 +12,22 @@ DEPS_DIR="${ROOT_DIR}/dependencies/ucrt64"
 BUILD_DIR="${DEPS_DIR}/build"
 INSTALL_DIR="${DEPS_DIR}/install"
 
+# Prefer the UCRT64 MinGW-w64 compilers over the Cygwin-based MSYS2 base
+# compilers. The base /usr/bin/gcc defines __CYGWIN__ which causes libraries
+# like Abseil to refuse to compile. Override only when the UCRT64 toolchain is
+# present.
+#
+# Use cygpath to give CMake a native Windows path (with .exe); otherwise CMake
+# converts the MSYS path /ucrt64/bin/g++ → D:/msys64/ucrt64/bin/g++ and then
+# cannot find the file because the on-disk name is g++.exe.
+if [[ -x /ucrt64/bin/gcc.exe ]]; then
+  UCRT64_GCC="$(cygpath -m /ucrt64/bin/gcc.exe)"
+  UCRT64_GXX="$(cygpath -m /ucrt64/bin/g++.exe)"
+  export CC="${UCRT64_GCC}"
+  export CXX="${UCRT64_GXX}"
+  export PATH="/ucrt64/bin:${PATH}"
+fi
+
 STAGE_SCRIPT="${ROOT_DIR}/scripts/stage_third_party_sources_ucrt.sh"
 
 PROTOBUF_SRC="${THIRD_PARTY_DIR}/protobuf-29.3"
@@ -43,6 +59,13 @@ fi
 
 mkdir -p "${BUILD_DIR}" "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/include"
 
+# MinGW/UCRT64 does not provide librt (POSIX real-time library); it is a
+# Linux-only library whose functions are part of the UCRT on Windows. Abseil
+# and protobuf's CMake configs unconditionally export -lrt as a link dependency
+# even on MinGW, which causes link errors. Create an empty stub archive in the
+# install prefix so the linker satisfies the -lrt reference without error.
+ar qc "${INSTALL_DIR}/lib/librt.a"
+
 echo "==> Tool versions"
 which gcc || true
 gcc --version | head -n 1 || true
@@ -54,12 +77,14 @@ cmake --version | head -n 1 || true
 echo "==> Building Abseil from third_party/abseil-cpp"
 rm -rf "${BUILD_DIR}/abseil"
 cmake -S "${ABSEIL_SRC}" -B "${BUILD_DIR}/abseil" \
-  -G "MinGW Makefiles" \
-  -DCMAKE_C_COMPILER=gcc \
-  -DCMAKE_CXX_COMPILER=g++ \
+  -G "Unix Makefiles" \
+  -DCMAKE_C_COMPILER="${CC:-gcc}" \
+  -DCMAKE_CXX_COMPILER="${CXX:-g++}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-  -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_EXE_LINKER_FLAGS="-L${INSTALL_DIR}/lib" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-L${INSTALL_DIR}/lib" \
+  -DBUILD_SHARED_LIBS=OFF \
   -DABSL_PROPAGATE_CXX_STD=ON
 cmake --build "${BUILD_DIR}/abseil" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/abseil"
@@ -67,12 +92,14 @@ cmake --install "${BUILD_DIR}/abseil"
 echo "==> Building protobuf 29.3 from third_party/protobuf-29.3 (static libs for MinGW stability)"
 rm -rf "${BUILD_DIR}/protobuf"
 cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf" \
-  -G "MinGW Makefiles" \
-  -DCMAKE_C_COMPILER=gcc \
-  -DCMAKE_CXX_COMPILER=g++ \
+  -G "Unix Makefiles" \
+  -DCMAKE_C_COMPILER="${CC:-gcc}" \
+  -DCMAKE_CXX_COMPILER="${CXX:-g++}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
   -DCMAKE_PREFIX_PATH="${INSTALL_DIR}" \
+  -DCMAKE_EXE_LINKER_FLAGS="-L${INSTALL_DIR}/lib" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-L${INSTALL_DIR}/lib" \
   -Dprotobuf_BUILD_TESTS=OFF \
   -Dprotobuf_BUILD_SHARED_LIBS=OFF \
   -Dprotobuf_ABSL_PROVIDER=package
@@ -132,14 +159,14 @@ RDFP_BUILD_DIR="${BUILD_DIR}/intelrdfp"
 rm -rf "${RDFP_BUILD_SRC}" "${RDFP_BUILD_DIR}"
 mkdir -p "${RDFP_BUILD_SRC}" "${RDFP_BUILD_DIR}"
 
-cat > "${RDFP_BUILD_SRC}/CMakeLists.txt" <<EOF
+cat > "${RDFP_BUILD_SRC}/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.20)
 project(intelrdfpmath_c_wrapper C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(RDFP_SRC_ROOT "${RDFP_SRC_ROOT_CMAKE}")
-file(TO_CMAKE_PATH "\${RDFP_SRC_ROOT}" RDFP_SRC_ROOT_NORM)
-file(GLOB_RECURSE RDFP_SOURCES "\${RDFP_SRC_ROOT_NORM}/*.c")
+file(TO_CMAKE_PATH "${RDFP_SRC_ROOT}" RDFP_SRC_ROOT_NORM)
+file(GLOB_RECURSE RDFP_SOURCES "${RDFP_SRC_ROOT_NORM}/*.c")
 
 # Exclude optional binary<->decimal conversion wrappers. TWS Decimal only needs
 # BID decimal runtime/string conversion symbols such as __bid64_from_string and
@@ -147,75 +174,19 @@ file(GLOB_RECURSE RDFP_SOURCES "\${RDFP_SRC_ROOT_NORM}/*.c")
 # configuration that does not compile cleanly in this MinGW/UCRT CMake wrapper.
 list(FILTER RDFP_SOURCES EXCLUDE REGEX ".*[/\\]bid_binarydecimal\\.c$")
 
-# The custom wrapper build exports the upstream Intel names like bid64_add,
-# bid64_from_string, and bid64_to_string. IBKR/TWS Decimal.h expects libgcc-style
-# names with a leading double underscore, e.g. __bid64_from_string.
-#
-# Add a tiny compatibility translation unit that forwards the TWS names to the
-# Intel RDFP symbols built above. For binary64 conversions, avoid compiling the
-# optional bid_binarydecimal.c unit and provide string-based compatibility
-# conversions instead; this is sufficient for linking TWS Decimal.cpp and keeps
-# the MinGW/UCRT build portable.
-set(TWS_BID_COMPAT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/tws_bid_compat.c")
-file(WRITE "${TWS_BID_COMPAT_SOURCE}" [=[
-#include <stdio.h>
-#include <stdlib.h>
-
-typedef unsigned long long BID_UINT64;
-
-BID_UINT64 bid64_add(BID_UINT64, BID_UINT64, unsigned int, unsigned int*);
-BID_UINT64 bid64_sub(BID_UINT64, BID_UINT64, unsigned int, unsigned int*);
-BID_UINT64 bid64_mul(BID_UINT64, BID_UINT64, unsigned int, unsigned int*);
-BID_UINT64 bid64_div(BID_UINT64, BID_UINT64, unsigned int, unsigned int*);
-BID_UINT64 bid64_from_string(char*, unsigned int, unsigned int*);
-void bid64_to_string(char*, BID_UINT64, unsigned int*);
-
-BID_UINT64 __bid64_add(BID_UINT64 x, BID_UINT64 y, unsigned int rnd, unsigned int* flags) {
-  return bid64_add(x, y, rnd, flags);
-}
-
-BID_UINT64 __bid64_sub(BID_UINT64 x, BID_UINT64 y, unsigned int rnd, unsigned int* flags) {
-  return bid64_sub(x, y, rnd, flags);
-}
-
-BID_UINT64 __bid64_mul(BID_UINT64 x, BID_UINT64 y, unsigned int rnd, unsigned int* flags) {
-  return bid64_mul(x, y, rnd, flags);
-}
-
-BID_UINT64 __bid64_div(BID_UINT64 x, BID_UINT64 y, unsigned int rnd, unsigned int* flags) {
-  return bid64_div(x, y, rnd, flags);
-}
-
-BID_UINT64 __bid64_from_string(char* s, unsigned int rnd, unsigned int* flags) {
-  return bid64_from_string(s, rnd, flags);
-}
-
-void __bid64_to_string(char* out, BID_UINT64 x, unsigned int* flags) {
-  bid64_to_string(out, x, flags);
-}
-
-double __bid64_to_binary64(BID_UINT64 x, unsigned int rnd, unsigned int* flags) {
-  (void)rnd;
-  char buf[128];
-  bid64_to_string(buf, x, flags);
-  return strtod(buf, NULL);
-}
-
-BID_UINT64 __binary64_to_bid64(double x, unsigned int rnd, unsigned int* flags) {
-  char buf[64];
-  snprintf(buf, sizeof(buf), "%.17g", x);
-  return bid64_from_string(buf, rnd, flags);
-}
-]=])
-list(APPEND RDFP_SOURCES "${TWS_BID_COMPAT_SOURCE}")
-message(STATUS "RDFP_SRC_ROOT_NORM=\${RDFP_SRC_ROOT_NORM}")
+message(STATUS "RDFP_SRC_ROOT_NORM=${RDFP_SRC_ROOT_NORM}")
 list(LENGTH RDFP_SOURCES RDFP_SOURCES_COUNT)
-message(STATUS "RDFP_SOURCES_COUNT=\${RDFP_SOURCES_COUNT}")
+message(STATUS "RDFP_SOURCES_COUNT=${RDFP_SOURCES_COUNT}")
 if(NOT RDFP_SOURCES)
-  message(FATAL_ERROR "No .c sources found under detected Intel RDFP source root: \${RDFP_SRC_ROOT_NORM}")
+  message(FATAL_ERROR "No .c sources found under detected Intel RDFP source root: ${RDFP_SRC_ROOT_NORM}")
 endif()
-add_library(intelrdfpmath STATIC \${RDFP_SOURCES})
-target_include_directories(intelrdfpmath PUBLIC "\${RDFP_SRC_ROOT_NORM}")
+
+# The upstream Intel RDFP sources already export TWS-compatible double-
+# underscore names like __bid64_add, __bid64_to_string, __bid64_from_string,
+# __bid64_to_binary64, and __binary64_to_bid64 directly (verified with
+# `nm libintelrdfpmath.a`). No compat shim is required.
+add_library(intelrdfpmath STATIC ${RDFP_SOURCES})
+target_include_directories(intelrdfpmath PUBLIC "${RDFP_SRC_ROOT_NORM}")
 target_compile_definitions(intelrdfpmath PRIVATE
   CALL_BY_REF=0
   GLOBAL_RND=0
@@ -223,12 +194,13 @@ target_compile_definitions(intelrdfpmath PRIVATE
   UNCHANGED_BINARY_FLAGS=0
 )
 set_target_properties(intelrdfpmath PROPERTIES OUTPUT_NAME "intelrdfpmath")
+
 install(TARGETS intelrdfpmath
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(DIRECTORY "\${RDFP_SRC_ROOT_NORM}/" DESTINATION include FILES_MATCHING PATTERN "bid*.h")
+install(DIRECTORY "${RDFP_SRC_ROOT_NORM}/" DESTINATION include FILES_MATCHING PATTERN "bid*.h")
 EOF
 
 echo "==> Listing detected Intel RDFP C files"
@@ -240,9 +212,10 @@ printf 'Generated wrapper path: %s\n' "${RDFP_BUILD_SRC}/CMakeLists.txt"
 cat "${RDFP_BUILD_SRC}/CMakeLists.txt"
 
 cmake -S "${RDFP_BUILD_SRC}" -B "${RDFP_BUILD_DIR}" \
-  -G "MinGW Makefiles" \
-  -DCMAKE_C_COMPILER=gcc \
+  -G "Unix Makefiles" \
+  -DCMAKE_C_COMPILER="${CC:-gcc}" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DRDFP_SRC_ROOT_CMAKE="${RDFP_SRC_ROOT_CMAKE}" \
   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"
 
 cmake --build "${RDFP_BUILD_DIR}" -j"$(nproc)"
@@ -252,6 +225,12 @@ if [[ ! -f "${INSTALL_DIR}/lib/libintelrdfpmath.a" ]]; then
   echo "ERROR: Expected ${INSTALL_DIR}/lib/libintelrdfpmath.a was not produced."
   exit 1
 fi
+
+# Stale compat archive from earlier builds would otherwise be picked up by the
+# project's find_library() and put unresolved bid64_* references on the link
+# line. Remove it now that the upstream RDFP build directly exports the
+# __bid64_* symbols TWS needs.
+rm -f "${INSTALL_DIR}/lib/libintelrdfpmath_compat.a"
 
 echo "==> Verifying Intel decimal symbols needed by TWS Decimal.cpp"
 for sym in \
@@ -266,15 +245,15 @@ for sym in \
 do
   if ! nm -g "${INSTALL_DIR}/lib/libintelrdfpmath.a" | grep -q "${sym}"; then
     echo "ERROR: ${INSTALL_DIR}/lib/libintelrdfpmath.a does not export ${sym}"
-    echo "       The Intel RDFP wrapper build is incomplete for IBKR/TWS Decimal."
-    echo "       Matching bid64 symbols found:"
+    echo "       The Intel RDFP build is incomplete for IBKR/TWS Decimal."
+    echo "       Symbols found in archive:"
     nm -g "${INSTALL_DIR}/lib/libintelrdfpmath.a" | grep -E '(__)?bid64|(__)?binary64' | head -n 120 || true
     exit 1
   fi
 done
 
 echo "==> Built Intel decimal library:"
-find "${INSTALL_DIR}/lib" -maxdepth 1 -type f \( -name 'libintelrdfpmath.a' -o -name 'libintelrdfpmath.dll.a' -o -name 'intelrdfpmath.lib' \) | sort || true
+find "${INSTALL_DIR}/lib" -maxdepth 1 -type f -name 'libintelrdfpmath*.a' | sort || true
 
 echo "==> Leaving IBKR/TWS API in repo at third_party/twsapi/client"
 echo "==> No IBKR/TWS staging or copying performed"
@@ -289,7 +268,7 @@ find "${INSTALL_DIR}/lib" -maxdepth 1 -type f | sort || true
 cat <<EOF
 Next step for your project:
   cmake -S . -B build-ucrt-ibkr \
-    -G "MinGW Makefiles" \
+    -G "Unix Makefiles" \
     -DCMAKE_C_COMPILER=gcc \
     -DCMAKE_CXX_COMPILER=g++ \
     -DCMAKE_BUILD_TYPE=Release \

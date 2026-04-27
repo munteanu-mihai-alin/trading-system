@@ -28,7 +28,14 @@ DOWNLOADS_DIR="${THIRD_PARTY_DIR}/_downloads"
 
 PROTOBUF_TAG="${PROTOBUF_TAG:-v29.3}"
 PROTOBUF_REPO_URL="${PROTOBUF_REPO_URL:-https://github.com/protocolbuffers/protobuf.git}"
+# Primary Intel RDFP archive URL. The netlib mirror has been seen to silently
+# return an empty file in the past; keep a list of fallback URLs so the build
+# does not get stuck on a single flaky source.
 INTEL_DEC_URL="${INTEL_DEC_URL:-https://www.netlib.org/misc/intel/IntelRDFPMathLib20U4.tar.gz}"
+INTEL_DEC_URLS_FALLBACK=(
+  "https://www.netlib.org/misc/intel/IntelRDFPMathLib20U4.tar.gz"
+  "https://web.archive.org/web/2023/https://www.netlib.org/misc/intel/IntelRDFPMathLib20U4.tar.gz"
+)
 FORCE_RESTAGE_DEPS="${FORCE_RESTAGE_DEPS:-0}"
 
 PROTOBUF_DIR="${THIRD_PARTY_DIR}/protobuf-29.3"
@@ -62,7 +69,11 @@ has_abseil() {
 has_rdfp() {
   [[ -d "${RDFP_DIR}" ]] &&
   find "${RDFP_DIR}" -type f -name 'bid_functions.h' | grep -q . &&
-  find "${RDFP_DIR}" -type f -name '*.c' | grep -q .
+  find "${RDFP_DIR}" -type f -name '*.c' | grep -q . &&
+  # Guard against the previously seen failure where the netlib download
+  # produced a 0-byte archive and "extracted" 225 empty .c files. Require at
+  # least 50 non-empty source files to consider the tree valid.
+  [[ "$(find "${RDFP_DIR}" -type f -name '*.c' ! -size 0 | wc -l)" -ge 50 ]]
 }
 
 has_twsapi() {
@@ -144,7 +155,42 @@ else
   mkdir -p "${DOWNLOADS_DIR}/IntelRDFPMathLib20U4.extract"
 
   RDFP_ARCHIVE="${DOWNLOADS_DIR}/IntelRDFPMathLib20U4.tar.gz"
-  curl -L --fail -o "${RDFP_ARCHIVE}" "${INTEL_DEC_URL}"
+
+  # Try the user-provided URL first, then fall back through the known mirrors.
+  # netlib has been observed to return 0-byte files; treat any download under a
+  # sane minimum size (1 MiB) as a failure even when curl itself succeeds.
+  rm -f "${RDFP_ARCHIVE}"
+  declare -a _rdfp_url_candidates=()
+  _rdfp_url_candidates+=("${INTEL_DEC_URL}")
+  for u in "${INTEL_DEC_URLS_FALLBACK[@]}"; do
+    if [[ "$u" != "${INTEL_DEC_URL}" ]]; then
+      _rdfp_url_candidates+=("$u")
+    fi
+  done
+
+  download_ok=0
+  for url in "${_rdfp_url_candidates[@]}"; do
+    echo "    attempting Intel RDFP download from: ${url}"
+    rm -f "${RDFP_ARCHIVE}"
+    if curl -fL --retry 3 --retry-delay 2 -o "${RDFP_ARCHIVE}" "${url}"; then
+      size_bytes="$(stat -c '%s' "${RDFP_ARCHIVE}" 2>/dev/null || stat -f '%z' "${RDFP_ARCHIVE}" 2>/dev/null || echo 0)"
+      echo "    downloaded ${size_bytes} bytes from ${url}"
+      if [[ "${size_bytes}" -ge 1048576 ]]; then
+        download_ok=1
+        break
+      fi
+      echo "    WARNING: downloaded archive is suspiciously small (${size_bytes} bytes), trying next mirror"
+    else
+      echo "    WARNING: curl failed for ${url}, trying next mirror"
+    fi
+  done
+
+  if [[ "${download_ok}" != "1" ]]; then
+    echo "ERROR: Could not obtain Intel RDFP archive from any known mirror."
+    echo "       Set INTEL_DEC_URL to a working URL and retry, or place"
+    echo "       IntelRDFPMathLib20U4.tar.gz manually at ${RDFP_ARCHIVE}."
+    exit 1
+  fi
 
   tar -xzf "${RDFP_ARCHIVE}" -C "${DOWNLOADS_DIR}/IntelRDFPMathLib20U4.extract"
 

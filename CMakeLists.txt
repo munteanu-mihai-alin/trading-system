@@ -90,13 +90,34 @@ if(HFT_ENABLE_IBKR)
     )
   endif()
 
+  # The TWS compat shim (__bid64_* wrappers) is a separate archive that must
+  # appear BEFORE the main RDFP archive on the link line so the linker sees the
+  # compat shim's unresolved bid64_* references while the main archive is still
+  # ahead in the scan.  Optional: not all builds will have the split archive.
+  find_library(HFT_INTEL_RDFP_COMPAT_LIBRARY
+    NAMES intelrdfpmath_compat libintelrdfpmath_compat
+    PATHS ${_HFT_RDFP_HINTS}
+  )
+
   message(STATUS "Using protobuf target: protobuf::libprotobuf")
   message(STATUS "Using Intel decimal runtime: ${HFT_INTEL_RDFP_LIBRARY}")
+  if(HFT_INTEL_RDFP_COMPAT_LIBRARY)
+    message(STATUS "Using Intel decimal compat shim: ${HFT_INTEL_RDFP_COMPAT_LIBRARY}")
+  endif()
   message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
   add_library(hft_ibkr_link_deps INTERFACE)
   target_link_libraries(hft_ibkr_link_deps INTERFACE
     protobuf::libprotobuf
+  )
+  if(HFT_INTEL_RDFP_COMPAT_LIBRARY)
+    # Compat shim first so its bid64_* references are resolved by the main
+    # archive that follows.
+    target_link_libraries(hft_ibkr_link_deps INTERFACE
+      "${HFT_INTEL_RDFP_COMPAT_LIBRARY}"
+    )
+  endif()
+  target_link_libraries(hft_ibkr_link_deps INTERFACE
     "${HFT_INTEL_RDFP_LIBRARY}"
   )
 

@@ -33,12 +33,12 @@ Files changed:
   - `has_rdfp()` now also requires ≥ 50 non-empty `.c` files in the staged tree.
   - Added an `INTEL_DEC_URLS_FALLBACK` array (netlib + a web.archive.org mirror) and a download loop with `curl -fL --retry 3`, post-download size validation (≥ 1 MiB) before declaring success.
 - `CMakeLists.txt`
-  - Added an optional `find_library(HFT_INTEL_RDFP_COMPAT_LIBRARY ...)` and a conditional link clause that places the compat archive (if present) before the main RDFP archive on the link line. With the compat shim removed from the dependency build, the find returns NOTFOUND on UCRT64 and the conditional link is a no-op; the existing `HFT_INTEL_RDFP_LIBRARY` (libintelrdfpmath.a) is sufficient.
+  - Linked the IBKR build against a single Intel decimal archive (`HFT_INTEL_RDFP_LIBRARY` -> `libintelrdfpmath.a`). An earlier transitional commit in this session had added an optional `find_library(HFT_INTEL_RDFP_COMPAT_LIBRARY ...)` plus a conditional link clause. That branch was removed at end of session because the upstream RDFP archive already exports `__bid64_*` directly; only one Intel archive is referenced anywhere in the build.
 
-Files added (developer helpers, prefixed `_` to mark them as session-local):
-- `scripts/_configure_ucrt.sh` - thin wrapper that runs `cmake -S . -B build-ucrt-ibkr -G "Unix Makefiles" -DHFT_ENABLE_IBKR=ON ...` with the UCRT64 compiler resolved via `cygpath -m`.
-- `scripts/_build_ucrt.sh` - calls `_configure_ucrt.sh` then `cmake --build build-ucrt-ibkr -j$(nproc)` on the UCRT64 PATH.
-- `scripts/_run_tests.sh` - runs `build-ucrt-ibkr/hft_tests.exe` and prints the exit code.
+Files added / moved:
+- `agent/_configure_ucrt.sh`, `agent/_build_ucrt.sh`, `agent/_run_tests.sh` - local agent helpers that wrap the documented `cmake -S . -B build-ucrt-ibkr -G "Unix Makefiles" -DHFT_ENABLE_IBKR=ON ...` flow with the correct UCRT64 compiler resolution (via `cygpath -m`). Live under `agent/` next to the workflow/log files. Gitignored (`agent/_*.sh`), so they stay machine-local. Not part of the blessed CI flow.
+- `agent/enforce_additive_only.py` - moved from `scripts/enforce_additive_only.py` via `git mv` to keep all agent-facing tooling in one place. No call sites in workflows, scripts, or docs reference the old path, so no further updates were needed.
+- `.gitignore` - added `agent/_*.sh` to keep the underscore-prefixed agent helpers out of version control. Verified with `git check-ignore -v agent/_configure_ucrt.sh agent/_build_ucrt.sh agent/_run_tests.sh`.
 
 Deletions / removals:
 - Removed the `TWS_BID_COMPAT_SOURCE` heredoc and the `intelrdfpmath_compat` static library target from the generated CMakeLists block in `scripts/build_third_party_dependencies_ucrt.sh`. Approximate range: the `set(TWS_BID_COMPAT_SOURCE ...)`/`file(WRITE ...)` block, the `add_library(intelrdfpmath_compat STATIC ...)` target and its `target_link_libraries`, and the `intelrdfpmath_compat` entry in the `install(TARGETS ...)` list. The single `__bid64_*` verification loop was kept but retargeted at `libintelrdfpmath.a` directly.
@@ -70,9 +70,8 @@ Validation performed:
 Known risks / follow-up:
 - The librt stub is empty. If any upstream code path actually calls a POSIX real-time function (e.g. `clock_gettime`) the link will succeed but emit an unresolved symbol at runtime. On MinGW-w64 those symbols are provided by UCRT (`pthread_*`, `clock_gettime`, etc.) so this is fine in practice for Abseil/protobuf. If a future dependency genuinely needs `librt`, replace the stub with a thin shim that aliases to the UCRT equivalents.
 - The `web.archive.org` fallback URL for Intel RDFP is best-effort. Users behind strict proxies should set `INTEL_DEC_URL` to a known-good mirror.
-- The compat-shim removal assumes the Intel RDFP upstream sources continue to export `__bid64_*` symbols directly. The script's `nm` verification will fail loudly if a future RDFP release changes that.
+- The single-Intel-archive setup assumes the RDFP upstream sources continue to export `__bid64_*` symbols directly. The dependency build script's `nm` verification step is the canary and will fail loudly if a future RDFP release changes that. End-to-end re-verification at end of session: clean configure + build with only `libintelrdfpmath.a` present produced `hft_app.exe` (7.8 MB) and `hft_tests.exe` (8.1 MB) without errors.
 - The 12 IBKR-stub test failures should be triaged separately. They predate this session's changes.
-- Helper scripts under `scripts/_*.sh` are session-local conveniences. They can be deleted or rolled into the main scripts; they intentionally use the `_` prefix to mark them as not-yet-blessed.
 
 Suggested commit:
 ```bash

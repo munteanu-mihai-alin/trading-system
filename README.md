@@ -127,8 +127,12 @@ This script produces:
 The script builds:
 
 - Abseil from protobuf's submodule
-- protobuf 29.3
-- Intel decimal runtime bundle contents copied into the install prefix
+- protobuf 29.3 (shared)
+- spdlog (shared) and GoogleTest/GoogleMock (static), tagged versions matching `scripts/rebuild_linux_deps_ci.sh`
+- Intel decimal runtime headers/archives copied from `libintelrdfpmath-dev` into the install prefix
+- **`libtwsapi_vendor.a`** — the vendored TWS API client (`third_party/twsapi/client`) compiled once here so CI links it instead of rebuilding it every job
+
+Headers for compiling `RealIBKRTransport.cpp` still come from **`third_party/twsapi/client`** in the checkout; only the **compiled archive** lives in the bundle.
 
 ### Linux CI release asset
 
@@ -188,7 +192,7 @@ Current workflow responsibilities are:
 - Root entry point:
   - `CMakeLists.txt`
 - Mandatory dependencies:
-  - vendored TWS API sources at `third_party/twsapi/client`
+  - vendored TWS API headers/sources at `third_party/twsapi/client` (compile from source locally, or **prebuilt `libtwsapi_vendor.a`** under `CMAKE_PREFIX_PATH/lib` when using the Linux deps bundle / CI)
   - protobuf available as a CMake package (`protobuf::libprotobuf`)
   - Intel decimal runtime library available to CMake/library search
   - `spdlog` (system, via prefix, or vendored under `third_party/spdlog`)

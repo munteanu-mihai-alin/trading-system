@@ -63,18 +63,6 @@ endif()
 
 set(TWSAPI_CLIENT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/twsapi/client")
 
-file(GLOB TWSAPI_VENDOR_SOURCES
-  "${TWSAPI_CLIENT_DIR}/*.cpp"
-  "${TWSAPI_CLIENT_DIR}/protobuf/*.cc"
-)
-
-if(NOT TWSAPI_VENDOR_SOURCES)
-  message(FATAL_ERROR
-    "No TWS API sources found under ${TWSAPI_CLIENT_DIR}. "
-    "Expected third_party/twsapi/client/*.cpp and protobuf/*.cc"
-  )
-endif()
-
 set(_HFT_RDFP_HINTS)
 foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
   list(APPEND _HFT_RDFP_HINTS "${_prefix}/lib")
@@ -93,6 +81,18 @@ if(NOT HFT_INTEL_RDFP_LIBRARY)
     "Intel decimal runtime not found; provide libintelrdfpmath or a BID-compatible library in CMAKE_PREFIX_PATH/lib."
   )
 endif()
+
+# Prebuilt libtwsapi_vendor.a from scripts/rebuild_linux_deps_ci.sh (linux-deps
+# tarball). Search only CMAKE_PREFIX_PATH so we never pick up an unrelated system lib.
+set(_HFT_TWS_PREBUILT_HINTS)
+foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+  list(APPEND _HFT_TWS_PREBUILT_HINTS "${_prefix}/lib")
+endforeach()
+find_library(HFT_TWSAPI_VENDOR_PREBUILT
+  NAMES twsapi_vendor libtwsapi_vendor
+  PATHS ${_HFT_TWS_PREBUILT_HINTS}
+  NO_DEFAULT_PATH
+)
 
 message(STATUS "Using protobuf target: protobuf::libprotobuf")
 message(STATUS "Using Intel decimal runtime: ${HFT_INTEL_RDFP_LIBRARY}")
@@ -113,14 +113,33 @@ if(WIN32)
   target_link_libraries(hft_ibkr_link_deps INTERFACE ws2_32)
 endif()
 
-add_library(twsapi_vendor STATIC ${TWSAPI_VENDOR_SOURCES})
-target_include_directories(twsapi_vendor PUBLIC
-  "${TWSAPI_CLIENT_DIR}"
-  "${TWSAPI_CLIENT_DIR}/protobuf"
-)
-
-# Keep protobuf/decimal/socket requirements transitive for library consumers.
-target_link_libraries(twsapi_vendor PUBLIC hft_ibkr_link_deps)
+if(HFT_TWSAPI_VENDOR_PREBUILT)
+  message(STATUS "Using prebuilt twsapi_vendor static library: ${HFT_TWSAPI_VENDOR_PREBUILT}")
+  add_library(twsapi_vendor STATIC IMPORTED GLOBAL)
+  set_target_properties(twsapi_vendor PROPERTIES
+    IMPORTED_LOCATION "${HFT_TWSAPI_VENDOR_PREBUILT}"
+    INTERFACE_INCLUDE_DIRECTORIES "${TWSAPI_CLIENT_DIR};${TWSAPI_CLIENT_DIR}/protobuf"
+  )
+  target_link_libraries(twsapi_vendor INTERFACE hft_ibkr_link_deps)
+else()
+  message(STATUS "Building twsapi_vendor from vendored sources under ${TWSAPI_CLIENT_DIR}")
+  file(GLOB TWSAPI_VENDOR_SOURCES
+    "${TWSAPI_CLIENT_DIR}/*.cpp"
+    "${TWSAPI_CLIENT_DIR}/protobuf/*.cc"
+  )
+  if(NOT TWSAPI_VENDOR_SOURCES)
+    message(FATAL_ERROR
+      "No TWS API sources found under ${TWSAPI_CLIENT_DIR}. "
+      "Expected third_party/twsapi/client/*.cpp and protobuf/*.cc"
+    )
+  endif()
+  add_library(twsapi_vendor STATIC ${TWSAPI_VENDOR_SOURCES})
+  target_include_directories(twsapi_vendor PUBLIC
+    "${TWSAPI_CLIENT_DIR}"
+    "${TWSAPI_CLIENT_DIR}/protobuf"
+  )
+  target_link_libraries(twsapi_vendor PUBLIC hft_ibkr_link_deps)
+endif()
 
 target_include_directories(hft_lib PUBLIC
   "${TWSAPI_CLIENT_DIR}"

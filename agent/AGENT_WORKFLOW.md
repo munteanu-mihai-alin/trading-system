@@ -56,7 +56,7 @@ Do not write `unknown` for the model field. Use `unknown` only for fields where 
 7. For UCRT work, remember:
    - `third_party/` stores source code
    - `dependencies/ucrt64/install` stores compiled dependency outputs
-   - `third_party/twsapi/client` is source-only and is built by the root CMake as `twsapi_vendor`
+   - `third_party/twsapi/client` supplies headers/sources for `twsapi_vendor`; root CMake builds it from source unless **`libtwsapi_vendor.a`** is already installed under **`CMAKE_PREFIX_PATH`** (Linux **`linux-deps`** bundle ships that prebuilt archive)
 8. For Linux CI dependency work, remember:
    - `scripts/rebuild_linux_deps_ci.sh` builds `dependencies/linux/install`
    - it archives `dependencies/linux/linux-deps-ubuntu-latest.tar.gz`
@@ -161,7 +161,6 @@ build-ibkr-ci/
 scripts/stage_third_party_sources_ucrt.sh
 scripts/build_third_party_dependencies_ucrt.sh
 scripts/rebuild_linux_deps_ci.sh
-scripts/generate_ci_workflow.sh
 scripts/check_clang_format.sh
 scripts/run_coverage_ci.sh
 ```

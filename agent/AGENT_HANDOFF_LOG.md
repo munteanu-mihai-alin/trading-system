@@ -4,6 +4,48 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-29] - linux-deps bundle: prebuild `libtwsapi_vendor.a`; CMake prefers it under CMAKE_PREFIX_PATH
+
+Model / agent:
+- GPT-5.2 (Composer), reasoning model
+
+Source state:
+- Repository workspace during edit; intended baseline commit `d96f819284af71e07679719e11b8d7c7a56b0491` on `main` (`phase 2 fix: route remaining IBKRClient tests through FakeIBKRTransport`). Local edits apply on top for this feature.
+
+User request:
+- Include the vendored TWS API (`twsapi_vendor`) in the **`linux-deps`** release tarball so CI links `libtwsapi_vendor.a` instead of compiling **`third_party/twsapi/client`** every job.
+
+Files changed:
+- `scripts/cmake_linux_bundle/twsapi_vendor/CMakeLists.txt` — new standalone CMake project; globs `third_party/twsapi/client` sources, links protobuf + Intel RDFP + Threads, PIC static lib, `install(ARCHIVE)` → `lib/libtwsapi_vendor.a`.
+- `scripts/rebuild_linux_deps_ci.sh` — after Intel/BID copy into prefix, configure/build/install that subproject; fail if `libtwsapi_vendor.a` missing; tarball unchanged layout (`dependencies/linux/install`).
+- `CMakeLists.txt` — `find_library` only under `CMAKE_PREFIX_PATH/lib` (`NO_DEFAULT_PATH`); `IMPORTED STATIC` target `twsapi_vendor` when found; else legacy `add_library(twsapi_vendor STATIC …)` from sources.
+- `README.md` — bundle contents list + note that headers stay in-repo while CI may link prebuilt archive.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Added standalone CMake bundle project mirroring root glob/link semantics for `twsapi_vendor`.
+2. Extended `rebuild_linux_deps_ci.sh` to build/install `libtwsapi_vendor.a` into `dependencies/linux/install` before archiving.
+3. Updated root CMake to prefer prebuilt library when present under `CMAKE_PREFIX_PATH`; documented backward compatibility when older tarballs omit `libtwsapi_vendor.a`.
+4. Updated user-facing README for bundle contents.
+
+Validation performed:
+- `read_lints` on edited CMake/scripts paths — no diagnostics reported.
+- Linux bundle script / bundle CMake **not executed end-to-end** in this Windows workspace (no full Ubuntu dependency rebuild here).
+
+Known risks / follow-up:
+- Existing **`linux-deps`** GitHub Release assets published **before** this change lack **`libtwsapi_vendor.a`**; CMake falls back to compiling sources until **`%REBUILD_DEPS`** republishes the tarball or CI rebuild path uploads a new asset.
+- After publishing a new bundle, confirm **`build-and-test`** logs show **`Using prebuilt twsapi_vendor static library`**.
+- **`scripts/rebuild_linux_deps_ci.sh`** runtime increases on cold rebuilds.
+
+Suggested commit:
+
+```bash
+git add CMakeLists.txt README.md scripts/rebuild_linux_deps_ci.sh scripts/cmake_linux_bundle/
+git commit -m "feat(ci): ship prebuilt libtwsapi_vendor.a in linux-deps bundle"
+```
+
 ## [2026-04-28] - Phase 2 follow-up: migrate the rest of the IBKRClient HFT_TEST cases to FakeIBKRTransport
 
 Model / agent:

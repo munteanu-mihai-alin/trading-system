@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Build Linux CI dependency bundle for the IBKR-enabled build.
 # Produces:
-#   dependencies/linux/install
+#   dependencies/linux/install   (Abseil, protobuf, spdlog, googletest,
+#                                   Intel BID libs, prebuilt libtwsapi_vendor.a)
 #   dependencies/linux/linux-deps-ubuntu-latest.tar.gz
 #
 # Environment overrides:
@@ -39,7 +40,7 @@ echo "==> Install prefix: ${INSTALL_DIR}"
 echo "==> Protobuf tag: ${PROTOBUF_TAG}"
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  echo "DRY_RUN=1 -> would clone protobuf+spdlog+googletest, build abseil+protobuf+spdlog+googletest into ${INSTALL_DIR}, copy Intel decimal runtime, and archive ${ARCHIVE_PATH}"
+  echo "DRY_RUN=1 -> would clone protobuf+spdlog+googletest, build abseil+protobuf+spdlog+googletest+twsapi_vendor into ${INSTALL_DIR}, copy Intel decimal runtime, and archive ${ARCHIVE_PATH}"
   exit 0
 fi
 
@@ -133,6 +134,21 @@ done
 
 if [[ ${copied_bid} -eq 0 ]]; then
   echo "ERROR: no Intel decimal runtime archives found under /usr/lib/x86_64-linux-gnu"
+  exit 1
+fi
+
+echo "==> Building vendored TWS API (twsapi_vendor static library) into install prefix"
+cmake -S "${ROOT_DIR}/scripts/cmake_linux_bundle/twsapi_vendor" \
+  -B "${BUILD_DIR}/twsapi_vendor" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DCMAKE_PREFIX_PATH="${INSTALL_DIR}" \
+  -DTWSAPI_VENDOR_SOURCE_ROOT="${ROOT_DIR}"
+cmake --build "${BUILD_DIR}/twsapi_vendor" -j"$(nproc)"
+cmake --install "${BUILD_DIR}/twsapi_vendor"
+
+if [[ ! -f "${INSTALL_DIR}/lib/libtwsapi_vendor.a" ]]; then
+  echo "ERROR: Expected ${INSTALL_DIR}/lib/libtwsapi_vendor.a was not produced."
   exit 1
 fi
 

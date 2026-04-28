@@ -56,7 +56,7 @@ HFT_TEST(test_paper_broker_supports_event_loop_and_depth_subscribe) {
 }
 
 HFT_TEST(test_ibkr_stub_snapshot_and_reconnect_interfaces) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub ibkr connect should succeed");
   client.subscribe_market_depth(MarketDepthRequest{1, "AAPL", 5});
@@ -159,7 +159,7 @@ HFT_TEST(test_paper_broker_poll_update_paths) {
 }
 
 HFT_TEST(test_ibkr_stub_place_order_records_lifecycle_and_ack_miss) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub connect should succeed");
   client.place_limit_order(OrderRequest{42, "AAPL", true, 7.0, 123.0});
@@ -213,7 +213,7 @@ HFT_TEST(test_paper_broker_cancel_creates_update) {
 }
 
 HFT_TEST(test_ibkr_stub_order_lifecycle_entry_created_on_place) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub connect should succeed");
   client.place_limit_order(OrderRequest{77, "NVDA", true, 4.0, 900.0});
@@ -228,7 +228,7 @@ HFT_TEST(test_ibkr_stub_order_lifecycle_entry_created_on_place) {
 }
 
 HFT_TEST(test_ibkr_stub_snapshot_default_and_ack_latency_default) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub connect should succeed");
   const auto b = client.snapshot_book(999);
@@ -358,7 +358,7 @@ HFT_TEST(test_ranking_engine_cooldown_decrements_across_step) {
 }
 
 HFT_TEST(test_ibkr_stub_reconnect_when_connected_short_circuits_true) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub connect should succeed");
   hft::test::require(client.reconnect_once(),
@@ -367,7 +367,7 @@ HFT_TEST(test_ibkr_stub_reconnect_when_connected_short_circuits_true) {
 }
 
 HFT_TEST(test_ibkr_stub_reconnect_when_disconnected_uses_stored_params) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 7),
                      "initial stub connect should succeed");
   client.disconnect();
@@ -377,7 +377,7 @@ HFT_TEST(test_ibkr_stub_reconnect_when_disconnected_uses_stored_params) {
 }
 
 HFT_TEST(test_ibkr_stub_start_stop_event_loops_are_reentrant) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub connect should succeed");
   client.start_event_loop();
@@ -444,7 +444,7 @@ HFT_TEST(test_ranking_engine_validation_alarm_query_path) {
 }
 
 HFT_TEST(test_ibkr_stub_market_depth_subscription_on_connected_client) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 1),
                      "stub connect should succeed");
   client.subscribe_market_depth(MarketDepthRequest{7, "IBM", 5});
@@ -549,7 +549,7 @@ HFT_TEST(test_ranking_engine_shadow_and_real_pnl_queries) {
 }
 
 HFT_TEST(test_ibkr_client_stub_connect_disconnect_and_status_queries) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 17),
                      "stub connect should succeed");
   hft::test::require(client.is_connected(),
@@ -561,7 +561,7 @@ HFT_TEST(test_ibkr_client_stub_connect_disconnect_and_status_queries) {
 }
 
 HFT_TEST(test_ibkr_client_stub_multiple_order_lifecycle_entries) {
-  IBKRClient client;
+  IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());
   hft::test::require(client.connect("127.0.0.1", 4002, 17),
                      "stub connect should succeed");
 

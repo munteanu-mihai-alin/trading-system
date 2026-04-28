@@ -4,6 +4,28 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-28] - Phase 2 follow-up: migrate the rest of the IBKRClient HFT_TEST cases to FakeIBKRTransport
+
+Model / agent:
+- Claude Opus 4.7, reasoning model (Cursor agent)
+
+Context:
+- Phase 2 (commit `f6b9f89`) was pushed and CI went red on `build-and-test` and `coverage` after ~90s. Local UCRT runs were 100% green because the user's IB Gateway is listening on `127.0.0.1:4002`, masking the fact that several `test_ibkr_stub_*` cases actually require a working broker socket.
+- On Linux CI no IB Gateway exists, so `IBKRClient client; client.connect("127.0.0.1", 4002, …);` returns false and the test's `require(client.connect(...), "stub connect should succeed")` aborts. Phase 2's commit message confidently stated the opposite ("`eConnect()` returns success synchronously"); that was wrong, the local pass was the exception.
+
+Files touched:
+- `tests/integration/TestBrokerIntegration.cpp`: replaced all 10 remaining `IBKRClient client;` declarations with `IBKRClient client(std::make_unique<hft::test::FakeIBKRTransport>());`. The only change is which transport drives the client; assertions and structure are intact.
+
+Verification:
+- Clean rebuild of `hft_tests` against the existing `build-ucrt-ibkr/` and a single ctest: 100% (120/120 + 4/4).
+- 10x ctest repeat via `agent/_phase2_flake_check.sh`: 10/10 PASS.
+- The two engine-lifecycle tests already changed in the original Phase 2 commit (`test_live_execution_engine_with_ibkr_stub_reconcile_path`, `test_live_execution_engine_live_mode_uses_ibkr_stub`) keep passing; the rest of the `test_ibkr_stub_*` family now also doesn't need the host's IB Gateway.
+
+Commit suggestion (small fix-up on top of phase 2):
+- subject: `phase 2 fix: route remaining IBKRClient tests through FakeIBKRTransport`
+- body bullet:
+  - The local UCRT box happened to have an IB Gateway listening, which kept these tests green; on Linux CI they tried to TCP-connect and failed fast. Inject the test fake so they exercise `IBKRClient` plumbing without a live broker.
+
 ## [2026-04-28] - Phase 2: remove HFT_ENABLE_IBKR option; make IBKR/TWS API mandatory; CI consumes linux-deps bundle uniformly
 
 Model / agent:

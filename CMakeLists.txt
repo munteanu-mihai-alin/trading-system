@@ -26,6 +26,15 @@ set(LIB_SOURCES
   src/lib/LiveExecutionEngine.cpp
 )
 
+# Exactly one IBKR transport implementation is linked into hft_lib. Phase 2
+# will collapse this to the real transport unconditionally and remove the
+# HFT_ENABLE_IBKR option entirely.
+if(HFT_ENABLE_IBKR)
+  list(APPEND LIB_SOURCES src/lib/RealIBKRTransport.cpp)
+else()
+  list(APPEND LIB_SOURCES src/lib/StubIBKRTransport.cpp)
+endif()
+
 add_library(hft_lib ${LIB_SOURCES})
 target_include_directories(hft_lib PUBLIC ${HFT_INCLUDE_DIRS})
 

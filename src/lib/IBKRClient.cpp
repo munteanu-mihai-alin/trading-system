@@ -2,12 +2,20 @@
 
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #include "log/logging_state.hpp"
 
 namespace hft {
 
 namespace hl = hft::log;
+
+IBKRClient::IBKRClient() : IBKRClient(make_default_ibkr_transport()) {}
+
+IBKRClient::IBKRClient(std::unique_ptr<IBKRTransport> transport)
+    : transport_(std::move(transport)) {
+  transport_->set_callbacks(this);
+}
 
 IBKRClient::~IBKRClient() {
   stop_event_loop();
@@ -20,84 +28,37 @@ bool IBKRClient::connect(const std::string& host, int port, int client_id) {
   client_id_ = client_id;
   hl::set_component_state(hl::ComponentId::Broker,
                           hl::ComponentState::Starting);
-#ifdef HFT_ENABLE_IBKR
-  if (client_.eConnect(host.c_str(), port, client_id, false)) {
-    connected_ = true;
-    reader_ = new EReader(&client_, &signal_);
-    reader_->start();
+  if (transport_->connect(host, port, client_id)) {
     hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Ready);
     return true;
   }
-  connected_ = false;
-  hl::raise_error(hl::ComponentId::Broker, /*code=*/2, "IBKR eConnect failed");
+  hl::raise_error(hl::ComponentId::Broker, /*code=*/2,
+                  "IBKR transport connect failed");
   hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Error,
                           /*code=*/2);
   return false;
-#else
-  (void)host;
-  (void)port;
-  (void)client_id;
-  connected_ = true;
-  hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Ready);
-  return true;
-#endif
 }
 
 void IBKRClient::disconnect() {
-#ifdef HFT_ENABLE_IBKR
-  if (reader_ != nullptr) {
-    reader_->stop();
-    delete reader_;
-    reader_ = nullptr;
-  }
-  if (client_.isConnected()) {
-    client_.eDisconnect();
-  }
-#endif
-  if (connected_) {
+  const bool was_connected = transport_->is_connected();
+  transport_->disconnect();
+  if (was_connected) {
     hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Down);
   }
-  connected_ = false;
 }
 
 bool IBKRClient::is_connected() const {
-#ifdef HFT_ENABLE_IBKR
-  return connected_ && client_.isConnected();
-#else
-  return connected_;
-#endif
+  return transport_->is_connected();
 }
 
 void IBKRClient::place_limit_order(const OrderRequest& req) {
   lifecycle_.on_submitted(req.id, req.symbol, req.qty);
   send_ts_[req.id] = std::chrono::high_resolution_clock::now();
-#ifdef HFT_ENABLE_IBKR
-  Contract contract;
-  contract.symbol = req.symbol;
-  contract.secType = "STK";
-  contract.exchange = "SMART";
-  contract.currency = "USD";
-
-  Order order;
-  order.orderId = req.id;
-  order.action = req.is_buy ? "BUY" : "SELL";
-  order.orderType = "LMT";
-  order.totalQuantity = DecimalFunctions::doubleToDecimal(req.qty);
-  order.lmtPrice = req.limit;
-
-  client_.placeOrder(req.id, contract, order);
-#else
-  (void)req;
-#endif
+  transport_->place_limit_order(req);
 }
 
 void IBKRClient::cancel_order(int order_id) {
-#ifdef HFT_ENABLE_IBKR
-  OrderCancel cancel;
-  client_.cancelOrder(order_id, cancel);
-#else
-  (void)order_id;
-#endif
+  transport_->cancel_order(order_id);
 }
 
 double IBKRClient::ack_latency_ms(int order_id) const {
@@ -109,44 +70,27 @@ double IBKRClient::ack_latency_ms(int order_id) const {
 }
 
 void IBKRClient::start_event_loop() {
-#ifdef HFT_ENABLE_IBKR
   if (reader_running_.exchange(true)) {
     return;
   }
   reader_thread_ = std::thread([this]() {
-    while (reader_running_.load() && connected_) {
-      signal_.waitForSignal();
-      if (reader_ != nullptr) {
-        reader_->processMsgs();
-      }
+    while (reader_running_.load() && transport_->is_connected()) {
+      transport_->pump_once();
     }
   });
-#endif
 }
 
 void IBKRClient::stop_event_loop() {
-#ifdef HFT_ENABLE_IBKR
   if (!reader_running_.exchange(false)) {
     return;
   }
   if (reader_thread_.joinable()) {
     reader_thread_.join();
   }
-#endif
 }
 
 void IBKRClient::subscribe_market_depth(const MarketDepthRequest& req) {
-#ifdef HFT_ENABLE_IBKR
-  Contract contract;
-  contract.symbol = req.symbol;
-  contract.secType = "STK";
-  contract.exchange = "SMART";
-  contract.currency = "USD";
-  client_.reqMktDepth(req.ticker_id, contract, req.depth, false,
-                      TagValueListSPtr());
-#else
-  (void)req;
-#endif
+  transport_->subscribe_market_depth(req);
 }
 
 L2Book IBKRClient::snapshot_book(int ticker_id) const {
@@ -159,15 +103,10 @@ L2Book IBKRClient::snapshot_book(int ticker_id) const {
 }
 
 void IBKRClient::pump_once() {
-#ifdef HFT_ENABLE_IBKR
-  if (!connected_) {
+  if (!transport_->is_connected()) {
     return;
   }
-  signal_.waitForSignal();
-  if (reader_ != nullptr) {
-    reader_->processMsgs();
-  }
-#endif
+  transport_->pump_once();
 }
 
 bool IBKRClient::reconnect_once() {
@@ -184,7 +123,6 @@ bool IBKRClient::reconnect_once() {
 }
 
 void IBKRClient::start_production_event_loop() {
-#ifdef HFT_ENABLE_IBKR
   if (reader_running_.exchange(true)) {
     return;
   }
@@ -196,32 +134,37 @@ void IBKRClient::start_production_event_loop() {
           continue;
         }
       }
-      pump_once();
+      transport_->pump_once();
     }
   });
-#endif
 }
 
-#ifdef HFT_ENABLE_IBKR
-void IBKRClient::connectionClosed() {
-  const bool was_connected = connected_;
-  connected_ = false;
-  if (was_connected) {
-    hl::raise_error(hl::ComponentId::Broker, /*code=*/3,
-                    "IBKR connection closed by remote");
-    hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Error,
-                            /*code=*/3);
+// ---- IBKRCallbacks ----
+
+void IBKRClient::on_order_status(int order_id, const std::string& status,
+                                 double filled, double remaining,
+                                 double avg_fill_price) {
+  lifecycle_.on_status(order_id, status, filled, remaining, avg_fill_price);
+  if (status == "Submitted" || status == "PreSubmitted") {
+    const auto it = send_ts_.find(order_id);
+    if (it != send_ts_.end()) {
+      const auto now = std::chrono::high_resolution_clock::now();
+      const double ms =
+          std::chrono::duration<double, std::milli>(now - it->second).count();
+      ack_latency_ms_cache_[order_id] = ms;
+    }
   }
 }
 
-void IBKRClient::updateMktDepth(TickerId id, int position, int operation,
-                                int side, double price, Decimal size) {
+void IBKRClient::on_market_depth_update(int ticker_id, int position,
+                                        int operation, int side, double price,
+                                        double size) {
   std::lock_guard<std::mutex> lock(books_mutex_);
-  auto& book = books_[id];
+  auto& book = books_[ticker_id];
   if (position < 0 || position >= L2Book::DEPTH) {
     return;
   }
-  const L2Level level{price, DecimalFunctions::decimalToDouble(size)};
+  const L2Level level{price, size};
   if (side == 0) {
     if (operation == 2) {
       book.bids[position] = {};
@@ -237,23 +180,11 @@ void IBKRClient::updateMktDepth(TickerId id, int position, int operation,
   }
 }
 
-void IBKRClient::orderStatus(OrderId orderId, const std::string& status,
-                             Decimal filled, Decimal remaining,
-                             double avgFillPrice, long long, int, double, int,
-                             const std::string&, double) {
-  lifecycle_.on_status(
-      orderId, status, DecimalFunctions::decimalToDouble(filled),
-      DecimalFunctions::decimalToDouble(remaining), avgFillPrice);
-  if (status == "Submitted" || status == "PreSubmitted") {
-    const auto it = send_ts_.find(orderId);
-    if (it != send_ts_.end()) {
-      const auto now = std::chrono::high_resolution_clock::now();
-      const double ms =
-          std::chrono::duration<double, std::milli>(now - it->second).count();
-      ack_latency_ms_cache_[orderId] = ms;
-    }
-  }
+void IBKRClient::on_connection_closed() {
+  hl::raise_error(hl::ComponentId::Broker, /*code=*/3,
+                  "IBKR connection closed by remote");
+  hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Error,
+                          /*code=*/3);
 }
-#endif
 
 }  // namespace hft

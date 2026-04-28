@@ -4,6 +4,79 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-28] - Phase 1: extract IBKRTransport + IBKRCallbacks; remove all #ifdef HFT_ENABLE_IBKR from IBKRClient
+
+Model / agent:
+- Claude Opus 4.7, reasoning model (Cursor agent)
+
+Source state:
+- Local working tree at `D:\trading-system` (git repo, branch `main`).
+- Builds on top of Phase 0 commit `b0d489` (gtest staged + hft_gtests smoke target). Latest pushed commit `34b24c0` (" misc ci") is green on `build-and-test` and `ibkr-build`; the only failing job remains `coverage` (line coverage 59.88% < 70% threshold). Phase 1 does not address coverage on its own; it builds the seam that Phase 3 will use to add the UTs that finally clear the threshold.
+
+User context for this phase:
+- "I forgot to tell you that in phase 2 I plan to remove the IBKR_ON flag." Phase 1 was therefore designed to absorb that future change cleanly: all TWS API knowledge now lives behind `IBKRTransport`, so Phase 2 reduces to deleting `StubIBKRTransport.cpp` and the `if(HFT_ENABLE_IBKR)` wrapper in `CMakeLists.txt`.
+
+What changed:
+
+1. New interfaces (header-only, no TWS API dependencies)
+   - `include/broker/IBKRTransport.hpp` - the outbound surface IBKRClient calls into. Methods: `connect`, `disconnect`, `is_connected`, `place_limit_order`, `cancel_order`, `subscribe_market_depth`, `pump_once`, `set_callbacks`. Plus a free function `make_default_ibkr_transport()` whose definition is provided by exactly one of the transport `.cpp` files (CMake-selected).
+   - `include/broker/IBKRCallbacks.hpp` - the inbound surface the transport calls back into. Methods: `on_order_status`, `on_market_depth_update`, `on_connection_closed`. All decoded into portable C++ types (no `Decimal`, no `OrderId`, no `TickerId`).
+
+2. Two transport implementations selected at CMake time
+   - `src/lib/RealIBKRTransport.cpp` (compiled when `HFT_ENABLE_IBKR=ON`) - inherits both `IBKRTransport` and `EWrapper`, owns `EClientSocket` + `EReader` + `EReaderOSSignal`. All TWS API includes (`Contract.h`, `Decimal.h`, `EClientSocket.h`, `EReader.h`, `EReaderOSSignal.h`, `EWrapper.h`, `Order.h`, `OrderCancel.h`, `CommissionAndFeesReport.h`) live exclusively here. The non-trivial `EWrapper` overrides (`orderStatus`, `updateMktDepth`, `connectionClosed`) translate `Decimal` to `double` and forward to `IBKRCallbacks`. Every other `EWrapper` method is an explicit no-op override (same as the previous stubs that lived in `IBKRClient.hpp`). Defines `make_default_ibkr_transport()` returning `std::make_unique<RealIBKRTransport>()`.
+   - `src/lib/StubIBKRTransport.cpp` (compiled when `HFT_ENABLE_IBKR=OFF`) - tiny anonymous-namespace class that only tracks a `connected_` flag and no-ops everything else. Defines `make_default_ibkr_transport()` returning `std::make_unique<StubIBKRTransport>()`. Phase 2 will delete this file.
+
+3. `IBKRClient` refactored to pure logic
+   - `include/broker/IBKRClient.hpp`: no TWS API includes, no `EWrapper` inheritance, `final` class. Now `: public IBroker, public IBKRCallbacks`. Member: `std::unique_ptr<IBKRTransport> transport_`. Two constructors: default (uses `make_default_ibkr_transport()`) and an explicit `std::unique_ptr<IBKRTransport>` injection for tests.
+   - `src/lib/IBKRClient.cpp`: zero `#ifdef HFT_ENABLE_IBKR` directives anywhere. `connect/disconnect/place_limit_order/cancel_order/subscribe_market_depth/pump_once` are thin delegations to `transport_`. `start_event_loop` and `start_production_event_loop` still own the reader thread (the reconnect-loop logic uses `ConnectionSupervisor` which is hft logic, not transport logic). The three `IBKRCallbacks` methods do exactly what the previous `EWrapper::orderStatus` / `updateMktDepth` / `connectionClosed` overrides did - just without the Decimal-to-double conversion (the transport does that now). Logging side-effects (`hl::set_component_state`, `hl::raise_error`) preserved 1:1.
+   - The `connected_` flag is gone from `IBKRClient`; `is_connected()` delegates to `transport_->is_connected()`.
+
+4. CMake
+   - `CMakeLists.txt` now appends exactly one of `RealIBKRTransport.cpp` / `StubIBKRTransport.cpp` to `LIB_SOURCES` based on the existing `HFT_ENABLE_IBKR` option. No other CMake change. Phase 2 will collapse the `if/else` to an unconditional `list(APPEND ... RealIBKRTransport.cpp)` and remove the option.
+
+5. New helper: `agent/_configure_ucrt_noibkr.sh`
+   - Mirrors `agent/_configure_ucrt.sh` but configures with `-DHFT_ENABLE_IBKR=OFF` into `build-ucrt-noibkr/`. Used to verify the stub-transport branch locally; will also be useful when Phase 3 wants to run UTs in both configurations side-by-side.
+
+What did NOT change:
+- The public surface of `IBKRClient` is identical at the API level (same method signatures, same lifecycle behavior). Existing tests in `tests/integration/TestBrokerIntegration.cpp` continue to compile and run unchanged.
+- `IBroker` interface unchanged.
+- `LiveExecutionEngine`, `PaperBrokerSim`, `OrderLifecycleBook`, `ConnectionSupervisor`, `L2Book`, all logging code - unchanged.
+- TWS API vendoring (`third_party/twsapi/client/`) unchanged.
+- No tests were added, removed, or modified. Phase 3 will add UTs against `MockIBKRTransport`.
+
+Errors encountered + fixes:
+- A PowerShell quoting bug stripped the quotes around `-G "Unix Makefiles"` when invoking the IBKR=OFF configure command directly through `bash -c`. CMake reported `Could not create named generator Unix`. Fixed by adding `agent/_configure_ucrt_noibkr.sh` so the configure args are quoted inside a real shell script, the same pattern we use for IBKR=ON via `agent/_configure_ucrt.sh`.
+
+Validation done:
+- `agent/_run_project_build.sh` (HFT_ENABLE_IBKR=ON): clean. Build log shows `IBKRClient.cpp` and `RealIBKRTransport.cpp` both compile, libtwsapi_vendor.a, libhft_lib.a, hft_app.exe, hft_tests.exe, hft_gtests.exe all linked.
+  - `ctest --output-on-failure`: `hft_gtests` PASSED (4/4). `hft_tests` shows the same 2 pre-existing IBKR-stub TCP-attempt failures (the tests assume `client.connect("127.0.0.1", 4002, 1)` returns true, which the real transport can't satisfy without a running Gateway). No new failures, no behavioral regression.
+- `agent/_configure_ucrt_noibkr.sh` + manual build (HFT_ENABLE_IBKR=OFF, build dir `build-ucrt-noibkr/`): clean. Build log shows `StubIBKRTransport.cpp` linked, no TWS API symbols anywhere.
+  - `ctest --output-on-failure`: 100% pass. `hft_tests`: PASSED (all 118 tests). `hft_gtests`: PASSED (4/4). This is the configuration Ubuntu CI runs.
+- `rg "HFT_ENABLE_IBKR" src/lib include/broker` shows zero `#ifdef HFT_ENABLE_IBKR` directives in `IBKRClient.cpp` / `IBKRClient.hpp` / `IBKRCallbacks.hpp`. Remaining mentions are docstrings inside the transport files explaining the Phase 2 plan, plus one docstring in `IBKRClient.hpp` explaining the default-ctor factory wiring.
+- `ReadLints` clean on every changed file.
+
+Known risks / follow-up:
+- The 2 pre-existing failing tests in `tests/integration/TestBrokerIntegration.cpp` (`test_ibkr_stub_*` family) still depend on the IBKR=OFF stub-transport behavior to pass. On IBKR=ON they continue to fail because the real transport actually attempts TCP. Phase 3 will replace these with `MockIBKRTransport`-driven UTs that pass under both configurations.
+- `RealIBKRTransport`'s `connectionClosed()` override flips `connected_` to false but does not yet invoke the transport's own `disconnect()` / `reader_->stop()`. The previous monolithic implementation had the same shape (set `connected_=false` only), and its `~RealIBKRTransport` cleans up. Keeping behavior 1:1 was deliberate. A future polish item is to make `connectionClosed` clean up its own EReader so the transport is reusable post-failure without an explicit disconnect call.
+- After Phase 1 the IBKR=OFF build is much smaller and faster (no twsapi_vendor compile, no protobuf compile). This is the configuration we will be growing UTs against in Phase 3. Coverage on Linux CI will benefit.
+
+Suggested commit (simple):
+```
+git add include/broker/IBKRTransport.hpp \
+        include/broker/IBKRCallbacks.hpp \
+        include/broker/IBKRClient.hpp \
+        src/lib/IBKRClient.cpp \
+        src/lib/RealIBKRTransport.cpp \
+        src/lib/StubIBKRTransport.cpp \
+        CMakeLists.txt \
+        agent/_configure_ucrt_noibkr.sh \
+        agent/AGENT_HANDOFF_LOG.md
+
+git commit -m "refactor(broker): extract IBKRTransport seam; IBKRClient is now #ifdef-free"
+```
+
+---
+
 ## [2026-04-28] - Phase 0: stage GoogleTest + GoogleMock everywhere, add hft_gtests smoke target
 
 Model / agent:

@@ -11,10 +11,10 @@ rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-cmake -DHFT_ENABLE_IBKR=ON ..
+cmake ..
 cmake --build . -j"$(nproc)"
 
-echo "Built IBKR-enabled target successfully in ${BUILD_DIR}"
+echo "Built project successfully in ${BUILD_DIR}"
 
 
 # Recommended protobuf build settings for this project:

@@ -8,10 +8,16 @@ rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-cmake -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
-      -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
-      ..
+CMAKE_ARGS=(
+  -DCMAKE_BUILD_TYPE=Debug
+  -DCMAKE_CXX_FLAGS="--coverage -O0 -g"
+  -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+)
+if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+  CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}")
+fi
+
+cmake "${CMAKE_ARGS[@]}" ..
 cmake --build . -j"$(nproc)"
 ctest --output-on-failure
 
@@ -24,6 +30,8 @@ lcov --remove coverage.info \
      '/usr/*' \
      '*/tests/*' \
      '*/build*/*' \
+     '*/third_party/*' \
+     '*/dependencies/*' \
      --output-file coverage.filtered.info \
      --ignore-errors unused \
      --rc branch_coverage=1 \

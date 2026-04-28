@@ -4,6 +4,79 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-28] - Phase 2: remove HFT_ENABLE_IBKR option; make IBKR/TWS API mandatory; CI consumes linux-deps bundle uniformly
+
+Model / agent:
+- Claude Opus 4.7, reasoning model (Cursor agent)
+
+User intent (verbatim, paraphrased only for grouping):
+- "I pushed code, you can check and then move to phase 2."
+- Phase 2 of the testing roadmap was previously agreed: drop the `HFT_ENABLE_IBKR` CMake option entirely so every build is a TWS-API build. Tests that used to depend on the no-op `StubIBKRTransport` either get a hand-rolled fake or are migrated to a real mock in Phase 3.
+- CI must stay green after the option is removed; that means the previously IBKR-OFF jobs (`build-and-test`, `coverage`) must now pull in protobuf, the Intel decimal runtime, and the vendored TWS API the same way `ibkr-build` did.
+
+Files touched (additive / clean cuts only; nothing renamed silently):
+
+### Source / build system
+- `CMakeLists.txt`:
+  - Removed `option(HFT_ENABLE_IBKR ...)`.
+  - Added `src/lib/RealIBKRTransport.cpp` to `LIB_SOURCES` unconditionally; deleted the `if/else` that picked between Real and Stub.
+  - Removed the giant `if(HFT_ENABLE_IBKR) ... endif()` wrapper around the protobuf / Intel RDFP / `twsapi_vendor` setup. All of it (find_package, RDFP search, `twsapi_vendor` static library, link-order patches on `hft_app`/`hft_tests`/`hft_gtests`) is now unconditional.
+  - Removed `target_compile_definitions(hft_lib PUBLIC HFT_ENABLE_IBKR=1)` (no source code references the macro anymore — verified with `rg`).
+- `src/lib/RealIBKRTransport.cpp`: refreshed the file header comment; no behavioural change.
+- `src/lib/StubIBKRTransport.cpp`: deleted. The stub no longer has a place in the build; the `make_default_ibkr_transport()` factory is now defined exclusively in `RealIBKRTransport.cpp`.
+- `include/broker/IBKRClient.hpp`, `include/broker/IBKRTransport.hpp`: docstrings updated to drop the "stub variant" language now that there is only one transport implementation.
+- `src/lib/IBKRClient.cpp`: `IBKRClient::disconnect()` now calls `stop_event_loop()` before tearing down the transport. **This is a real bug fix that Phase 2 surfaced** — see "Bug surfaced and fixed during verification" below.
+- `tests/common/FakeIBKRTransport.hpp` (new): minimal hand-rolled `IBKRTransport` double that always reports itself as connected and no-ops the rest. Used by the two HFT_TEST cases that previously relied on the old stub's connect-always-succeeds semantics. The gmock-based `MockIBKRTransport` for unit tests will live alongside the new gtest-based suites in Phase 3.
+- `tests/integration/TestBrokerIntegration.cpp`: two tests (`test_live_execution_engine_with_ibkr_stub_reconcile_path`, `test_live_execution_engine_live_mode_uses_ibkr_stub`) now construct `IBKRClient` with `std::make_unique<hft::test::FakeIBKRTransport>()` so `engine.start()` succeeds in CI environments without a TWS Gateway. The other `test_ibkr_stub_*` cases were left unchanged; they exercise the real transport's connect path against the local IB Gateway on the Windows dev box, and on Linux CI the connection still completes because TWS API's `eConnect()` returns success synchronously even before the handshake fails.
+
+### CI / scripts
+- `.github/workflows/ci.yml`: full rewrite of the dependency setup.
+  - `build-and-test` and `coverage` now both `apt-get install libintelrdfpmath-dev` and run a "Restore or rebuild Linux dependency bundle" step (cloned from the previous `ibkr-build` job): downloads the `linux-deps` release asset, falls back to running `scripts/rebuild_linux_deps_ci.sh` and uploading the asset if the release is missing. Both jobs configure CMake with `-DCMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/dependencies/linux/install`.
+  - `ibkr-build` job removed; it was redundant once every job is an IBKR build.
+  - `linux-deps-release` job kept (still gated on `%REBUILD_DEPS` in the commit message).
+- `scripts/run_coverage_ci.sh`: now passes `CMAKE_PREFIX_PATH` through to `cmake` (so the coverage build can find protobuf and the Intel decimal runtime), and the lcov filter list now also strips `*/third_party/*` and `*/dependencies/*` from the report (the vendored TWS API + spdlog + GTest were artificially dragging coverage down).
+- `scripts/build_third_party_dependencies_ucrt.sh`: dropped `-DHFT_ENABLE_IBKR=ON` from the printed "next step" snippet; updated the IBKR-source-missing warning message accordingly.
+- `scripts/build_vendored_ibkr.sh`, `scripts/build_vendored_ibkr_with_protobuf.sh`: dropped `-DHFT_ENABLE_IBKR=ON` from their CMake configure lines.
+- `agent/_configure_ucrt.sh` (local, gitignored): dropped `-DHFT_ENABLE_IBKR=ON`. Comment updated.
+- `agent/_run_project_build.sh` (local, gitignored): comment updated.
+- `agent/_configure_ucrt_noibkr.sh` (local, gitignored): deleted. There is no IBKR-off build mode anymore.
+- `agent/_phase2_build_and_test.sh`, `agent/_phase2_flake_check.sh`, `agent/_phase2_direct_flake_check.sh` (local, gitignored): three small helpers used during verification. They wrap the clean-configure → build → ctest cycle and run hft_tests N times to look for flakes.
+
+### Documentation
+- `README.md`: large rewrite of the high-level intro, "Build targets", and "CI overview" sections to reflect that there is no IBKR-on/off split anymore. The bogus reference to `scripts/generate_ci_workflow.sh` (no such file in the tree) was deleted while we were there.
+- `agent/AGENT_WORKFLOW.md`: replaced the "Main CMake option" stub with a short "CMake build dependencies" section.
+
+Bug surfaced and fixed during verification:
+- After collapsing to a single mandatory `RealIBKRTransport`, `test_ibkr_stub_start_stop_event_loops_are_reentrant` started crashing with a SegFault roughly 20% of the time (2/10 runs of `./hft_tests.exe` directly, same rate under `ctest`).
+- Root cause: the test calls `client.start_production_event_loop()` (which spawns a reader thread T2 calling `transport_->pump_once()`) and then immediately calls `client.disconnect()`. The old `IBKRClient::disconnect()` invoked `transport_->disconnect()` while T2 was still inside `RealIBKRTransport::pump_once()`. `RealIBKRTransport::disconnect()` deletes the `EReader*`, so T2 raced into a use-after-free on the EReader/EReaderOSSignal. The bug existed in the previous IBKR=ON UCRT build path too — it was only invisible in CI because the only Linux IBKR=ON job didn't run ctest.
+- Fix: `IBKRClient::disconnect()` now calls `stop_event_loop()` first, joining the reader thread before the transport is torn down. The destructor already does the same in the right order; explicit `disconnect()` now matches.
+- Verification: ran `agent/_phase2_direct_flake_check.sh` and `agent/_phase2_flake_check.sh` 10x each after the fix; 20/20 clean runs.
+
+Verification:
+- Clean clone of build dir (`rm -rf build-ucrt-ibkr`), full configure + build + ctest via `agent/_phase2_build_and_test.sh`:
+  - configure: PASS (vendored protobuf, Intel decimal runtime, vendored TWS API, vendored spdlog, vendored GTest all picked up via `dependencies/ucrt64/install` prefix and `third_party/`).
+  - build: PASS (`hft_lib`, `twsapi_vendor`, `hft_app`, `hft_tests`, `hft_gtests`).
+  - ctest: PASS, 2/2 tests, 100% (120 HFT_TEST cases inside `hft_tests`, 4 GTest cases inside `hft_gtests`).
+- 10x repeat ctest run via `agent/_phase2_flake_check.sh`: 10/10 PASS.
+- 10x repeat direct `./hft_tests.exe` run via `agent/_phase2_direct_flake_check.sh`: 10/10 PASS.
+- `rg "HFT_ENABLE_IBKR"` shows the remaining hits are exclusively in `agent/AGENT_HANDOFF_LOG.md` (history) and the unrelated `.claude/worktrees/` siblings (out of scope). Active source/build/CI/docs are clean.
+
+Open follow-ups for Phase 3 (test reorg + coverage push):
+- Move `tests/integration/` to `tests/module/` and split per-class tests into `tests/unit/` per the previously-agreed reorg.
+- Replace the hand-rolled `FakeIBKRTransport` with a gmock-based `MockIBKRTransport` for the unit suites; keep the fake (or delete it) once the legacy HFT_TEST cases that use it are migrated.
+- Add UTs to push line coverage above the 70% threshold; the new `*/third_party/*` / `*/dependencies/*` filters in `run_coverage_ci.sh` should already help in this direction.
+- Cross-check our state-centric log against the IB Gateway log directory the user pointed to (`D:\ibgateway\<...>\`).
+
+Commit suggestion:
+- subject: `phase 2: drop HFT_ENABLE_IBKR option; CI consumes linux-deps bundle everywhere`
+- body bullets:
+  - Make IBKR / TWS API mandatory in the build (no more `HFT_ENABLE_IBKR` option, no `StubIBKRTransport`); `make_default_ibkr_transport()` always returns the real transport.
+  - Update CI: `build-and-test` and `coverage` now restore the `linux-deps` release asset (or rebuild it on miss) and configure with `CMAKE_PREFIX_PATH` pointing at it; redundant `ibkr-build` job removed.
+  - Add `tests/common/FakeIBKRTransport.hpp` and inject it into the two engine-lifecycle tests that previously relied on the stub.
+  - Bug fix: `IBKRClient::disconnect()` now stops the reader thread before tearing down the transport, eliminating a race that was crashing `test_ibkr_stub_start_stop_event_loops_are_reentrant` ~20% of the time once the real transport became mandatory.
+  - Coverage: filter `*/third_party/*` and `*/dependencies/*` out of the lcov report and pass `CMAKE_PREFIX_PATH` through to the coverage build so it links protobuf/Intel-RDFP.
+  - Docs: update `README.md` and `agent/AGENT_WORKFLOW.md` to reflect the new always-IBKR-on shape; remove dead reference to `scripts/generate_ci_workflow.sh`.
+
 ## [2026-04-28] - Phase 1: extract IBKRTransport + IBKRCallbacks; remove all #ifdef HFT_ENABLE_IBKR from IBKRClient
 
 Model / agent:

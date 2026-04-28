@@ -40,6 +40,12 @@ bool IBKRClient::connect(const std::string& host, int port, int client_id) {
 }
 
 void IBKRClient::disconnect() {
+  // The reader/production thread may be blocked inside the transport's
+  // pump_once() when this is called from arbitrary user code (the destructor
+  // already orders the stop correctly, but explicit disconnect() needs the
+  // same guarantee). Joining first prevents a use-after-free on transport-
+  // owned state (EReader, sockets) once the transport is torn down below.
+  stop_event_loop();
   const bool was_connected = transport_->is_connected();
   transport_->disconnect();
   if (was_connected) {

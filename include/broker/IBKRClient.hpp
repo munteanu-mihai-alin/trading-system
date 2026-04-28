@@ -17,10 +17,10 @@
 namespace hft {
 
 // Live broker driving real IBKR/TWS via an injected IBKRTransport. The class
-// is now free of TWS API headers, EWrapper inheritance, and #ifdef branches.
-// Default-constructed instances pick up the production transport via
-// make_default_ibkr_transport() (real one in HFT_ENABLE_IBKR=ON builds, stub
-// one otherwise); tests pass an explicit MockIBKRTransport.
+// is free of TWS API headers and EWrapper inheritance; the TWS-specific code
+// lives in RealIBKRTransport. Default-constructed instances pick up the
+// production transport via make_default_ibkr_transport(); tests pass an
+// explicit MockIBKRTransport.
 class IBKRClient final : public IBroker, public IBKRCallbacks {
   std::unique_ptr<IBKRTransport> transport_;
   std::unordered_map<int, std::chrono::high_resolution_clock::time_point>

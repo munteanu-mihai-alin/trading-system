@@ -175,8 +175,9 @@ hft_tests
 twsapi_vendor
 ```
 
-## Main CMake option
+## CMake build dependencies
 
-```text
-HFT_ENABLE_IBKR
-```
+The build is unconditional; `protobuf::libprotobuf`, the Intel decimal runtime,
+the vendored TWS API, `spdlog`, and `GTest`/`GMock` are mandatory and resolved
+either via system packages, `CMAKE_PREFIX_PATH`, or vendored copies under
+`third_party/`. There is no longer an IBKR on/off CMake option.

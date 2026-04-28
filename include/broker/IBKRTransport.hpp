@@ -9,14 +9,12 @@ namespace hft {
 
 class IBKRCallbacks;
 
-// Outbound surface that IBKRClient uses to talk to the broker. The real
-// implementation wraps the TWS API (EClientSocket + EReader + EWrapper); a
-// stub implementation no-ops everything for builds without HFT_ENABLE_IBKR;
-// tests use a gmock to drive arbitrary scenarios.
+// Outbound surface that IBKRClient uses to talk to the broker. The production
+// implementation wraps the TWS API (EClientSocket + EReader + EWrapper); tests
+// use a gmock to drive arbitrary scenarios.
 //
 // All TWS API knowledge (Decimal, Contract, Order, EWrapper overrides) lives
-// behind this interface so IBKRClient itself stays free of conditional
-// compilation.
+// behind this interface so IBKRClient itself stays free of TWS API headers.
 class IBKRTransport {
  public:
   virtual ~IBKRTransport() = default;
@@ -40,10 +38,8 @@ class IBKRTransport {
   virtual void set_callbacks(IBKRCallbacks* cb) = 0;
 };
 
-// Factory used by IBKRClient's default constructor. Defined in exactly one
-// of RealIBKRTransport.cpp / StubIBKRTransport.cpp; CMake selects which one
-// is linked based on HFT_ENABLE_IBKR. Phase 2 will delete the stub variant
-// and the option, leaving only the real factory.
+// Factory used by IBKRClient's default constructor. Defined in
+// RealIBKRTransport.cpp.
 std::unique_ptr<IBKRTransport> make_default_ibkr_transport();
 
 }  // namespace hft

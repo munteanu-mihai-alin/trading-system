@@ -6,6 +6,7 @@
 #include "broker/IBKRClient.hpp"
 #include "broker/OrderLifecycle.hpp"
 #include "broker/PaperBrokerSim.hpp"
+#include "common/FakeIBKRTransport.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "core/portfolio.hpp"
@@ -319,7 +320,8 @@ HFT_TEST(test_live_execution_engine_with_ibkr_stub_reconcile_path) {
   cfg.mode = BrokerMode::Live;
   cfg.top_k = 1;
 
-  auto broker = std::make_unique<IBKRClient>();
+  auto broker = std::make_unique<IBKRClient>(
+      std::make_unique<hft::test::FakeIBKRTransport>());
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
   hft::test::require(eng.start(), "ibkr stub engine should start");
@@ -617,7 +619,8 @@ HFT_TEST(test_live_execution_engine_live_mode_uses_ibkr_stub) {
   cfg.mode = BrokerMode::Live;
   cfg.top_k = 1;
 
-  auto broker = std::make_unique<IBKRClient>();
+  auto broker = std::make_unique<IBKRClient>(
+      std::make_unique<hft::test::FakeIBKRTransport>());
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
   hft::test::require(eng.start(), "live-mode stub start should succeed");

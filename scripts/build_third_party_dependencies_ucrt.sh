@@ -58,7 +58,7 @@ fi
 
 if [[ ! -d "${IBKR_SRC}" ]]; then
   echo "WARNING: ${IBKR_SRC} is missing."
-  echo "         Dependency libraries can still be built, but HFT_ENABLE_IBKR project builds will need TWS API sources."
+  echo "         Dependency libraries can still be built, but the project will not link without TWS API sources."
 fi
 
 mkdir -p "${BUILD_DIR}" "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/include"
@@ -325,6 +325,5 @@ Next step for your project:
     -DCMAKE_C_COMPILER=gcc \
     -DCMAKE_CXX_COMPILER=g++ \
     -DCMAKE_BUILD_TYPE=Release \
-    -DHFT_ENABLE_IBKR=ON \
     -DCMAKE_PREFIX_PATH="${INSTALL_DIR}"
 EOF

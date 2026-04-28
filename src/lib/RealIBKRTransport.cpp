@@ -1,11 +1,9 @@
 // Real TWS-API-backed implementation of IBKRTransport.
 //
-// All the things that used to live as #ifdef HFT_ENABLE_IBKR branches inside
-// IBKRClient now live here: EClientSocket ownership, EReader signaling,
-// EWrapper callback overrides (most are no-ops; the few non-trivial ones
-// translate Decimal -> double and forward to IBKRCallbacks). This file is
-// only linked when HFT_ENABLE_IBKR=ON; CMake selects between this file and
-// StubIBKRTransport.cpp.
+// EClientSocket ownership, EReader signaling, and EWrapper callback overrides
+// (most are no-ops; the few non-trivial ones translate Decimal -> double and
+// forward to IBKRCallbacks) all live here, behind the IBKRTransport interface.
+// This is the single transport implementation linked into hft_lib.
 
 #include <atomic>
 #include <memory>

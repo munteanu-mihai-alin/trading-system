@@ -1,6 +1,6 @@
 # trading-system
 
-A compact research and integration project for ranking, simulation, validation, and optional Interactive Brokers / TWS connectivity. The default build works without IBKR. The IBKR-enabled build uses the vendored TWS API under `third_party/twsapi/client` together with protobuf and the Intel decimal runtime.
+A compact research and integration project for ranking, simulation, validation, and Interactive Brokers / TWS connectivity. Every build links the vendored TWS API under `third_party/twsapi/client` together with protobuf and the Intel decimal runtime; broker-specific code is hidden behind the `IBKRTransport` seam (see `include/broker/IBKRTransport.hpp`) so non-broker code paths are easy to test in isolation.
 
 ## Project layout
 
@@ -33,14 +33,23 @@ Root `CMakeLists.txt` defines:
 - `hft_tests`
   - test executable
 - `twsapi_vendor`
-  - only when `HFT_ENABLE_IBKR=ON`; builds the vendored TWS API as a dedicated static library
+  - vendored TWS API compiled as a dedicated static library; always built
+- `hft_gtests`
+  - GoogleTest/GoogleMock-based test executable
 
-## Default local build
+## Local build
 
-This is the simplest build and does not require IBKR dependencies.
+The build expects:
+
+- vendored TWS API at `third_party/twsapi/client`
+- protobuf available through `CMAKE_PREFIX_PATH`
+- Intel decimal runtime available through `CMAKE_PREFIX_PATH` or system library paths
+- `spdlog` and `GTest`/`GMock` available either through the system, through `CMAKE_PREFIX_PATH`, or through the vendored copies under `third_party/`
+
+Example:
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_PREFIX_PATH="/path/to/deps/install"
 cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
@@ -49,21 +58,7 @@ Expected outputs with a single-config generator such as Unix Makefiles or MinGW 
 
 - `build/hft_app` or `build/hft_app.exe`
 - `build/hft_tests` or `build/hft_tests.exe`
-
-## IBKR-enabled local build
-
-The IBKR build expects:
-
-- vendored TWS API at `third_party/twsapi/client`
-- protobuf available through `CMAKE_PREFIX_PATH`
-- Intel decimal runtime available through `CMAKE_PREFIX_PATH` or system library paths
-
-Example:
-
-```bash
-cmake -S . -B build-ibkr -DHFT_ENABLE_IBKR=ON -DCMAKE_PREFIX_PATH="/path/to/deps/install"
-cmake --build build-ibkr -j"$(nproc)"
-```
+- `build/hft_gtests` or `build/hft_gtests.exe`
 
 The app loads `config.ini` using a relative path, so run it from a working directory that contains the config file.
 
@@ -92,7 +87,6 @@ Then configure the project:
 cmake -S . -B build-ucrt-ibkr \
   -G "MinGW Makefiles" \
   -DCMAKE_BUILD_TYPE=Release \
-  -DHFT_ENABLE_IBKR=ON \
   -DCMAKE_PREFIX_PATH="/path/to/repo/dependencies/ucrt64/install"
 cmake --build build-ucrt-ibkr -j"$(nproc)"
 ```
@@ -157,16 +151,13 @@ The intended flow is:
 Current workflow responsibilities are:
 
 - `build-and-test`
-  - default configure, build, and test path without special IBKR dependency setup
+  - restores the Linux dependency bundle from the `linux-deps` release asset (or rebuilds it if missing)
+  - configures, builds, and tests the project against that bundle
 - `coverage`
-  - runs the coverage helper script and uploads coverage artifacts
+  - same dependency setup as `build-and-test`, plus a coverage build with `lcov` and threshold gating
 - `linux-deps-release`
   - builds the reusable Linux dependency bundle
   - intended to run only on pushes whose commit message contains `%REBUILD_DEPS`
-- `ibkr-build`
-  - restores the Linux dependency bundle from the `linux-deps` release asset, or rebuilds it if missing
-  - configures the root project with `-DHFT_ENABLE_IBKR=ON`
-  - points `CMAKE_PREFIX_PATH` at `dependencies/linux/install`
 
 ## Script reference
 
@@ -192,24 +183,16 @@ Current workflow responsibilities are:
   - builds the Linux CI dependency bundle into `dependencies/linux/install`
   - archives it as `dependencies/linux/linux-deps-ubuntu-latest.tar.gz`
 
-### Workflow generation helper
-
-- `scripts/generate_ci_workflow.sh`
-  - rewrites `.github/workflows/ci.yml` from a bash here-document
-  - useful if you want the workflow file to be regenerated from one script source
-
 ## CMake notes
 
 - Root entry point:
   - `CMakeLists.txt`
-- Main option:
-  - `HFT_ENABLE_IBKR`
-- Default:
-  - `OFF`
-- IBKR-enabled builds expect:
+- Mandatory dependencies:
   - vendored TWS API sources at `third_party/twsapi/client`
-  - protobuf available as a CMake package
+  - protobuf available as a CMake package (`protobuf::libprotobuf`)
   - Intel decimal runtime library available to CMake/library search
+  - `spdlog` (system, via prefix, or vendored under `third_party/spdlog`)
+  - `GTest`/`GMock` (system, via prefix, or vendored under `third_party/googletest`)
 
 ## Runtime notes
 
@@ -222,9 +205,7 @@ Current workflow responsibilities are:
 For a healthy repo checkout, these locations should exist or be created by scripts:
 
 - root build:
-  - `build/`
-- IBKR build:
-  - `build-ibkr/` or `build-ucrt-ibkr/`
+  - `build/` (Linux/CI) or `build-ucrt-ibkr/` (Windows/MSYS2)
 - vendored TWS API:
   - `third_party/twsapi/client`
 - Linux dependency bundle output:
@@ -235,4 +216,4 @@ For a healthy repo checkout, these locations should exist or be created by scrip
 
 ## Notes
 
-This repository is a research/integration codebase. The default build path is the simplest way to work on the project. Use the IBKR-specific paths only when you need the vendored TWS API and its dependency stack.
+This repository is a research/integration codebase. Every build links the vendored TWS API stack; broker behaviour is mediated by the `IBKRTransport` interface so unit tests can substitute a mock without touching any TWS API headers.

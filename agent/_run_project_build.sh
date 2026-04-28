@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local helper: clean reconfigure + build of hft_app/hft_tests with
-# HFT_ENABLE_IBKR=ON and HFT_ENABLE_STATE_LOGGING=ON, capturing full output.
+# Local helper: clean reconfigure + build of hft_app/hft_tests against the
+# UCRT64 dependency prefix, capturing full output.
 set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_FILE="${ROOT_DIR}/_project_build.log"

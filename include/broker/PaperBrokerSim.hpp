@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "broker/IBroker.hpp"
+#include "log/logging_state.hpp"
 
 namespace hft {
 
@@ -21,10 +22,18 @@ class PaperBrokerSim : public IBroker {
 
   bool connect(const std::string&, int, int) override {
     connected_ = true;
+    hft::log::set_component_state(hft::log::ComponentId::Broker,
+                                  hft::log::ComponentState::Ready);
     return true;
   }
 
-  void disconnect() override { connected_ = false; }
+  void disconnect() override {
+    if (connected_) {
+      hft::log::set_component_state(hft::log::ComponentId::Broker,
+                                    hft::log::ComponentState::Down);
+    }
+    connected_ = false;
+  }
 
   bool is_connected() const override { return connected_; }
 

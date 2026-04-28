@@ -182,7 +182,8 @@ void LoggingService::handle_event_(const RawEvent& raw) {
     case EventType::AppStateChanged: {
       AppStateChangedEvent ev{};
       std::memcpy(&ev, raw.bytes, sizeof(ev));
-      registry_.set_app_state(ev.new_state, hdr.ts_ns, ev.code);
+      // Registry was already updated atomically at push time; only emit the
+      // human-readable transition line here.
 #if HFT_LOG_HAS_SPDLOG
       if (ops) {
         ops->info("APP {} -> {} code={}", to_string(ev.old_state),
@@ -194,8 +195,6 @@ void LoggingService::handle_event_(const RawEvent& raw) {
     case EventType::ComponentStateChanged: {
       ComponentStateChangedEvent ev{};
       std::memcpy(&ev, raw.bytes, sizeof(ev));
-      registry_.set_component_state(static_cast<ComponentId>(hdr.component_id),
-                                    ev.new_state, hdr.ts_ns, ev.code);
 #if HFT_LOG_HAS_SPDLOG
       if (ops) {
         ops->info("{} {} -> {} code={}",

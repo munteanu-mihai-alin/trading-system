@@ -99,7 +99,7 @@ class IBKRClient
                  const OrderState&) override {}
   void openOrderEnd() override {}
   void winError(const std::string&, int) override {}
-  void connectionClosed() override { connected_ = false; }
+  void connectionClosed() override;
   void updateAccountValue(const std::string&, const std::string&,
                           const std::string&, const std::string&) override {}
   void updatePortfolio(const Contract&, Decimal, double, double, double, double,

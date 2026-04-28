@@ -134,41 +134,31 @@ if(HFT_ENABLE_IBKR)
 endif()
 
 # ---------------------------------------------------------------------------
-# State-centric logging module (additive, opt-out via HFT_ENABLE_STATE_LOGGING).
-# Adds:
-#   - new sources: src/lib/LoggingService.cpp, src/lib/LoggingState.cpp
-#   - external dep: spdlog (find_package, fallback to vendored third_party/spdlog)
+# State-centric logging module (always built; spdlog is a hard dependency).
+# Resolved via find_package(spdlog) first, falling back to vendored
+# third_party/spdlog. Both UCRT staging and the Linux CI deps bundle install
+# spdlog into CMAKE_PREFIX_PATH; non-IBKR Ubuntu CI jobs install libspdlog-dev.
 # ---------------------------------------------------------------------------
-option(HFT_ENABLE_STATE_LOGGING "Enable spdlog-backed state-centric logging" ON)
-
-if(HFT_ENABLE_STATE_LOGGING)
-  set(_HFT_SPDLOG_TARGET "")
-
-  find_package(spdlog CONFIG QUIET)
-  if(TARGET spdlog::spdlog)
-    set(_HFT_SPDLOG_TARGET spdlog::spdlog)
-    message(STATUS "Using spdlog from find_package: spdlog::spdlog")
-  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/CMakeLists.txt")
-    set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
-    set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/spdlog EXCLUDE_FROM_ALL)
-    set(_HFT_SPDLOG_TARGET spdlog::spdlog)
-    message(STATUS "Using spdlog from vendored third_party/spdlog")
-  else()
-    message(FATAL_ERROR
-      "HFT_ENABLE_STATE_LOGGING=ON but no spdlog could be located. "
-      "Install libspdlog-dev, set CMAKE_PREFIX_PATH to a build prefix that "
-      "provides spdlog (e.g. dependencies/ucrt64/install), or stage the "
-      "source via scripts/stage_third_party_sources_ucrt.sh."
-    )
-  endif()
-
-  target_sources(hft_lib PRIVATE
-    src/lib/LoggingService.cpp
-    src/lib/LoggingState.cpp
+find_package(spdlog CONFIG QUIET)
+if(TARGET spdlog::spdlog)
+  message(STATUS "Using spdlog from find_package: spdlog::spdlog")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog/CMakeLists.txt")
+  set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/spdlog EXCLUDE_FROM_ALL)
+  message(STATUS "Using spdlog from vendored third_party/spdlog")
+else()
+  message(FATAL_ERROR
+    "spdlog not found. Install libspdlog-dev, set CMAKE_PREFIX_PATH to a "
+    "build prefix that provides spdlog (e.g. dependencies/ucrt64/install), "
+    "or stage the source via scripts/stage_third_party_sources_ucrt.sh."
   )
-  target_link_libraries(hft_lib PUBLIC ${_HFT_SPDLOG_TARGET})
-  target_compile_definitions(hft_lib PUBLIC HFT_ENABLE_STATE_LOGGING=1)
 endif()
+
+target_sources(hft_lib PRIVATE
+  src/lib/LoggingService.cpp
+  src/lib/LoggingState.cpp
+)
+target_link_libraries(hft_lib PUBLIC spdlog::spdlog)

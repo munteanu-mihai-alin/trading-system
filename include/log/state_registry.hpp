@@ -25,20 +25,38 @@ class StateRegistry {
   StateRegistry(const StateRegistry&) = delete;
   StateRegistry& operator=(const StateRegistry&) = delete;
 
-  void set_app_state(AppState s, std::uint64_t ts_ns,
-                     std::uint32_t code = 0) noexcept {
-    app_state_.store(static_cast<std::uint8_t>(s), std::memory_order_relaxed);
+  // Atomically swap the app state. Returns the prior value so the caller
+  // can record an accurate "old -> new" transition even when other threads
+  // are updating the registry concurrently.
+  AppState exchange_app_state(AppState s, std::uint64_t ts_ns,
+                              std::uint32_t code = 0) noexcept {
+    const auto prev = app_state_.exchange(static_cast<std::uint8_t>(s),
+                                          std::memory_order_acq_rel);
     app_last_update_ns_.store(ts_ns, std::memory_order_relaxed);
     app_code_.store(code, std::memory_order_relaxed);
+    return static_cast<AppState>(prev);
+  }
+
+  ComponentState exchange_component_state(ComponentId id, ComponentState s,
+                                          std::uint64_t ts_ns,
+                                          std::uint32_t code = 0) noexcept {
+    auto& c = components_[index_of(id)];
+    const auto prev = c.state.exchange(static_cast<std::uint8_t>(s),
+                                       std::memory_order_acq_rel);
+    c.last_update_ns.store(ts_ns, std::memory_order_relaxed);
+    c.code.store(code, std::memory_order_relaxed);
+    return static_cast<ComponentState>(prev);
+  }
+
+  void set_app_state(AppState s, std::uint64_t ts_ns,
+                     std::uint32_t code = 0) noexcept {
+    (void)exchange_app_state(s, ts_ns, code);
   }
 
   void set_component_state(ComponentId id, ComponentState s,
                            std::uint64_t ts_ns,
                            std::uint32_t code = 0) noexcept {
-    auto& c = components_[index_of(id)];
-    c.state.store(static_cast<std::uint8_t>(s), std::memory_order_relaxed);
-    c.last_update_ns.store(ts_ns, std::memory_order_relaxed);
-    c.code.store(code, std::memory_order_relaxed);
+    (void)exchange_component_state(id, s, ts_ns, code);
   }
 
   AppState app_state() const noexcept {

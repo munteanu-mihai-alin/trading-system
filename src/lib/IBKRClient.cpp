@@ -3,7 +3,11 @@
 #include <chrono>
 #include <thread>
 
+#include "log/logging_state.hpp"
+
 namespace hft {
+
+namespace hl = hft::log;
 
 IBKRClient::~IBKRClient() {
   stop_event_loop();
@@ -14,20 +18,27 @@ bool IBKRClient::connect(const std::string& host, int port, int client_id) {
   host_ = host;
   port_ = port;
   client_id_ = client_id;
+  hl::set_component_state(hl::ComponentId::Broker,
+                          hl::ComponentState::Starting);
 #ifdef HFT_ENABLE_IBKR
   if (client_.eConnect(host.c_str(), port, client_id, false)) {
     connected_ = true;
     reader_ = new EReader(&client_, &signal_);
     reader_->start();
+    hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Ready);
     return true;
   }
   connected_ = false;
+  hl::raise_error(hl::ComponentId::Broker, /*code=*/2, "IBKR eConnect failed");
+  hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Error,
+                          /*code=*/2);
   return false;
 #else
   (void)host;
   (void)port;
   (void)client_id;
   connected_ = true;
+  hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Ready);
   return true;
 #endif
 }
@@ -43,6 +54,9 @@ void IBKRClient::disconnect() {
     client_.eDisconnect();
   }
 #endif
+  if (connected_) {
+    hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Down);
+  }
   connected_ = false;
 }
 
@@ -189,6 +203,17 @@ void IBKRClient::start_production_event_loop() {
 }
 
 #ifdef HFT_ENABLE_IBKR
+void IBKRClient::connectionClosed() {
+  const bool was_connected = connected_;
+  connected_ = false;
+  if (was_connected) {
+    hl::raise_error(hl::ComponentId::Broker, /*code=*/3,
+                    "IBKR connection closed by remote");
+    hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Error,
+                            /*code=*/3);
+  }
+}
+
 void IBKRClient::updateMktDepth(TickerId id, int position, int operation,
                                 int side, double price, Decimal size) {
   std::lock_guard<std::mutex> lock(books_mutex_);

@@ -75,13 +75,20 @@ void shutdown_logging() {
 void set_app_state(AppState new_state, std::uint32_t code) noexcept {
   if (!is_initialized())
     return;
+  const auto ts = now_ns();
+  // Atomically swap the registry value first so subsequent reads (including
+  // back-to-back set_app_state calls on this thread, or concurrent producers)
+  // see the new state, then record the captured prior value into the event
+  // for an accurate "old -> new" transition line.
+  const AppState prev =
+      service().registry().exchange_app_state(new_state, ts, code);
   AppStateChangedEvent ev{};
-  ev.hdr.ts_ns = now_ns();
+  ev.hdr.ts_ns = ts;
   ev.hdr.type = EventType::AppStateChanged;
   ev.hdr.size = sizeof(ev);
   ev.hdr.producer_id = producer_id_for_this_thread();
   ev.hdr.component_id = static_cast<std::uint16_t>(ComponentId::App);
-  ev.old_state = service().registry().app_state();
+  ev.old_state = prev;
   ev.new_state = new_state;
   ev.code = code;
   push_event(ev);
@@ -91,13 +98,16 @@ void set_component_state(ComponentId id, ComponentState new_state,
                          std::uint32_t code) noexcept {
   if (!is_initialized())
     return;
+  const auto ts = now_ns();
+  const ComponentState prev =
+      service().registry().exchange_component_state(id, new_state, ts, code);
   ComponentStateChangedEvent ev{};
-  ev.hdr.ts_ns = now_ns();
+  ev.hdr.ts_ns = ts;
   ev.hdr.type = EventType::ComponentStateChanged;
   ev.hdr.size = sizeof(ev);
   ev.hdr.producer_id = producer_id_for_this_thread();
   ev.hdr.component_id = static_cast<std::uint16_t>(id);
-  ev.old_state = service().registry().component_state(id);
+  ev.old_state = prev;
   ev.new_state = new_state;
   ev.code = code;
   push_event(ev);

@@ -9,26 +9,20 @@
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "engine/LiveExecutionEngine.hpp"
+#include "log/logging_state.hpp"
 #include "models/symbol_universe.hpp"
 
-#if defined(HFT_ENABLE_STATE_LOGGING)
-#include "log/logging_state.hpp"
 namespace hl = hft::log;
-#endif
 
 int main() {
-#if defined(HFT_ENABLE_STATE_LOGGING)
   hl::initialize_logging();
   hl::set_app_state(hl::AppState::Starting);
   hl::set_component_state(hl::ComponentId::Logger, hl::ComponentState::Ready);
-#endif
 
   const std::string config_path = "config.ini";
   std::cout << "Loading config from: "
             << std::filesystem::absolute(config_path).string() << std::endl;
-#if defined(HFT_ENABLE_STATE_LOGGING)
   hl::set_app_state(hl::AppState::LoadingConfig);
-#endif
 
   const auto cfg = hft::AppConfig::load_from_file(config_path);
   const auto live_cfg = hft::LiveTradingConfig::from_app(cfg);
@@ -46,34 +40,20 @@ int main() {
     std::cout << "Creating simulated/paper broker" << std::endl;
     broker = std::make_unique<hft::PaperBrokerSim>();
   }
-#if defined(HFT_ENABLE_STATE_LOGGING)
-  hl::set_component_state(hl::ComponentId::Broker,
-                          hl::ComponentState::Starting);
   hl::set_app_state(hl::AppState::ConnectingBroker);
-#endif
 
   hft::LiveExecutionEngine engine(live_cfg, std::move(broker));
   std::cout << "Starting engine..." << std::endl;
   if (!engine.start()) {
     std::cerr << "Failed to connect broker" << std::endl;
-#if defined(HFT_ENABLE_STATE_LOGGING)
-    hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Error);
     hl::set_app_state(hl::AppState::Fatal);
     hl::shutdown_logging();
-#endif
     return 1;
   }
   std::cout << "Engine started." << std::endl;
-#if defined(HFT_ENABLE_STATE_LOGGING)
-  hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Ready);
-  hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Ready);
-#endif
 
   engine.initialize_universe(30);
   std::cout << "Universe initialized." << std::endl;
-#if defined(HFT_ENABLE_STATE_LOGGING)
-  hl::set_component_state(hl::ComponentId::Universe, hl::ComponentState::Ready);
-#endif
   std::vector<std::string> symbols;
   for (const auto& item : hft::kSymbolCompanyList)
     symbols.push_back(item.first);
@@ -81,11 +61,7 @@ int main() {
             << std::endl;
   engine.subscribe_live_books(symbols);
   std::cout << "Subscriptions requested." << std::endl;
-#if defined(HFT_ENABLE_STATE_LOGGING)
-  hl::set_component_state(hl::ComponentId::MarketData,
-                          hl::ComponentState::Ready);
   hl::set_app_state(hl::AppState::Live);
-#endif
 
   if (raw_ibkr != nullptr) {
     std::cout << "Entering IBKR production event loop. This may block until "
@@ -114,9 +90,7 @@ int main() {
             << std::endl;
   std::cout << "Mode: " << live_cfg.mode_name() << std::endl;
   std::cout << "Done. Results in shadow_results.csv" << std::endl;
-#if defined(HFT_ENABLE_STATE_LOGGING)
   hl::set_app_state(hl::AppState::ShuttingDown);
   hl::shutdown_logging();
-#endif
   return 0;
 }

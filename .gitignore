@@ -43,6 +43,3 @@ build-coverage/
 *.zip
 *.tar
 *.tar.gz
-
-# Local agent / developer helper scripts (not part of the blessed flow)
-agent/_*.sh

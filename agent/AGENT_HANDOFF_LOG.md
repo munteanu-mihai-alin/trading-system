@@ -4,6 +4,115 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-28] - Drop HFT_ENABLE_STATE_LOGGING option and push state ownership into subsystems
+
+Model / agent:
+- Claude Opus 4.7, reasoning model (Cursor agent)
+
+Source state:
+- Local working tree at `D:\trading-system` (git repo, branch `main`).
+- Builds on top of `8aeaf39` "feat(log): add state-centric logging (spdlog + SPSC ring + writer thread)" which CI confirmed green (push to main, all four jobs `success`).
+
+User request:
+- "I'm kind of annoyed with HFT_ENABLE_STATE_LOGGING I would like to replace. Do wider adoption of the logging api. I refreshed. CI passes, you can also check."
+- Goal: make logging unconditional (no opt-out flag) and propagate the state-tracking API into the actual subsystems instead of having `main.cpp` poke component state on behalf of components it doesn't own.
+
+What changed:
+
+1. CMake: spdlog is now a hard dependency
+   - `CMakeLists.txt`: removed `option(HFT_ENABLE_STATE_LOGGING ...)` and the surrounding `if(HFT_ENABLE_STATE_LOGGING) ... endif()` block. spdlog discovery (find_package, fallback to vendored `third_party/spdlog`) and the `target_sources(hft_lib PRIVATE LoggingService.cpp LoggingState.cpp)` + `target_link_libraries(hft_lib PUBLIC spdlog::spdlog)` lines now run unconditionally.
+   - The `target_compile_definitions(hft_lib PUBLIC HFT_ENABLE_STATE_LOGGING=1)` line is gone (no longer needed since the macro is no longer referenced anywhere).
+
+2. main.cpp: stripped to lifecycle-only orchestration
+   - Removed every `#if defined(HFT_ENABLE_STATE_LOGGING)` guard.
+   - `#include "log/logging_state.hpp"` and `namespace hl = hft::log;` are now top-level (no `#if`).
+   - main only emits AppState transitions (`Starting`, `LoadingConfig`, `ConnectingBroker`, `Live`, `ShuttingDown`, `Fatal`) and the `Logger Ready` once after `initialize_logging()`. It no longer sets `Engine`/`Universe`/`MarketData`/`Broker` states - those moved into the components themselves.
+
+3. Wider adoption: each subsystem owns its own component state
+   - `src/lib/LiveExecutionEngine.cpp`:
+     - `start()`: emits `Engine Starting` before `broker_->connect`, `Engine Ready` on success, `Engine Error` (with `raise_error`) on failure.
+     - `stop()`: emits `Engine Down`.
+     - `initialize_universe()`: emits `Universe Starting -> Ready` around the call.
+     - `subscribe_live_books()`: emits `MarketData Starting -> Ready` around the loop.
+     - `step(t)`: emits `heartbeat(Engine)` every 100 ticks so `last_update_ns` advances without per-tick log spam.
+   - `src/lib/IBKRClient.cpp`:
+     - `connect()`: emits `Broker Starting`, then `Broker Ready` on success or `Broker Error` (+ `raise_error` code=2) on failure.
+     - `disconnect()`: emits `Broker Down` (only when previously connected, to avoid spurious transitions).
+     - `connectionClosed()`: was inline in the header; moved to the .cpp so it can emit `Broker Error` (code=3) + `raise_error("IBKR connection closed by remote")`.
+     - Header change: `void connectionClosed() override;` instead of inline body.
+   - `include/broker/PaperBrokerSim.hpp`: header-only class, now `#include "log/logging_state.hpp"` and emits `Broker Ready` from `connect()` and `Broker Down` from `disconnect()`.
+
+4. Concurrency fix: producer-side registry update with atomic exchange
+   - Symptom found in the first smoke run: every component transition logged with the wrong `old_state` (e.g. `Engine Down -> Starting` immediately followed by `Engine Down -> Ready` instead of `Engine Starting -> Ready`).
+   - Root cause: producers read `old_state` from the registry at push time, but the registry was only updated by the writer thread when it later processed the event. Back-to-back pushes from the same thread saw a stale `old_state`.
+   - Fix:
+     - `include/log/state_registry.hpp`: added `exchange_app_state(...)` and `exchange_component_state(...)` that perform an atomic `exchange` on the underlying `std::atomic<std::uint8_t>` (memory_order_acq_rel), update timestamp/code, and return the prior value. The existing `set_*` methods now delegate to `exchange_*` (discarding the return value).
+     - `src/lib/LoggingState.cpp`: `set_app_state` and `set_component_state` now call `exchange_*`, capture the returned prior value, and stamp it into the event's `old_state` field. Subsequent reads (including by other producer threads) immediately see the new state.
+     - `src/lib/LoggingService.cpp`: the writer thread no longer calls `registry_.set_*` for `AppStateChanged` / `ComponentStateChanged` (it would be a redundant double-write). It only emits the spdlog line.
+   - Net effect (verified in the second smoke run): transitions now read correctly. Sample:
+     ```
+     APP Starting -> LoadingConfig
+     APP LoadingConfig -> ConnectingBroker
+     Engine Down -> Starting
+     Broker Down -> Ready
+     Engine Starting -> Ready
+     Universe Down -> Starting
+     Universe Starting -> Ready
+     MarketData Down -> Starting
+     MarketData Starting -> Ready
+     APP ConnectingBroker -> Live
+     ```
+
+What did NOT change:
+- All other subsystems (`RankingEngine`, `AppConfig`, validation, simulator, etc.) - the API is now adopted at the subsystem-state boundaries (engine/broker/universe/market-data) and there's no intent to spam transitions per-step.
+- spdlog vendoring under `third_party/spdlog/` - same files, same tag.
+- Build scripts (`scripts/stage_third_party_sources_ucrt.sh`, `scripts/build_third_party_dependencies_ucrt.sh`, `scripts/rebuild_linux_deps_ci.sh`) and `.github/workflows/ci.yml` - all still install/stage spdlog the same way.
+- Test code - no test relied on `HFT_ENABLE_STATE_LOGGING`, so no test had to change.
+
+Errors encountered + fixes:
+- First smoke run after the refactor showed `set_app_state` reporting stale `old_state` (described above). Fixed via atomic `exchange_*` on the producer side; the writer thread now only formats. Verified by a second rebuild + smoke run.
+- (Side note) `_run_state_logging_smoke.sh` does not rebuild - first time I noticed I had to call `agent/_run_project_build.sh` before re-smoking. Not changing the script for now since it's intentionally smoke-only.
+
+Validation done:
+- `agent/_run_project_build.sh`: project builds clean with `HFT_ENABLE_IBKR=ON` (build dir `build-ucrt-ibkr`). All targets link, including `hft_app.exe`, `hft_tests.exe`, and `libhft_lib.a`.
+- `agent/_run_state_logging_smoke.sh`:
+  - `hft_tests.exe`: same 118 PASS / 2 FAIL as before this change (the 2 failures are the pre-existing IBKR-stub broker integration tests; unrelated).
+  - `hft_app.exe` paper-mode smoke: emits the correct sequence of subsystem transitions shown above, then 1 Hz `HEALTH` summaries from the writer thread. The 12 s `timeout` cap returns rc=124 which is expected for an engine running 500 steps; not a logging issue.
+- Lints: `ReadLints` clean on every changed file (CMakeLists, main.cpp, LiveExecutionEngine.cpp, IBKRClient.cpp/.hpp, PaperBrokerSim.hpp, state_registry.hpp, LoggingState.cpp, LoggingService.cpp).
+- CI for the parent commit `8aeaf39`: all four jobs green (verified via the GitHub REST API at the start of the session).
+
+Known risks / follow-up:
+- No test yet exercises the `exchange_app_state` / `exchange_component_state` race-fix directly. A small unit test that hammers `set_component_state` from two threads and asserts that every produced event has a self-consistent `old_state -> new_state` pair would lock this in.
+- `IBKRClient::orderStatus` and `updateMktDepth` could optionally heartbeat the `Broker` / `MarketData` components so the registry's `last_update_ns` reflects real activity rather than just startup. Skipped for now to avoid log volume issues; revisit when adding a "stale market data" alarm.
+- `start_production_event_loop` and `reconnect_once` are good places for `WarningRaised` events if reconnect is taking a while. Skipped here to keep the diff focused on the ownership refactor.
+- `connectionClosed` now requires `HFT_ENABLE_IBKR` (the implementation is in the `#ifdef HFT_ENABLE_IBKR` block in IBKRClient.cpp). The header-side declaration is unguarded which is fine because the EWrapper override only exists when `HFT_ENABLE_IBKR` is defined - in non-IBKR builds nothing references it. Verified by the IBKR=ON build link succeeding.
+
+Suggested commit:
+```
+git add CMakeLists.txt src/app/main.cpp src/lib/LiveExecutionEngine.cpp \
+        src/lib/IBKRClient.cpp src/lib/LoggingState.cpp src/lib/LoggingService.cpp \
+        include/broker/IBKRClient.hpp include/broker/PaperBrokerSim.hpp \
+        include/log/state_registry.hpp agent/AGENT_HANDOFF_LOG.md
+git commit -m "refactor(log): drop HFT_ENABLE_STATE_LOGGING and push state ownership into subsystems"
+```
+
+Suggested commit message body:
+```
+- spdlog is now a hard, unconditional dependency of hft_lib; the CMake option
+  is gone, all #if defined(HFT_ENABLE_STATE_LOGGING) guards are gone, and the
+  HFT_ENABLE_STATE_LOGGING=1 compile definition is no longer emitted.
+- main.cpp is now lifecycle-only: it owns AppState transitions and Logger
+  readiness, nothing else.
+- LiveExecutionEngine emits Engine/Universe/MarketData state itself.
+- IBKRClient and PaperBrokerSim emit Broker state themselves.
+- IBKRClient::connectionClosed moved out-of-line so it can emit Broker Error +
+  raise_error on remote disconnect.
+- Producer-side atomic exchange on the state registry so transitions display
+  the correct old_state even with rapid back-to-back set_*_state calls.
+```
+
+---
+
 ## [2026-04-28] - Add state-centric logging module (spdlog + SPSC ring + background writer) and wire it into UCRT/CI builds
 
 Model / agent:

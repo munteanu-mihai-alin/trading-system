@@ -34,6 +34,7 @@ PROTOBUF_SRC="${THIRD_PARTY_DIR}/protobuf-29.3"
 ABSEIL_SRC="${THIRD_PARTY_DIR}/abseil-cpp"
 RDFP_SRC="${THIRD_PARTY_DIR}/IntelRDFPMathLib20U4"
 IBKR_SRC="${THIRD_PARTY_DIR}/twsapi/client"
+SPDLOG_SRC="${THIRD_PARTY_DIR}/spdlog"
 
 echo "==> Staging/checking third-party source trees"
 chmod +x "${STAGE_SCRIPT}"
@@ -45,6 +46,7 @@ rm -rf "${BUILD_DIR}" "${INSTALL_DIR}"
 test -d "${PROTOBUF_SRC}" || { echo "Missing ${PROTOBUF_SRC}"; exit 1; }
 test -d "${ABSEIL_SRC}" || { echo "Missing ${ABSEIL_SRC}"; exit 1; }
 test -d "${RDFP_SRC}" || { echo "Missing ${RDFP_SRC}"; exit 1; }
+test -d "${SPDLOG_SRC}" || { echo "Missing ${SPDLOG_SRC}"; exit 1; }
 
 if ! grep -q "define ABSL_NAMESPACE_BEGIN" "${ABSEIL_SRC}/absl/base/config.h"; then
   echo "ERROR: ${ABSEIL_SRC} is invalid: ABSL_NAMESPACE_BEGIN is not defined in absl/base/config.h"
@@ -168,11 +170,10 @@ set(RDFP_SRC_ROOT "${RDFP_SRC_ROOT_CMAKE}")
 file(TO_CMAKE_PATH "${RDFP_SRC_ROOT}" RDFP_SRC_ROOT_NORM)
 file(GLOB_RECURSE RDFP_SOURCES "${RDFP_SRC_ROOT_NORM}/*.c")
 
-# Exclude optional binary<->decimal conversion wrappers. TWS Decimal only needs
-# BID decimal runtime/string conversion symbols such as __bid64_from_string and
-# __bid64_to_string. bid_binarydecimal.c depends on optional binary128 wrapper
-# configuration that does not compile cleanly in this MinGW/UCRT CMake wrapper.
-list(FILTER RDFP_SOURCES EXCLUDE REGEX ".*[/\\]bid_binarydecimal\\.c$")
+# Verified to compile cleanly under UCRT64 GCC with the same -DCALL_BY_REF=0
+# / GLOBAL_RND=0 / GLOBAL_FLAGS=0 / UNCHANGED_BINARY_FLAGS=0 macros used here.
+# bid_binarydecimal.c is the source of __bid64_to_binary64 / __binary64_to_bid64
+# which TWS Decimal.cpp calls directly, so it is included in the wrapper build.
 
 message(STATUS "RDFP_SRC_ROOT_NORM=${RDFP_SRC_ROOT_NORM}")
 list(LENGTH RDFP_SOURCES RDFP_SOURCES_COUNT)
@@ -203,8 +204,7 @@ install(TARGETS intelrdfpmath
 install(DIRECTORY "${RDFP_SRC_ROOT_NORM}/" DESTINATION include FILES_MATCHING PATTERN "bid*.h")
 EOF
 
-echo "==> Listing detected Intel RDFP C files"
-echo "==> Excluding optional bid_binarydecimal.c from wrapper build"
+echo "==> Listing detected Intel RDFP C files (including bid_binarydecimal.c)"
 find "${RDFP_SRC_ROOT}" -type f -name '*.c' | sort | head -n 50 || true
 
 echo "==> Generated Intel RDFP wrapper CMakeLists.txt"
@@ -254,6 +254,29 @@ done
 
 echo "==> Built Intel decimal library:"
 find "${INSTALL_DIR}/lib" -maxdepth 1 -type f -name 'libintelrdfpmath*.a' | sort || true
+
+echo "==> Building spdlog from third_party/spdlog (static, for state-centric logging)"
+rm -rf "${BUILD_DIR}/spdlog"
+cmake -S "${SPDLOG_SRC}" -B "${BUILD_DIR}/spdlog" \
+  -G "Unix Makefiles" \
+  -DCMAKE_C_COMPILER="${CC:-gcc}" \
+  -DCMAKE_CXX_COMPILER="${CXX:-g++}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DSPDLOG_BUILD_SHARED=OFF \
+  -DSPDLOG_BUILD_EXAMPLE=OFF \
+  -DSPDLOG_BUILD_TESTS=OFF \
+  -DSPDLOG_INSTALL=ON
+cmake --build "${BUILD_DIR}/spdlog" -j"$(nproc)"
+cmake --install "${BUILD_DIR}/spdlog"
+
+if [[ ! -f "${INSTALL_DIR}/lib/libspdlog.a" ]]; then
+  echo "ERROR: Expected ${INSTALL_DIR}/lib/libspdlog.a was not produced."
+  exit 1
+fi
+
+echo "==> Built spdlog static library:"
+find "${INSTALL_DIR}/lib" -maxdepth 1 -type f -name 'libspdlog*.a' | sort || true
 
 echo "==> Leaving IBKR/TWS API in repo at third_party/twsapi/client"
 echo "==> No IBKR/TWS staging or copying performed"

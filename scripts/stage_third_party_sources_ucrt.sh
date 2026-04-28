@@ -12,6 +12,7 @@ set -euo pipefail
 #   third_party/abseil-cpp
 #   third_party/IntelRDFPMathLib20U4
 #   third_party/twsapi/client
+#   third_party/spdlog
 #
 # TWS API is not downloaded because IBKR distributes it separately. If missing,
 # this script warns only.
@@ -38,11 +39,16 @@ INTEL_DEC_URLS_FALLBACK=(
 )
 FORCE_RESTAGE_DEPS="${FORCE_RESTAGE_DEPS:-0}"
 
+# spdlog source for state-centric logging (HFT_ENABLE_STATE_LOGGING).
+SPDLOG_TAG="${SPDLOG_TAG:-v1.15.3}"
+SPDLOG_REPO_URL="${SPDLOG_REPO_URL:-https://github.com/gabime/spdlog.git}"
+
 PROTOBUF_DIR="${THIRD_PARTY_DIR}/protobuf-29.3"
 ABSEIL_DIR="${THIRD_PARTY_DIR}/abseil-cpp"
 ABSEIL_FROM_PROTOBUF="${PROTOBUF_DIR}/third_party/abseil-cpp"
 RDFP_DIR="${THIRD_PARTY_DIR}/IntelRDFPMathLib20U4"
 TWSAPI_DIR="${THIRD_PARTY_DIR}/twsapi/client"
+SPDLOG_DIR="${THIRD_PARTY_DIR}/spdlog"
 
 mkdir -p "${THIRD_PARTY_DIR}" "${DOWNLOADS_DIR}"
 
@@ -81,6 +87,13 @@ has_twsapi() {
   find "${TWSAPI_DIR}" -maxdepth 1 -type f \( -name 'EClient.cpp' -o -name 'EClient.h' \) | grep -q .
 }
 
+has_spdlog() {
+  [[ -d "${SPDLOG_DIR}" ]] &&
+  [[ -f "${SPDLOG_DIR}/CMakeLists.txt" ]] &&
+  [[ -f "${SPDLOG_DIR}/include/spdlog/spdlog.h" ]] &&
+  [[ -f "${SPDLOG_DIR}/include/spdlog/async.h" ]]
+}
+
 status_line() {
   local name="$1"
   local status="$2"
@@ -98,6 +111,18 @@ download_protobuf() {
     exit 1
   fi
   mv "${DOWNLOADS_DIR}/protobuf-29.3" "${PROTOBUF_DIR}"
+}
+
+download_spdlog() {
+  rm -rf "${DOWNLOADS_DIR}/spdlog" "${SPDLOG_DIR}"
+  git clone --branch "${SPDLOG_TAG}" --depth 1 \
+    "${SPDLOG_REPO_URL}" "${DOWNLOADS_DIR}/spdlog"
+  if [[ ! -f "${DOWNLOADS_DIR}/spdlog/CMakeLists.txt" ]] ||
+     [[ ! -f "${DOWNLOADS_DIR}/spdlog/include/spdlog/spdlog.h" ]]; then
+    echo "ERROR: downloaded spdlog tree at ${DOWNLOADS_DIR}/spdlog is invalid."
+    exit 1
+  fi
+  mv "${DOWNLOADS_DIR}/spdlog" "${SPDLOG_DIR}"
 }
 
 stage_abseil_from_protobuf() {
@@ -128,7 +153,7 @@ stage_abseil_from_protobuf() {
 
 if [[ "${FORCE_RESTAGE_DEPS}" == "1" ]]; then
   echo "==> FORCE_RESTAGE_DEPS=1: removing non-TWS dependency source trees"
-  rm -rf "${PROTOBUF_DIR}" "${ABSEIL_DIR}" "${RDFP_DIR}"
+  rm -rf "${PROTOBUF_DIR}" "${ABSEIL_DIR}" "${RDFP_DIR}" "${SPDLOG_DIR}"
 fi
 
 echo "==> Checking third-party source trees under ${THIRD_PARTY_DIR}"
@@ -214,6 +239,13 @@ else
   mv "${DOWNLOADS_DIR}/IntelRDFPMathLib20U4" "${RDFP_DIR}"
 fi
 
+if has_spdlog; then
+  status_line "spdlog" "present" "keep existing"
+else
+  status_line "spdlog" "missing" "git clone ${SPDLOG_TAG} into third_party/_downloads then move to third_party/spdlog"
+  download_spdlog
+fi
+
 if has_twsapi; then
   status_line "twsapi/client" "present" "keep existing"
 else
@@ -231,9 +263,10 @@ echo "==> Final third_party source status"
 if has_protobuf; then echo "    protobuf-29.3: present"; else echo "    protobuf-29.3: missing"; fi
 if has_abseil; then echo "    abseil-cpp: present"; else echo "    abseil-cpp: missing"; fi
 if has_rdfp; then echo "    IntelRDFPMathLib20U4: present"; else echo "    IntelRDFPMathLib20U4: missing"; fi
+if has_spdlog; then echo "    spdlog: present"; else echo "    spdlog: missing"; fi
 if has_twsapi; then echo "    twsapi/client: present"; else echo "    twsapi/client: missing"; fi
 
-if ! has_protobuf || ! has_abseil || ! has_rdfp; then
+if ! has_protobuf || ! has_abseil || ! has_rdfp || ! has_spdlog; then
   echo "ERROR: required non-TWS dependencies are not valid after staging."
   exit 1
 fi

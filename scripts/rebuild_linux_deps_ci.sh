@@ -22,6 +22,11 @@ PROTOBUF_TAG="${PROTOBUF_TAG:-v29.3}"
 PROTOBUF_SRC="${THIRD_PARTY_DIR}/protobuf-29.3"
 ABSEIL_SRC="${PROTOBUF_SRC}/third_party/abseil-cpp"
 
+# spdlog source for state-centric logging (HFT_ENABLE_STATE_LOGGING).
+SPDLOG_TAG="${SPDLOG_TAG:-v1.15.3}"
+SPDLOG_REPO_URL="${SPDLOG_REPO_URL:-https://github.com/gabime/spdlog.git}"
+SPDLOG_SRC="${THIRD_PARTY_DIR}/spdlog"
+
 mkdir -p "${DEPS_DIR}" "${THIRD_PARTY_DIR}"
 
 echo "==> Linux dependency bundle root: ${DEPS_DIR}"
@@ -29,11 +34,11 @@ echo "==> Install prefix: ${INSTALL_DIR}"
 echo "==> Protobuf tag: ${PROTOBUF_TAG}"
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  echo "DRY_RUN=1 -> would clone protobuf, build abseil+protobuf into ${INSTALL_DIR}, copy Intel decimal runtime, and archive ${ARCHIVE_PATH}"
+  echo "DRY_RUN=1 -> would clone protobuf+spdlog, build abseil+protobuf+spdlog into ${INSTALL_DIR}, copy Intel decimal runtime, and archive ${ARCHIVE_PATH}"
   exit 0
 fi
 
-rm -rf "${BUILD_DIR}" "${INSTALL_DIR}" "${PROTOBUF_SRC}" "${ARCHIVE_PATH}"
+rm -rf "${BUILD_DIR}" "${INSTALL_DIR}" "${PROTOBUF_SRC}" "${SPDLOG_SRC}" "${ARCHIVE_PATH}"
 mkdir -p "${BUILD_DIR}" "${INSTALL_DIR}" "${THIRD_PARTY_DIR}"
 
 echo "==> Tool versions"
@@ -70,6 +75,22 @@ cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf" \
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 cmake --build "${BUILD_DIR}/protobuf" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/protobuf"
+
+echo "==> Cloning spdlog ${SPDLOG_TAG}"
+git clone --branch "${SPDLOG_TAG}" --depth 1 \
+  "${SPDLOG_REPO_URL}" "${SPDLOG_SRC}"
+
+echo "==> Building spdlog ${SPDLOG_TAG} (PIC, shared) into install prefix"
+cmake -S "${SPDLOG_SRC}" -B "${BUILD_DIR}/spdlog" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  -DSPDLOG_BUILD_SHARED=ON \
+  -DSPDLOG_BUILD_EXAMPLE=OFF \
+  -DSPDLOG_BUILD_TESTS=OFF \
+  -DSPDLOG_INSTALL=ON
+cmake --build "${BUILD_DIR}/spdlog" -j"$(nproc)"
+cmake --install "${BUILD_DIR}/spdlog"
 
 echo "==> Copying Intel decimal runtime into install prefix"
 mkdir -p "${INSTALL_DIR}/include" "${INSTALL_DIR}/lib"

@@ -4,6 +4,95 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-28] - Phase 0: stage GoogleTest + GoogleMock everywhere, add hft_gtests smoke target
+
+Model / agent:
+- Claude Opus 4.7, reasoning model (Cursor agent)
+
+Source state:
+- Local working tree at `D:\trading-system` (git repo, branch `main`).
+- Builds on top of the previous "drop HFT_ENABLE_STATE_LOGGING" handoff entry. Not yet pushed; CI for the parent commit `8aeaf39` was green.
+
+User request:
+- CI is failing because `Line coverage 59.88% is below threshold 70.00%`. Fix by splitting tests into UT (one real class with collaborators mocked) and MT (real objects, real wiring). UT means we need mocks. Use gtest+gmock for the new test infra. Stage gtest in the local UCRT scripts and the Linux CI runner.
+- Don't remove tests; adapt the ones tied to IBKR API to use mocks. Keep the legacy framework alive so nothing breaks.
+- This entry covers Phase 0 only (foundation: gtest available everywhere, plus a smoke `hft_gtests` target). Phase 1 (mockable seam in IBKRClient), Phase 2 (`tests/unit/` + `tests/module/` reorg keeping `tests/sim/`, `tests/math/`, `tests/validation/`, `tests/common/`), Phase 3 (UTs to push coverage > 70%), Phase 4 (cross-check IBGateway logs at `D:/ibgateway/eanaichgbgjlpppphnmlaclphamgjhbkajildhnp/gateway-exported-logs.txt`), and Phase 5 (deferred follow-ups: race-fix UT, drop Risk/Strategy from HEALTH, heartbeat on real IBKR activity, engine reaction to Broker Error, smoke in CI, LoggingService::Config) are queued for separate sessions.
+
+What changed:
+
+1. Vendored googletest at `third_party/googletest` (3.8 MB, 247 files)
+   - Cloned `https://github.com/google/googletest.git` at tag `v1.15.2`, removed `.git`, `.github`, `ci/`, `docs/`, the bazel scaffolding (`BUILD.bazel`, `WORKSPACE*`, `MODULE.bazel`, `*.bzl`).
+   - Kept the upstream top-level `CMakeLists.txt`, `googletest/`, `googlemock/`, `LICENSE`, `README.md`, `CONTRIBUTORS`, `CONTRIBUTING.md`.
+   - Mirrors the spdlog vendoring approach.
+
+2. `scripts/stage_third_party_sources_ucrt.sh`
+   - New `GTEST_TAG` (default `v1.15.2`) + `GTEST_REPO_URL` overrides.
+   - New `GTEST_DIR` and `has_gtest()` check (validates `CMakeLists.txt`, `googletest/include/gtest/gtest.h`, `googlemock/include/gmock/gmock.h`).
+   - New `download_gtest()` that clones the pinned tag into `third_party/_downloads/googletest`, strips `.git`/`.github`, and moves into place.
+   - `FORCE_RESTAGE_DEPS=1` now also wipes `third_party/googletest/`.
+   - Final summary block reports googletest status; final hard-fail check requires googletest in addition to existing deps.
+
+3. `scripts/build_third_party_dependencies_ucrt.sh`
+   - New `GTEST_SRC` variable + `test -d` guard.
+   - New cmake build step: `cmake -S third_party/googletest -B build/googletest` with `BUILD_GMOCK=ON`, `INSTALL_GTEST=ON`, `BUILD_SHARED_LIBS=OFF`, `gtest_force_shared_crt=ON`. Installs into `dependencies/ucrt64/install`.
+   - Verifies the four expected static archives are produced: `libgtest.a`, `libgtest_main.a`, `libgmock.a`, `libgmock_main.a`.
+
+4. `scripts/rebuild_linux_deps_ci.sh`
+   - New `GTEST_TAG` (default `v1.15.2`) + clone step into `dependencies/linux/src/googletest`.
+   - cmake build/install step: PIC-on, static, `BUILD_GMOCK=ON`, `INSTALL_GTEST=ON`. Installs into `dependencies/linux/install` (the same prefix that gets archived for the CI release asset).
+   - `DRY_RUN=1` summary mentions googletest; cleanup removes `GTEST_SRC` alongside the other source trees.
+
+5. `.github/workflows/ci.yml`
+   - Both `build-and-test` and `coverage` jobs now `apt-get install -y libgtest-dev libgmock-dev`. (Ubuntu 22+ ships these prebuilt.) The vendored fallback handles cases where the package isn't usable.
+
+6. Top-level `CMakeLists.txt`
+   - New gtest discovery block right after the spdlog block. Pattern mirrors spdlog:
+     - `find_package(GTest CONFIG QUIET)` first, then `find_package(GTest)` (MODULE-mode) for distros where the apt package only ships FindGTest.
+     - If neither finds GTest, fall back to `add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)` and add `GTest::*` aliases for the `gtest`, `gtest_main`, `gmock`, `gmock_main` targets so downstream code sees a single namespaced name regardless of source.
+   - New `hft_gtests` executable target. Phase 0 ships only `tests/common/GTestSmoke.cpp`. Links against `hft_lib`, `GTest::gtest`, `GTest::gmock`, `GTest::gtest_main`, plus `twsapi_vendor` + `hft_ibkr_link_deps` when IBKR is enabled (same MinGW link-order constraint as `hft_tests`).
+   - Registered with CTest via `add_test(NAME hft_gtests COMMAND hft_gtests)`.
+
+7. `tests/common/GTestSmoke.cpp` (new, ~50 lines)
+   - Four smoke tests that exercise gtest, gmock, and `hft_lib` headers end-to-end:
+     - `GTestSmoke.BasicAssertion`: confirms gtest itself works (`EXPECT_THAT(... StrEq(...))`).
+     - `GTestSmoke.SpscRingRoundTrip`: round-trip `hft::log::SpscRing<int, 8>` push/pop.
+     - `GTestSmoke.EventEnumToString`: `hft::log::to_string(AppState::Live)` etc.
+     - `GTestSmoke.GmockBasicExpectation`: `MOCK_METHOD` + `EXPECT_CALL` + `WillOnce(Return(...))`.
+   - Intentionally tiny. The real unit/module tests land in subsequent phases.
+
+What did NOT change:
+- Existing `hft_tests` legacy framework binary is fully preserved. Neither tests nor `tests/common/TestFramework.hpp` were touched.
+- No production code (`src/`, `include/`) changed.
+- spdlog wiring is unchanged.
+
+Validation done:
+- Local UCRT64 build with `HFT_ENABLE_IBKR=ON`: clean. All targets built, including `hft_gtests.exe`.
+- Configure log shows the resolution paths exercised: `Using spdlog from find_package: spdlog::spdlog` (from `dependencies/ucrt64/install/lib/cmake/spdlog`) and `Using GTest from find_package: GTest::gtest / GTest::gmock` (from `D:/msys64/ucrt64/lib/cmake/GTest` - MSYS2 system gtest 1.17.0). The vendored fallback for GTest exists but isn't triggered locally because MSYS2 ships gtest; CI on Ubuntu will exercise it via `libgtest-dev`. The vendored copy is the safety net for environments missing both.
+- `ctest --output-on-failure`: `hft_gtests` PASSED (4/4 tests). `hft_tests` FAILED with the same 2 pre-existing IBKR-stub broker integration failures (unchanged from previous handoff entries).
+- `./hft_gtests.exe` direct run: 4 tests pass in <1 ms total. Both gtest and gmock infrastructure verified.
+- Idempotency: re-ran `scripts/stage_third_party_sources_ucrt.sh` after vendoring. All deps including googletest report `present / keep existing`. No re-download.
+
+Known risks / follow-up:
+- `find_package(GTest CONFIG)` on MSYS2 UCRT64 currently picks up the system gtest at `D:/msys64/ucrt64/lib/cmake/GTest` (1.17.0) before the deps-prefix install (1.15.2). This is fine because gtest's API is stable across these versions, but if we ever need a specific version, set `GTest_ROOT` or `CMAKE_PREFIX_PATH` to put the deps prefix first. Documented but not changed.
+- `hft_tests` continues to FAIL the same 2 IBKR-stub integration tests it has been failing. Phase 1 will make `IBKRClient` mockable, which lets us replace those TCP-attempt tests with mock-driven UTs. Phase 0 intentionally does not touch them.
+- `ci.yml` apt-installs `libgtest-dev libgmock-dev` but does not yet add a CTest invocation that runs `hft_gtests` separately. The existing `ctest --output-on-failure` step will pick it up automatically; no workflow change needed.
+
+Suggested commit (simple):
+```
+git add third_party/googletest \
+        scripts/stage_third_party_sources_ucrt.sh \
+        scripts/build_third_party_dependencies_ucrt.sh \
+        scripts/rebuild_linux_deps_ci.sh \
+        .github/workflows/ci.yml \
+        CMakeLists.txt \
+        tests/common/GTestSmoke.cpp \
+        agent/AGENT_HANDOFF_LOG.md
+
+git commit -m "test: stage googletest + add hft_gtests smoke target"
+```
+
+---
+
 ## [2026-04-28] - Drop HFT_ENABLE_STATE_LOGGING option and push state ownership into subsystems
 
 Model / agent:

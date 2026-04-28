@@ -35,6 +35,7 @@ ABSEIL_SRC="${THIRD_PARTY_DIR}/abseil-cpp"
 RDFP_SRC="${THIRD_PARTY_DIR}/IntelRDFPMathLib20U4"
 IBKR_SRC="${THIRD_PARTY_DIR}/twsapi/client"
 SPDLOG_SRC="${THIRD_PARTY_DIR}/spdlog"
+GTEST_SRC="${THIRD_PARTY_DIR}/googletest"
 
 echo "==> Staging/checking third-party source trees"
 chmod +x "${STAGE_SCRIPT}"
@@ -47,6 +48,7 @@ test -d "${PROTOBUF_SRC}" || { echo "Missing ${PROTOBUF_SRC}"; exit 1; }
 test -d "${ABSEIL_SRC}" || { echo "Missing ${ABSEIL_SRC}"; exit 1; }
 test -d "${RDFP_SRC}" || { echo "Missing ${RDFP_SRC}"; exit 1; }
 test -d "${SPDLOG_SRC}" || { echo "Missing ${SPDLOG_SRC}"; exit 1; }
+test -d "${GTEST_SRC}" || { echo "Missing ${GTEST_SRC}"; exit 1; }
 
 if ! grep -q "define ABSL_NAMESPACE_BEGIN" "${ABSEIL_SRC}/absl/base/config.h"; then
   echo "ERROR: ${ABSEIL_SRC} is invalid: ABSL_NAMESPACE_BEGIN is not defined in absl/base/config.h"
@@ -277,6 +279,34 @@ fi
 
 echo "==> Built spdlog static library:"
 find "${INSTALL_DIR}/lib" -maxdepth 1 -type f -name 'libspdlog*.a' | sort || true
+
+echo "==> Building googletest + googlemock from third_party/googletest (static)"
+rm -rf "${BUILD_DIR}/googletest"
+cmake -S "${GTEST_SRC}" -B "${BUILD_DIR}/googletest" \
+  -G "Unix Makefiles" \
+  -DCMAKE_C_COMPILER="${CC:-gcc}" \
+  -DCMAKE_CXX_COMPILER="${CXX:-g++}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DBUILD_GMOCK=ON \
+  -DINSTALL_GTEST=ON \
+  -DBUILD_SHARED_LIBS=OFF \
+  -Dgtest_force_shared_crt=ON
+cmake --build "${BUILD_DIR}/googletest" -j"$(nproc)"
+cmake --install "${BUILD_DIR}/googletest"
+
+# Verify the four expected static archives. The exact filenames differ between
+# CMake versions but the GNUInstallDirs layout is stable on UCRT64.
+for lib in libgtest.a libgtest_main.a libgmock.a libgmock_main.a; do
+  if [[ ! -f "${INSTALL_DIR}/lib/${lib}" ]]; then
+    echo "ERROR: Expected ${INSTALL_DIR}/lib/${lib} was not produced."
+    find "${INSTALL_DIR}/lib" -maxdepth 1 -type f -name 'libg*.a' | sort || true
+    exit 1
+  fi
+done
+
+echo "==> Built googletest static libraries:"
+find "${INSTALL_DIR}/lib" -maxdepth 1 -type f \( -name 'libgtest*.a' -o -name 'libgmock*.a' \) | sort || true
 
 echo "==> Leaving IBKR/TWS API in repo at third_party/twsapi/client"
 echo "==> No IBKR/TWS staging or copying performed"

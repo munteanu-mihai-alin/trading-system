@@ -13,6 +13,7 @@ set -euo pipefail
 #   third_party/IntelRDFPMathLib20U4
 #   third_party/twsapi/client
 #   third_party/spdlog
+#   third_party/googletest
 #
 # TWS API is not downloaded because IBKR distributes it separately. If missing,
 # this script warns only.
@@ -39,9 +40,13 @@ INTEL_DEC_URLS_FALLBACK=(
 )
 FORCE_RESTAGE_DEPS="${FORCE_RESTAGE_DEPS:-0}"
 
-# spdlog source for state-centric logging (HFT_ENABLE_STATE_LOGGING).
+# spdlog source for state-centric logging.
 SPDLOG_TAG="${SPDLOG_TAG:-v1.15.3}"
 SPDLOG_REPO_URL="${SPDLOG_REPO_URL:-https://github.com/gabime/spdlog.git}"
+
+# GoogleTest + GoogleMock source for the unit/module test split.
+GTEST_TAG="${GTEST_TAG:-v1.15.2}"
+GTEST_REPO_URL="${GTEST_REPO_URL:-https://github.com/google/googletest.git}"
 
 PROTOBUF_DIR="${THIRD_PARTY_DIR}/protobuf-29.3"
 ABSEIL_DIR="${THIRD_PARTY_DIR}/abseil-cpp"
@@ -49,6 +54,7 @@ ABSEIL_FROM_PROTOBUF="${PROTOBUF_DIR}/third_party/abseil-cpp"
 RDFP_DIR="${THIRD_PARTY_DIR}/IntelRDFPMathLib20U4"
 TWSAPI_DIR="${THIRD_PARTY_DIR}/twsapi/client"
 SPDLOG_DIR="${THIRD_PARTY_DIR}/spdlog"
+GTEST_DIR="${THIRD_PARTY_DIR}/googletest"
 
 mkdir -p "${THIRD_PARTY_DIR}" "${DOWNLOADS_DIR}"
 
@@ -94,6 +100,13 @@ has_spdlog() {
   [[ -f "${SPDLOG_DIR}/include/spdlog/async.h" ]]
 }
 
+has_gtest() {
+  [[ -d "${GTEST_DIR}" ]] &&
+  [[ -f "${GTEST_DIR}/CMakeLists.txt" ]] &&
+  [[ -f "${GTEST_DIR}/googletest/include/gtest/gtest.h" ]] &&
+  [[ -f "${GTEST_DIR}/googlemock/include/gmock/gmock.h" ]]
+}
+
 status_line() {
   local name="$1"
   local status="$2"
@@ -125,6 +138,22 @@ download_spdlog() {
   mv "${DOWNLOADS_DIR}/spdlog" "${SPDLOG_DIR}"
 }
 
+download_gtest() {
+  rm -rf "${DOWNLOADS_DIR}/googletest" "${GTEST_DIR}"
+  git clone --branch "${GTEST_TAG}" --depth 1 \
+    "${GTEST_REPO_URL}" "${DOWNLOADS_DIR}/googletest"
+  if [[ ! -f "${DOWNLOADS_DIR}/googletest/CMakeLists.txt" ]] ||
+     [[ ! -f "${DOWNLOADS_DIR}/googletest/googletest/include/gtest/gtest.h" ]] ||
+     [[ ! -f "${DOWNLOADS_DIR}/googletest/googlemock/include/gmock/gmock.h" ]]; then
+    echo "ERROR: downloaded googletest tree at ${DOWNLOADS_DIR}/googletest is invalid."
+    exit 1
+  fi
+  # Drop the .git directory so the staged tree is a flat source copy that can
+  # be vendored or zipped without dragging history along.
+  rm -rf "${DOWNLOADS_DIR}/googletest/.git" "${DOWNLOADS_DIR}/googletest/.github"
+  mv "${DOWNLOADS_DIR}/googletest" "${GTEST_DIR}"
+}
+
 stage_abseil_from_protobuf() {
   if ! valid_abseil_dir "${ABSEIL_FROM_PROTOBUF}"; then
     echo "ERROR: protobuf bundled Abseil is not valid at ${ABSEIL_FROM_PROTOBUF}"
@@ -153,7 +182,8 @@ stage_abseil_from_protobuf() {
 
 if [[ "${FORCE_RESTAGE_DEPS}" == "1" ]]; then
   echo "==> FORCE_RESTAGE_DEPS=1: removing non-TWS dependency source trees"
-  rm -rf "${PROTOBUF_DIR}" "${ABSEIL_DIR}" "${RDFP_DIR}" "${SPDLOG_DIR}"
+  rm -rf "${PROTOBUF_DIR}" "${ABSEIL_DIR}" "${RDFP_DIR}" "${SPDLOG_DIR}" \
+         "${GTEST_DIR}"
 fi
 
 echo "==> Checking third-party source trees under ${THIRD_PARTY_DIR}"
@@ -246,6 +276,13 @@ else
   download_spdlog
 fi
 
+if has_gtest; then
+  status_line "googletest" "present" "keep existing"
+else
+  status_line "googletest" "missing" "git clone ${GTEST_TAG} into third_party/_downloads then move to third_party/googletest"
+  download_gtest
+fi
+
 if has_twsapi; then
   status_line "twsapi/client" "present" "keep existing"
 else
@@ -264,9 +301,10 @@ if has_protobuf; then echo "    protobuf-29.3: present"; else echo "    protobuf
 if has_abseil; then echo "    abseil-cpp: present"; else echo "    abseil-cpp: missing"; fi
 if has_rdfp; then echo "    IntelRDFPMathLib20U4: present"; else echo "    IntelRDFPMathLib20U4: missing"; fi
 if has_spdlog; then echo "    spdlog: present"; else echo "    spdlog: missing"; fi
+if has_gtest; then echo "    googletest: present"; else echo "    googletest: missing"; fi
 if has_twsapi; then echo "    twsapi/client: present"; else echo "    twsapi/client: missing"; fi
 
-if ! has_protobuf || ! has_abseil || ! has_rdfp || ! has_spdlog; then
+if ! has_protobuf || ! has_abseil || ! has_rdfp || ! has_spdlog || ! has_gtest; then
   echo "ERROR: required non-TWS dependencies are not valid after staging."
   exit 1
 fi

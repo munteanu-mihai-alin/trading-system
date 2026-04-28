@@ -162,3 +162,64 @@ target_sources(hft_lib PRIVATE
   src/lib/LoggingState.cpp
 )
 target_link_libraries(hft_lib PUBLIC spdlog::spdlog)
+
+# ---------------------------------------------------------------------------
+# GoogleTest + GoogleMock for the unit/module test split.
+# Resolved via find_package(GTest) first, falling back to vendored
+# third_party/googletest. Mirrors the spdlog pattern. UCRT staging and the
+# Linux CI deps bundle both install GTest into CMAKE_PREFIX_PATH; Ubuntu CI
+# jobs install libgtest-dev / libgmock-dev.
+# ---------------------------------------------------------------------------
+find_package(GTest CONFIG QUIET)
+if(NOT TARGET GTest::gtest)
+  # Some Ubuntu apt packages provide GTest via the FindGTest module rather
+  # than a CONFIG-mode package; fall back to MODULE-mode lookup.
+  find_package(GTest QUIET)
+endif()
+
+if(TARGET GTest::gtest AND TARGET GTest::gmock)
+  message(STATUS "Using GTest from find_package: GTest::gtest / GTest::gmock")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest/CMakeLists.txt")
+  set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
+  if(TARGET gtest AND NOT TARGET GTest::gtest)
+    add_library(GTest::gtest ALIAS gtest)
+  endif()
+  if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
+    add_library(GTest::gtest_main ALIAS gtest_main)
+  endif()
+  if(TARGET gmock AND NOT TARGET GTest::gmock)
+    add_library(GTest::gmock ALIAS gmock)
+  endif()
+  if(TARGET gmock_main AND NOT TARGET GTest::gmock_main)
+    add_library(GTest::gmock_main ALIAS gmock_main)
+  endif()
+  message(STATUS "Using GTest from vendored third_party/googletest")
+else()
+  message(FATAL_ERROR
+    "GTest not found. Install libgtest-dev/libgmock-dev, set CMAKE_PREFIX_PATH "
+    "to a build prefix that provides GTest (e.g. dependencies/ucrt64/install), "
+    "or stage the source via scripts/stage_third_party_sources_ucrt.sh."
+  )
+endif()
+
+# New unit/module test binary. Lives alongside the legacy hft_tests target;
+# both are registered with CTest. Phase 0 ships only a smoke test that
+# exercises the gtest+gmock wiring; real unit/module tests land in Phase 1+.
+add_executable(hft_gtests
+  tests/common/GTestSmoke.cpp
+)
+target_link_libraries(hft_gtests PRIVATE
+  hft_lib
+  GTest::gtest
+  GTest::gmock
+  GTest::gtest_main
+)
+if(HFT_ENABLE_IBKR)
+  # Same link-order constraint as hft_tests: TWS API + decimal must follow
+  # hft_lib on the final link line for MinGW static archive resolution.
+  target_link_libraries(hft_gtests PRIVATE twsapi_vendor hft_ibkr_link_deps)
+endif()
+add_test(NAME hft_gtests COMMAND hft_gtests)

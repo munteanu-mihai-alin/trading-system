@@ -22,10 +22,15 @@ PROTOBUF_TAG="${PROTOBUF_TAG:-v29.3}"
 PROTOBUF_SRC="${THIRD_PARTY_DIR}/protobuf-29.3"
 ABSEIL_SRC="${PROTOBUF_SRC}/third_party/abseil-cpp"
 
-# spdlog source for state-centric logging (HFT_ENABLE_STATE_LOGGING).
+# spdlog source for state-centric logging.
 SPDLOG_TAG="${SPDLOG_TAG:-v1.15.3}"
 SPDLOG_REPO_URL="${SPDLOG_REPO_URL:-https://github.com/gabime/spdlog.git}"
 SPDLOG_SRC="${THIRD_PARTY_DIR}/spdlog"
+
+# GoogleTest source for the unit/module test split.
+GTEST_TAG="${GTEST_TAG:-v1.15.2}"
+GTEST_REPO_URL="${GTEST_REPO_URL:-https://github.com/google/googletest.git}"
+GTEST_SRC="${THIRD_PARTY_DIR}/googletest"
 
 mkdir -p "${DEPS_DIR}" "${THIRD_PARTY_DIR}"
 
@@ -34,11 +39,11 @@ echo "==> Install prefix: ${INSTALL_DIR}"
 echo "==> Protobuf tag: ${PROTOBUF_TAG}"
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  echo "DRY_RUN=1 -> would clone protobuf+spdlog, build abseil+protobuf+spdlog into ${INSTALL_DIR}, copy Intel decimal runtime, and archive ${ARCHIVE_PATH}"
+  echo "DRY_RUN=1 -> would clone protobuf+spdlog+googletest, build abseil+protobuf+spdlog+googletest into ${INSTALL_DIR}, copy Intel decimal runtime, and archive ${ARCHIVE_PATH}"
   exit 0
 fi
 
-rm -rf "${BUILD_DIR}" "${INSTALL_DIR}" "${PROTOBUF_SRC}" "${SPDLOG_SRC}" "${ARCHIVE_PATH}"
+rm -rf "${BUILD_DIR}" "${INSTALL_DIR}" "${PROTOBUF_SRC}" "${SPDLOG_SRC}" "${GTEST_SRC}" "${ARCHIVE_PATH}"
 mkdir -p "${BUILD_DIR}" "${INSTALL_DIR}" "${THIRD_PARTY_DIR}"
 
 echo "==> Tool versions"
@@ -91,6 +96,21 @@ cmake -S "${SPDLOG_SRC}" -B "${BUILD_DIR}/spdlog" \
   -DSPDLOG_INSTALL=ON
 cmake --build "${BUILD_DIR}/spdlog" -j"$(nproc)"
 cmake --install "${BUILD_DIR}/spdlog"
+
+echo "==> Cloning googletest ${GTEST_TAG}"
+git clone --branch "${GTEST_TAG}" --depth 1 \
+  "${GTEST_REPO_URL}" "${GTEST_SRC}"
+
+echo "==> Building googletest + googlemock ${GTEST_TAG} (PIC, static) into install prefix"
+cmake -S "${GTEST_SRC}" -B "${BUILD_DIR}/googletest" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  -DBUILD_GMOCK=ON \
+  -DINSTALL_GTEST=ON \
+  -DBUILD_SHARED_LIBS=OFF
+cmake --build "${BUILD_DIR}/googletest" -j"$(nproc)"
+cmake --install "${BUILD_DIR}/googletest"
 
 echo "==> Copying Intel decimal runtime into install prefix"
 mkdir -p "${INSTALL_DIR}/include" "${INSTALL_DIR}/lib"

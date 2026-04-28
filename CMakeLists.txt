@@ -39,7 +39,7 @@ add_executable(hft_tests
   tests/math/TestMathModels.cpp
   tests/sim/TestSimulator.cpp
   tests/validation/TestValidation.cpp
-  tests/integration/TestBrokerIntegration.cpp
+  tests/module/TestBrokerIntegration.cpp
 )
 target_link_libraries(hft_tests PRIVATE hft_lib)
 
@@ -230,6 +230,12 @@ endif()
 # exercises the gtest+gmock wiring; real unit/module tests land in Phase 1+.
 add_executable(hft_gtests
   tests/common/GTestSmoke.cpp
+  tests/unit/SpscRingTest.cpp
+  tests/unit/StateRegistryTest.cpp
+  tests/unit/LoggingStateTest.cpp
+  tests/unit/AppConfigTest.cpp
+  tests/unit/IBKRClientTest.cpp
+  tests/unit/LiveExecutionEngineTest.cpp
 )
 target_link_libraries(hft_gtests PRIVATE
   hft_lib

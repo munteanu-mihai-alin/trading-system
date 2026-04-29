@@ -4,6 +4,94 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-29] - Phase 5: add safe hft_app paper/no-order smoke to CI
+
+Model / agent:
+- GPT-5, reasoning model (Codex)
+
+Source state:
+- Local clone at `D:\trading-system`, after Phase 4 Gateway log cross-check.
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Continue Phase 5. Do not delete existing handoff entries. User will handle commits.
+
+Files changed:
+- `.github/workflows/ci.yml` - added a `Smoke app` step after `ctest` in `build-and-test`.
+- `scripts/smoke_app_ci.sh` - new CI/local smoke script that runs `hft_app` from a build directory with a generated paper/no-order config.
+- `agent/AGENT_HANDOFF_LOG.md` - kept Phase 4 handoff and updated this Phase 5 entry.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Chose the safest Phase 5 starter: app smoke in CI without live Gateway access and without broker orders.
+2. Added `scripts/smoke_app_ci.sh`. It resolves the build directory, writes a temporary `config.ini` with `mode=paper`, `top_k=0`, and `steps=1`, runs `hft_app`, and asserts `logs/app.log` plus key stdout/log markers.
+3. Wired `.github/workflows/ci.yml` so `build-and-test` runs the smoke after CTest.
+4. Ran the smoke locally against `build-ucrt-ibkr`.
+
+Validation performed:
+- `bash -n scripts/smoke_app_ci.sh` under MSYS2 UCRT64 -> pass.
+- `./scripts/smoke_app_ci.sh build-ucrt-ibkr` under MSYS2 UCRT64 -> `hft_app paper/no-order smoke passed`.
+- Smoke output confirmed `mode=paper`, `steps=1`, `top_k=0`, `PaperBrokerSim`, and generated `build-ucrt-ibkr/logs/app.log` with `LoggingService started`, `APP LoadingConfig -> ConnectingBroker`, `APP ConnectingBroker -> Live`, and `Engine Starting -> Ready`.
+
+Known risks / follow-up:
+- The smoke still names the runtime app state `Live` after broker startup even in paper mode. That is existing app-state naming, not a Gateway/live-order action.
+- The script intentionally overwrites `config.ini`, `logs/`, and `shadow_results.csv` inside the build directory only.
+- Remaining Phase 5 items are still open: LoggingService config behavior, heartbeat on real IBKR activity, broker-error reaction, and other logging cleanups.
+
+Suggested commit:
+```bash
+git add .github/workflows/ci.yml scripts/smoke_app_ci.sh agent/AGENT_HANDOFF_LOG.md
+git commit -m "ci: add safe hft_app paper smoke"
+```
+
+## [2026-04-29] - Phase 4: cross-check IB Gateway exported logs against app/test behavior
+
+Model / agent:
+- GPT-5, reasoning model (Codex)
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `f8639b886e55850986c06880a0d1ab5e6cadb7ab` on `main`.
+- Gateway log source: `D:\ibgateway\eanaichgbgjlpppphnmlaclphamgjhbkajildhnp\gateway-exported-logs.txt`, last updated 2026-04-29 03:42 local time.
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Execute Phase 4: cross-check local IB Gateway logs against the project/app/test logging state.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this Phase 4 result.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Inspected the IB Gateway directory `D:\ibgateway\eanaichgbgjlpppphnmlaclphamgjhbkajildhnp`.
+2. Read `gateway-exported-logs.txt`; ignored encrypted `.ibgzenc` files because the exported text log is readable and current.
+3. Searched for Gateway startup, API listener, read-only mode, local API sessions, client IDs, ignored API requests, connection resets, and order-processing markers.
+4. Checked for local app logs under `build-ucrt-ibkr\logs\app.log` for context, without running `hft_app` against the live Gateway.
+
+Validation performed:
+- Gateway exported log contains startup/login evidence and `IBGateway connection to ccp succeeded`.
+- Gateway exported log contains `API server listening on port 4002` and `API in Read-Only mode: true`.
+- Gateway exported log contains 836 local API client sessions from `127.0.0.1`, with client IDs grouped as: `1` -> 542, `7` -> 158, `17` -> 136.
+- Gateway exported log contains 836 `There are no API orders being processed` lines and 836 client-ending lines, matching the local client session count.
+- Gateway exported log contains 438 `Ignoring API request ... since API is not accepted` lines and 138 `Connection reset` mentions; these line up with short-lived test/app connection attempts rather than submitted orders.
+- No `placeOrder` / order-submission evidence was found in the exported log search. One normal `receivedOrderStatusQueryEndMarker` appears during Gateway startup/recovery.
+- `Get-NetTCPConnection -LocalPort 4002` did not show a live listener at the time of inspection; Phase 4 used the exported log rather than launching a live app smoke against Gateway.
+
+Known risks / follow-up:
+- The local app log at `build-ucrt-ibkr\logs\app.log` mostly reflects unit-test logging around 2026-04-29 02:46, not a clean paper-mode app smoke aligned with the Gateway log window.
+- The Gateway log says API is in read-only mode and also reports many ignored API requests because API was not accepted; before any live/paper app smoke should be treated as authoritative, Gateway API settings should be checked manually in the IB Gateway UI.
+- Do not run `hft_app` in live mode as an automated smoke without a dry-run/no-order guard; the engine can place broker orders through the configured broker path.
+- Phase 5 should add a safe app smoke in CI/local tooling that uses mocks or paper-only/no-order behavior rather than a live Gateway.
+
+Suggested commit:
+```bash
+git add agent/AGENT_HANDOFF_LOG.md
+git commit -m "docs(agent): record phase 4 IB Gateway log cross-check"
+```
+
 ## [2026-04-29] - Phase 3: tests/integration → tests/module reorg, gmock IBroker/IBKRTransport doubles, +68 unit tests
 
 Model / agent:

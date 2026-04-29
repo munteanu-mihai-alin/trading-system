@@ -57,6 +57,11 @@ jobs:
           cd build
           ctest --output-on-failure
 
+      - name: Smoke app
+        run: |
+          chmod +x scripts/smoke_app_ci.sh
+          ./scripts/smoke_app_ci.sh build
+
   coverage:
     runs-on: ubuntu-latest
     steps:

@@ -111,20 +111,17 @@ TEST(StateRegistry, ConcurrentExchangeIsAtomic) {
 
     std::thread ta([&] {
       ready.fetch_add(1);
-      while (start.load(std::memory_order_acquire) == 0) {
-      }
+      while (start.load(std::memory_order_acquire) == 0) {}
       prior_a = reg.exchange_component_state(ComponentId::Broker,
                                              ComponentState::Ready, 1);
     });
     std::thread tb([&] {
       ready.fetch_add(1);
-      while (start.load(std::memory_order_acquire) == 0) {
-      }
+      while (start.load(std::memory_order_acquire) == 0) {}
       prior_b = reg.exchange_component_state(ComponentId::Broker,
                                              ComponentState::Error, 2);
     });
-    while (ready.load() < 2) {
-    }
+    while (ready.load() < 2) {}
     start.store(1, std::memory_order_release);
     ta.join();
     tb.join();

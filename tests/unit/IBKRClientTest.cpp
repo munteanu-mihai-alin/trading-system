@@ -253,8 +253,8 @@ TEST(IBKRClient, AckLatencyForUnknownOrderIsZero) {
 TEST(IBKRClient, OnMarketDepthUpdateBidSideInsert) {
   auto t = std::make_unique<NiceMockTransport>();
   hft::IBKRClient c(std::move(t));
-  c.on_market_depth_update(/*ticker=*/1, /*pos=*/0, /*op=*/0, /*side=*/0,
-                           100.0, 50.0);
+  c.on_market_depth_update(/*ticker=*/1, /*pos=*/0, /*op=*/0, /*side=*/0, 100.0,
+                           50.0);
   const auto book = c.snapshot_book(1);
   EXPECT_DOUBLE_EQ(book.bids[0].price, 100.0);
   EXPECT_DOUBLE_EQ(book.bids[0].size, 50.0);
@@ -263,8 +263,8 @@ TEST(IBKRClient, OnMarketDepthUpdateBidSideInsert) {
 TEST(IBKRClient, OnMarketDepthUpdateAskSideInsert) {
   auto t = std::make_unique<NiceMockTransport>();
   hft::IBKRClient c(std::move(t));
-  c.on_market_depth_update(/*ticker=*/2, /*pos=*/1, /*op=*/0, /*side=*/1,
-                           101.0, 25.0);
+  c.on_market_depth_update(/*ticker=*/2, /*pos=*/1, /*op=*/0, /*side=*/1, 101.0,
+                           25.0);
   const auto book = c.snapshot_book(2);
   EXPECT_DOUBLE_EQ(book.asks[1].price, 101.0);
   EXPECT_DOUBLE_EQ(book.asks[1].size, 25.0);
@@ -284,7 +284,7 @@ TEST(IBKRClient, OnMarketDepthUpdateDeleteOperationClearsLevel) {
 TEST(IBKRClient, OnMarketDepthUpdateOutOfRangePositionIgnored) {
   auto t = std::make_unique<NiceMockTransport>();
   hft::IBKRClient c(std::move(t));
-  c.on_market_depth_update(1, /*pos=*/-1, 0, 0, 100.0, 50.0);  // negative
+  c.on_market_depth_update(1, /*pos=*/-1, 0, 0, 100.0, 50.0);   // negative
   c.on_market_depth_update(1, /*pos=*/999, 0, 0, 100.0, 50.0);  // too high
   const auto book = c.snapshot_book(1);
   EXPECT_DOUBLE_EQ(book.bids[0].price, 0.0);  // unchanged

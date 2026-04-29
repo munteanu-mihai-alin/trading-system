@@ -23,7 +23,8 @@ using hft::BrokerMode;
 class TempIni {
  public:
   explicit TempIni(const std::string& body) {
-    path_ = "test_appconfig_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".ini";
+    path_ = "test_appconfig_" +
+            std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".ini";
     std::ofstream out(path_);
     out << body;
   }

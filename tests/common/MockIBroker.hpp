@@ -15,8 +15,7 @@ namespace hft::test {
 
 class MockIBroker : public IBroker {
  public:
-  MOCK_METHOD(bool, connect,
-              (const std::string& host, int port, int client_id),
+  MOCK_METHOD(bool, connect, (const std::string& host, int port, int client_id),
               (override));
   MOCK_METHOD(void, disconnect, (), (override));
   MOCK_METHOD(bool, is_connected, (), (const, override));

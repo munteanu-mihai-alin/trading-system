@@ -4,6 +4,70 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-29] - Level 1 and Level 2 market data explanation
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `8b9c691dcadecdfe00a6e53b281af12abe69fad6` (`ci: add safe hft_app paper smoke`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+- `agent/AGENT_HANDOFF_LOG.md` already had staged and unstaged changes before this entry was appended; those contents were not reverted or removed.
+
+User request:
+- Add the full prior response explaining Level 1/Level 2 market data and live-data needs as a new handoff entry.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this full explanation entry at the top.
+
+Deletions / removals:
+- None.
+
+Full response added:
+
+Level 1 vs Level 2, in our context:
+
+**Level 1 / L1** is top-of-book data. For a stock this means best bid, best ask, bid size, ask size, last trade, last size, volume, etc. This is what `reqMktData` gives. IBKR says this is watchlist-style data, aggregated at intervals. For stocks, Europe, and Asia, IBKR documents about `250ms` update frequency, not 20ms.
+
+**Level 2 / L2** is market depth/order book data. This means multiple bid/ask levels below and above the top of book. This is what our current code asks for with `reqMktDepth(..., depth=5)`. L2 is only needed if we care about queue/depth/liquidity beyond best bid/ask.
+
+For live data we need three separate things:
+
+1. Account/API eligibility: IBKR Pro, funded account, market-data API acknowledgment enabled.
+2. The right exchange subscription for each symbol: US Network A/B/C for US listings, Xetra/Euronext/TSE/TWSE/HKEX/etc. for foreign listings.
+3. The right data type: L1 for top-of-book, L2 only for depth.
+
+Yes, there are multiple "live-ish" data modes:
+
+- **Live streaming**: real-time, paid subscription, `marketDataType=1`.
+- **Frozen**: last quote from market close, needs same live entitlement.
+- **Delayed**: free where available, usually 10-20 minutes delayed.
+- **Delayed frozen**: delayed last value.
+- **Snapshots**: one-time quote requests rather than continuous streaming.
+- **5-second real-time bars**: OHLC bars every 5 seconds.
+- **Tick-by-tick**: trade/bid-ask/midpoint event feed, but very limited.
+
+Could we do 3 symbols "extremely live" and the rest once a minute? Yes, architecturally that is exactly the shape I'd prefer.
+
+But "20ms" is the catch. IBKR L1 stock data is documented around 250ms aggregation, not 20ms. L2/tick-by-tick may feel more event-like, but IBKR is not a colocated ultra-low-latency market-data vendor. So I'd frame it as:
+
+- 3 symbols: L2 depth and/or tick-by-tick, highest priority.
+- Rest of universe: L1 snapshots or 5-second bars, stored/resampled to 1-minute features.
+- Trading decisions: only place orders on symbols where we have live entitlement and fresh data.
+
+On the "30 symbols" impression: IBKR's current API docs say the default is **100 concurrent market data lines**, not 30. The number **3** is the default simultaneous L2/depth limit with 100 lines. The number **30** might come from another tier: with 501-600 market data lines, IBKR lists about 30 tick-by-tick subscriptions, but that is not the default.
+
+So the practical answer: start with L1 for broad universe, L2/tick-by-tick for only 3 hot symbols, and build the entitlement probe to tell us exactly what your account can receive for each symbol.
+
+Sources: [IBKR Market Data Subscriptions](https://www.interactivebrokers.com/campus/ibkr-api-page/market-data-subscriptions/), [IBKR TWS API Market Data](https://www.interactivebrokers.com/campus/ibkr-api-page/twsapi-doc/).
+
+Validation performed:
+- Documentation-only update to handoff log.
+
+Known risks / follow-up:
+- Existing staged handoff changes were preserved; this entry was appended above them.
+
 ## [2026-04-29] - Require provider/client identity in handoffs
 
 Model / agent:

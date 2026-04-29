@@ -4,6 +4,114 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-29] - Require provider/client identity in handoffs
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `8b9c691dcadecdfe00a6e53b281af12abe69fad6` (`ci: add safe hft_app paper smoke`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+- `agent/AGENT_HANDOFF_LOG.md` already had staged changes before this entry was appended; those staged contents were not reverted or removed.
+
+User request:
+- Enforce a workflow rule requiring agents/models to mention the provider or client surface, in addition to model name and version, for example Cursor, Copilot, Claude Code, Codex, or web APIs.
+
+Files changed:
+- `agent/AGENT_WORKFLOW.md` - renamed the identity section to require both model and provider/client identity, added examples, and updated the handoff template.
+- `agent/AGENT_HANDOFF_LOG.md` - appended this entry using the new model/provider format.
+
+Deletions / removals:
+- None.
+
+Validation performed:
+- Inspected the workflow identity section and handoff template.
+- Applied a documentation-only patch.
+
+Known risks / follow-up:
+- Existing older handoff entries still use the previous `Model / agent` bullet style; the new rule applies going forward.
+
+## [2026-04-29] - Detailed discoveries
+
+Model / agent:
+- GPT-5.5 Thinking, reasoning model
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `8b9c691dcadecdfe00a6e53b281af12abe69fad6` (`ci: add safe hft_app paper smoke`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Add the previous response in full to the handoff log with an entry that says "detailed discoveries".
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this detailed-discoveries entry at the top.
+
+Deletions / removals:
+- None.
+
+Detailed discoveries:
+
+I did the investigation pass and added a short append-only handoff entry in [AGENT_HANDOFF_LOG.md](</d/trading-system/agent/AGENT_HANDOFF_LOG.md>).
+
+**Main finding:** before paying IBKR, we should build a no-order Gateway entitlement probe. The current app is not asking for simple quotes: [RealIBKRTransport.cpp](</d/trading-system/src/lib/RealIBKRTransport.cpp:103>) uses `reqMktDepth(..., depth=5)`, so it asks for Level II/depth. IBKR says most API securities need Level 1, while Level 2 is only needed for market depth; depth is also heavily limited by quote lines. With the default 100 market-data lines, IBKR documents only 3 simultaneous Level II/depth symbols, and quote boosters are currently USD 30/month each.
+
+Also, the current contract mapping is too blunt: [RealIBKRTransport.cpp](</d/trading-system/src/lib/RealIBKRTransport.cpp:78>) sets every contract to `STK` / `SMART` / `USD`, but the universe has US, Europe, Japan, Korea, Taiwan, Hong Kong, Shanghai, etc. We need a symbol master with IBKR `conId`, exchange, primary exchange, currency, and intended data level before this can be reliable.
+
+For subscriptions, the safe answer is: start with Level 1 only, prove entitlements via Gateway, then add Level 2 only for the few symbols where the strategy really needs book depth. IBKR's current docs/pricing indicate US NBBO generally maps to Network A/B/C or bundle-style subscriptions; Europe/APAC are exchange-specific, like Germany/Xetra, Euronext, Italy, Nordic, TSE, TWSE, HKEX, Korea, etc. Exact package choice depends on resolved IBKR contracts, not our display suffixes.
+
+For the VPS: if the German provider you mean is Hetzner, the budget works. Their April 2026 price-adjustment page lists Germany/Finland `CPX32` at USD 15.99/month and `CPX42` at USD 29.99/month before VAT; volumes are USD 0.0767/GB/month. So one practical target is a smaller server plus a 100 GB volume, or a larger local-disk server if we want less moving parts. We should still enforce the 100 GB cap in software with rolling compressed retention.
+
+Order logic needs a separate review before live trading. [LiveExecutionEngine.cpp](</d/trading-system/src/lib/LiveExecutionEngine.cpp:40>) currently places repeated buy limits for active symbols every step, with no duplicate-order guard, timeout, cancel/replace policy, or "filled before next action" gate. [RankingEngine.cpp](</d/trading-system/src/lib/RankingEngine.cpp:49>) chooses limits from a synthetic band around `mid`; I don't see a real configurable rolling mean/period yet. We should decide that period from collected data/backtests, likely EWMA/rolling microprice windows, not from a guess.
+
+Fill checking is partially started: [OrderLifecycle.hpp](</d/trading-system/include/broker/OrderLifecycle.hpp:41>) tracks submitted/partial/filled/cancelled/rejected from `orderStatus`, but [RealIBKRTransport.cpp](</d/trading-system/src/lib/RealIBKRTransport.cpp:174>) has `execDetails` as a no-op. For real verification we need `orderStatus` plus `openOrder`, `execDetails`, optional commission reports, and periodic open-order/position reconciliation.
+
+Sources used: [IBKR API Market Data Subscriptions](https://www.interactivebrokers.com/campus/ibkr-api-page/market-data-subscriptions/), [IBKR Market Data Pricing](https://www.interactivebrokers.com/en/pricing/market-data-pricing.php), [IBKR API Market Data Types](https://interactivebrokers.github.io/tws-api/market_data_type.html), [IBKR API Market Depth](https://interactivebrokers.github.io/tws-api/market_depth.html), [Hetzner price adjustment](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/).
+
+No code changes beyond the handoff note.
+
+## [2026-04-29] - Gateway data entitlement, storage, and order-fill investigation
+
+Model / agent:
+- GPT-5.5 Thinking, reasoning model
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `8b9c691dcadecdfe00a6e53b281af12abe69fad6` (`ci: add safe hft_app paper smoke`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Investigate how to get real market data for the symbol universe from IB Gateway, what live-data subscriptions may be needed, how to stay under about 100 GB of stored data on a roughly `$30/month` German VPS budget, and what to revisit in order-entry/fill verification logic.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this investigation handoff entry only.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Re-checked the hardcoded IBKR transport contract mapping and live subscription path.
+2. Re-checked the ranking/order-entry logic and current order lifecycle tracking.
+3. Cross-checked current IBKR market-data documentation/pricing and Hetzner cloud pricing/storage documentation.
+
+Validation performed:
+- Local inspection only; no Gateway requests were sent and no app/test build was run.
+- Confirmed `RealIBKRTransport` currently builds all market-data/order contracts as `STK`/`SMART`/`USD`, which is not valid for the full global universe.
+- Confirmed live subscriptions call `reqMktDepth(..., depth=5, isSmartDepth=false)` for each configured symbol, so the current data path is Level II/depth, not just Level I top-of-book.
+- Confirmed the symbol universe spans 107 names across US, Europe, and APAC listings; subscription needs must be derived per canonical IBKR contract/exchange rather than from the current display suffixes alone.
+- Confirmed `LiveExecutionEngine::step` places repeated buy limit orders for active ranked names without duplicate-order prevention, timeout/cancel/replace policy, or fill-completion gate.
+- Confirmed `OrderLifecycleBook` records submitted/partial/filled/cancelled/rejected states from `orderStatus`, but `execDetails` is currently a no-op and there is no explicit "wait until filled and reconciled" workflow.
+
+Known risks / follow-up:
+- Before paying for market data, build a no-order Gateway entitlement probe that resolves each symbol to a canonical IBKR contract/conId, requests Level I and optional Level II separately, and records live/delayed/no-permission/error status.
+- Consider lowering the initial live universe or requesting only Level I first; IBKR depth subscriptions and concurrent depth lines are much more constrained than top-of-book data.
+- Add a symbol master with exchange, primary exchange, currency, conId, and intended data level before any live collector or order-routing work.
+- Define storage retention by byte cap and data value: raw depth/tick logs should roll/compress/delete by size, with 100 GB treated as a hard cap.
+- Rework order entry after data collection/backtesting decides the mean/EWMA period; do not hardcode the current synthetic best-limit behavior for live trading.
+- Fill verification should combine `orderStatus`, `openOrder`, `execDetails`, commission reports if needed, and periodic open-order/position reconciliation.
+
+Suggested next step:
+- Build and run a read-only/no-order market-data entitlement probe against IB Gateway for a small subset first, then expand to the full universe.
+
 ## [2026-04-29] - Phase 5: add safe hft_app paper/no-order smoke to CI
 
 Model / agent:

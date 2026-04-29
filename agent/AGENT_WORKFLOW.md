@@ -25,9 +25,11 @@ Do **not** add a handoff entry for:
 
 When in doubt, append a short handoff entry. The log should help the next agent continue from the latest project state.
 
-## Mandatory model identity
+## Mandatory model and provider identity
 
-Every handoff entry must include the exact model name/version and model type used for that interaction.
+Every handoff entry must include:
+- the exact model name/version and model type used for that interaction
+- the provider or client surface used to run it, such as Codex, Cursor, GitHub Copilot, Claude Code, ChatGPT web, OpenAI API, Anthropic API, or another web/API provider
 
 For this interaction, the model identity is:
 
@@ -35,7 +37,13 @@ For this interaction, the model identity is:
 GPT-5.5 Thinking, reasoning model
 ```
 
-Do not write `unknown` for the model field. Use `unknown` only for fields where the date, commit, or source state is genuinely unavailable.
+For this interaction, the provider/client identity is:
+
+```text
+Codex desktop
+```
+
+Do not write `unknown` for the model or provider/client field. Use `unknown` only for fields where the date, commit, provider/client, or source state is genuinely unavailable.
 
 ## Core rules for agents
 
@@ -94,8 +102,10 @@ Append new entries at the top of `AGENT_HANDOFF_LOG.md`.
 ## [YYYY-MM-DD] - <short title>
 
 Model / agent:
-- <exact model name/version, model type>
-- Example: GPT-5.5 Thinking, reasoning model
+- Model: <exact model name/version, model type>
+- Provider/client: <Codex, Cursor, GitHub Copilot, Claude Code, ChatGPT web, OpenAI API, Anthropic API, or other exact provider/client>
+- Example model: GPT-5.5 Thinking, reasoning model
+- Example provider/client: Codex desktop
 
 Source state:
 - <latest main commit, repo zip name, or raw files used>

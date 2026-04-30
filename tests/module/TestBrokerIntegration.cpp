@@ -4,8 +4,8 @@
 
 #include "broker/ConnectionSupervisor.hpp"
 #include "broker/IBKRClient.hpp"
+#include "broker/LocalSimBroker.hpp"
 #include "broker/OrderLifecycle.hpp"
-#include "broker/PaperBrokerSim.hpp"
 #include "common/FakeIBKRTransport.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
@@ -22,17 +22,17 @@ HFT_TEST(test_paper_broker_receives_orders) {
   cfg.top_k = 3;
   cfg.steps = 1;
 
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   auto* raw = broker.get();
 
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
-  hft::test::require(eng.start(), "paper broker should connect");
+  hft::test::require(eng.start(), "local sim broker should connect");
   eng.initialize_universe(10);
   eng.step(0);
   eng.stop();
 
   hft::test::require(!raw->placed.empty(),
-                     "paper broker should receive placed orders");
+                     "local sim broker should receive placed orders");
 }
 
 HFT_TEST(test_live_config_maps_mode_name) {
@@ -44,15 +44,15 @@ HFT_TEST(test_live_config_maps_mode_name) {
 }
 
 HFT_TEST(test_paper_broker_supports_event_loop_and_depth_subscribe) {
-  PaperBrokerSim broker;
+  LocalSimBroker broker;
   hft::test::require(broker.connect("127.0.0.1", 7497, 1),
-                     "paper broker should connect");
+                     "local sim broker should connect");
   broker.start_event_loop();
   broker.subscribe_market_depth(MarketDepthRequest{1, "AAPL", 5});
   broker.stop_event_loop();
   broker.disconnect();
   hft::test::require(!broker.is_connected(),
-                     "paper broker should disconnect cleanly");
+                     "local sim broker should disconnect cleanly");
 }
 
 HFT_TEST(test_ibkr_stub_snapshot_and_reconnect_interfaces) {
@@ -140,7 +140,7 @@ HFT_TEST(test_connection_supervisor_backoff_and_reset_paths) {
 }
 
 HFT_TEST(test_paper_broker_poll_update_paths) {
-  PaperBrokerSim broker;
+  LocalSimBroker broker;
   OrderUpdate u{};
   hft::test::require(!broker.poll_update(u),
                      "empty broker queue should not produce update");
@@ -179,10 +179,10 @@ HFT_TEST(test_live_execution_engine_start_step_stop_paths) {
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 2;
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
-  hft::test::require(eng.start(), "engine should start with paper broker");
+  hft::test::require(eng.start(), "engine should start with local sim broker");
   eng.initialize_universe(6);
   eng.subscribe_live_books({"A", "B", "C"});
   eng.reconcile_broker_state();
@@ -198,7 +198,7 @@ HFT_TEST(test_order_lifecycle_initial_missing_state) {
 }
 
 HFT_TEST(test_paper_broker_cancel_creates_update) {
-  PaperBrokerSim broker;
+  LocalSimBroker broker;
   broker.connect("127.0.0.1", 7497, 1);
   broker.place_limit_order(OrderRequest{12, "MSFT", true, 3.0, 250.0});
   broker.cancel_order(12);
@@ -245,7 +245,7 @@ HFT_TEST(test_live_execution_engine_reconcile_without_ibkr_book_data) {
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 2;
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
   hft::test::require(eng.start(), "paper engine should start");
@@ -258,7 +258,7 @@ HFT_TEST(test_live_execution_engine_step_routes_only_top_k_orders) {
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 2;
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   auto* raw = broker.get();
 
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
@@ -337,7 +337,7 @@ HFT_TEST(test_live_execution_engine_zero_top_k_places_no_orders) {
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 0;
 
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   auto* raw = broker.get();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
@@ -410,7 +410,7 @@ HFT_TEST(test_order_lifecycle_status_without_prior_submit_creates_state) {
 }
 
 HFT_TEST(test_paper_broker_update_queue_drains_to_empty) {
-  PaperBrokerSim broker;
+  LocalSimBroker broker;
   broker.connect("127.0.0.1", 7497, 1);
   broker.place_limit_order(OrderRequest{1, "A", true, 1.0, 10.0});
   broker.cancel_order(1);
@@ -424,7 +424,7 @@ HFT_TEST(test_paper_broker_update_queue_drains_to_empty) {
 HFT_TEST(test_live_execution_engine_subscribe_books_with_empty_list) {
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
   hft::test::require(eng.start(), "engine should start");
   eng.initialize_universe(3);
@@ -456,22 +456,22 @@ HFT_TEST(test_ibkr_stub_market_depth_subscription_on_connected_client) {
 }
 
 HFT_TEST(test_paper_broker_disconnect_after_multiple_operations) {
-  PaperBrokerSim broker;
+  LocalSimBroker broker;
   hft::test::require(broker.connect("127.0.0.1", 7497, 1),
-                     "paper broker should connect");
+                     "local sim broker should connect");
   broker.place_limit_order(OrderRequest{1, "AAPL", true, 1.0, 100.0});
   broker.place_limit_order(OrderRequest{2, "MSFT", false, 2.0, 200.0});
   broker.cancel_order(2);
   broker.disconnect();
   hft::test::require(!broker.is_connected(),
-                     "paper broker should report disconnected");
+                     "local sim broker should report disconnected");
 }
 
 HFT_TEST(test_live_execution_engine_subscribe_books_nonempty_paper_path) {
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 1;
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
   hft::test::require(eng.start(), "engine should start");
   eng.initialize_universe(3);
@@ -585,7 +585,7 @@ HFT_TEST(test_live_execution_engine_multiple_steps_with_paper_broker) {
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 3;
 
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   auto* raw = broker.get();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
@@ -606,7 +606,7 @@ HFT_TEST(test_live_execution_engine_start_stop_idempotent_paper_path) {
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 1;
 
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
   hft::test::require(eng.start(), "first start should succeed");
@@ -687,7 +687,7 @@ HFT_TEST(
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 3;
 
-  auto broker = std::make_unique<PaperBrokerSim>();
+  auto broker = std::make_unique<LocalSimBroker>();
   auto* raw = broker.get();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 

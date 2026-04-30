@@ -85,6 +85,7 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
     order.orderType = "LMT";
     order.totalQuantity = DecimalFunctions::doubleToDecimal(req.qty);
     order.lmtPrice = req.limit;
+    order.transmit = req.transmit;
 
     client_.placeOrder(req.id, contract, order);
   }
@@ -149,7 +150,11 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   // ---- EWrapper: everything else is intentionally a no-op. ----
   // These overrides exist solely to satisfy the abstract base class. The
   // bodies match the previous stubs in IBKRClient.hpp 1:1.
-  void nextValidId(OrderId) override {}
+  void nextValidId(OrderId orderId) override {
+    if (callbacks_ != nullptr) {
+      callbacks_->on_next_valid_id(static_cast<int>(orderId));
+    }
+  }
   void tickPrice(TickerId, TickType, double, const TickAttrib&) override {}
   void tickSize(TickerId, TickType, Decimal) override {}
   void tickOptionComputation(TickerId, TickType, int, double, double, double,
@@ -173,8 +178,13 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   void contractDetailsEnd(int) override {}
   void execDetails(int, const Contract&, const Execution&) override {}
   void execDetailsEnd(int) override {}
-  void error(int, time_t, int, const std::string&,
-             const std::string&) override {}
+  void error(int id, time_t, int code, const std::string& message,
+             const std::string& advancedOrderRejectJson) override {
+    if (callbacks_ != nullptr) {
+      callbacks_->on_error(
+          IBKRError{id, code, message, advancedOrderRejectJson});
+    }
+  }
   void updateMktDepthL2(TickerId, int, const std::string&, int, int, double,
                         Decimal, bool) override {}
   void updateNewsBulletin(int, int, const std::string&,

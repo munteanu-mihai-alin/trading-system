@@ -33,6 +33,11 @@ add_executable(hft_app
 )
 target_link_libraries(hft_app PRIVATE hft_lib)
 
+add_executable(ibkr_paper_order_probe
+  src/tools/ibkr_paper_order_probe.cpp
+)
+target_link_libraries(ibkr_paper_order_probe PRIVATE hft_lib)
+
 add_executable(hft_tests
   tests/common/TestMain.cpp
   tests/unit/TestCoreModels.cpp
@@ -152,6 +157,7 @@ target_link_libraries(hft_lib PUBLIC twsapi_vendor hft_ibkr_link_deps)
 # the dependency bundle directly after the app/test object and project library
 # as well, so libintelrdfpmath.a is seen after libtwsapi_vendor.a.
 target_link_libraries(hft_app PRIVATE twsapi_vendor hft_ibkr_link_deps)
+target_link_libraries(ibkr_paper_order_probe PRIVATE twsapi_vendor hft_ibkr_link_deps)
 target_link_libraries(hft_tests PRIVATE twsapi_vendor hft_ibkr_link_deps)
 
 # ---------------------------------------------------------------------------

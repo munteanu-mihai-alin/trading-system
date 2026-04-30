@@ -108,6 +108,16 @@ L2Book IBKRClient::snapshot_book(int ticker_id) const {
   return it->second;
 }
 
+int IBKRClient::next_valid_order_id() const {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  return next_valid_order_id_;
+}
+
+std::vector<IBKRError> IBKRClient::errors() const {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  return errors_;
+}
+
 void IBKRClient::pump_once() {
   if (!transport_->is_connected()) {
     return;
@@ -184,6 +194,16 @@ void IBKRClient::on_market_depth_update(int ticker_id, int position,
       book.asks[position] = level;
     }
   }
+}
+
+void IBKRClient::on_next_valid_id(int order_id) {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  next_valid_order_id_ = order_id;
+}
+
+void IBKRClient::on_error(const IBKRError& error) {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  errors_.push_back(error);
 }
 
 void IBKRClient::on_connection_closed() {

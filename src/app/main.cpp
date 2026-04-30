@@ -5,7 +5,7 @@
 
 #include "bench/bench.hpp"
 #include "broker/IBKRClient.hpp"
-#include "broker/PaperBrokerSim.hpp"
+#include "broker/LocalSimBroker.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "engine/LiveExecutionEngine.hpp"
@@ -37,8 +37,8 @@ int main() {
     broker = std::make_unique<hft::IBKRClient>();
     raw_ibkr = static_cast<hft::IBKRClient*>(broker.get());
   } else {
-    std::cout << "Creating simulated/paper broker" << std::endl;
-    broker = std::make_unique<hft::PaperBrokerSim>();
+    std::cout << "Creating local simulated broker" << std::endl;
+    broker = std::make_unique<hft::LocalSimBroker>();
   }
   hl::set_app_state(hl::AppState::ConnectingBroker);
 

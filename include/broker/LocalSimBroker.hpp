@@ -1,4 +1,3 @@
-
 #pragma once
 #include <deque>
 #include <string>
@@ -10,9 +9,10 @@
 
 namespace hft {
 
-// Compile-safe broker used for paper/sim mode and tests.
-// It records placed/cancelled orders and can emit synthetic updates.
-class PaperBrokerSim : public IBroker {
+// Local in-memory broker used for simulation and unit tests. This is not an
+// IBKR paper account connection; use IBKRClient against a paper Gateway/TWS
+// socket for orders that should appear in IBKR paper trading.
+class LocalSimBroker : public IBroker {
   bool connected_ = false;
 
  public:

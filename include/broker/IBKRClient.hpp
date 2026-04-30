@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "broker/ConnectionSupervisor.hpp"
 #include "broker/IBKRCallbacks.hpp"
@@ -28,12 +29,15 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   std::unordered_map<int, double> ack_latency_ms_cache_;
   std::unordered_map<int, L2Book> books_;
   OrderLifecycleBook lifecycle_;
+  std::vector<IBKRError> errors_;
   ConnectionSupervisor reconnect_;
   std::string host_;
   int port_ = 0;
   int client_id_ = 0;
+  int next_valid_order_id_ = 0;
 
   mutable std::mutex books_mutex_;
+  mutable std::mutex event_mutex_;
   std::atomic<bool> reader_running_{false};
   std::thread reader_thread_;
 
@@ -56,6 +60,8 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
 
   [[nodiscard]] double ack_latency_ms(int order_id) const;
   [[nodiscard]] L2Book snapshot_book(int ticker_id) const;
+  [[nodiscard]] int next_valid_order_id() const;
+  [[nodiscard]] std::vector<IBKRError> errors() const;
   [[nodiscard]] const OrderLifecycleBook& lifecycle() const {
     return lifecycle_;
   }
@@ -65,6 +71,8 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
                        double remaining, double avg_fill_price) override;
   void on_market_depth_update(int ticker_id, int position, int operation,
                               int side, double price, double size) override;
+  void on_next_valid_id(int order_id) override;
+  void on_error(const IBKRError& error) override;
   void on_connection_closed() override;
 };
 

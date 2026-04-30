@@ -4,6 +4,226 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-04-30] - Add guarded IBKR paper order probe and rename local simulator broker
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `996ee29d995c1fca7b8e72bdabda0335ac70c92f` (`added live data investigation`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Add a way to see orders in the IBKR paper account and rename the internal `PaperBrokerSim` so it is clearly distinct from IBKR paper trading.
+
+Files changed:
+- `CMakeLists.txt` - added `ibkr_paper_order_probe` target and linked it with the same IBKR/TWS dependency bundle as the app/tests.
+- `include/broker/LocalSimBroker.hpp` - new name for the in-memory local simulation broker.
+- `include/broker/PaperBrokerSim.hpp` - deleted as part of the rename to avoid confusion with IBKR paper trading.
+- `src/app/main.cpp` - switched from `PaperBrokerSim` to `LocalSimBroker` and updated the startup message.
+- `tests/module/TestBrokerIntegration.cpp` - switched includes/types/messages from `PaperBrokerSim` to `LocalSimBroker`.
+- `include/broker/IBroker.hpp` - added `OrderRequest::transmit`, defaulting to `true`.
+- `include/broker/IBKRCallbacks.hpp` - added portable `IBKRError`, optional `on_next_valid_id`, and optional `on_error` callback hooks.
+- `include/broker/IBKRClient.hpp` / `src/lib/IBKRClient.cpp` - store `nextValidId` and IBKR errors so small tools can submit a valid order id and print broker/API errors.
+- `src/lib/RealIBKRTransport.cpp` - forwards `nextValidId` and `error` callbacks and maps `OrderRequest::transmit` to TWS `Order::transmit`.
+- `src/tools/ibkr_paper_order_probe.cpp` - new guarded one-shot IBKR paper order executable.
+- `agent/AGENT_HANDOFF_LOG.md` - appended this entry.
+
+Deletions / removals:
+- Deleted `include/broker/PaperBrokerSim.hpp`; replacement is `include/broker/LocalSimBroker.hpp`.
+- No order-routing behavior was removed from the local simulator; it was renamed to avoid ambiguity.
+
+Safety rails in `ibkr_paper_order_probe`:
+- Requires explicit `--transmit`; otherwise refuses to submit.
+- Defaults to paper Gateway port `4002`.
+- Accepts only `4002` or `7497` unless `--allow-custom-port` is provided.
+- Refuses `qty > 1`.
+- Requires a positive limit price.
+- Supports auto-cancel via `--cancel-after-sec`.
+- Currently routes stocks as `STK` / `SMART` / `USD`; it is suitable for a first US stock paper-account probe, not yet a general contract probe.
+
+Validation performed:
+- Formatted C++ sources with UCRT `clang-format` after granting permissions for the formatter.
+- Reconfigured UCRT build:
+  - `$env:PATH='D:\msys64\ucrt64\bin;D:\msys64\usr\bin;' + $env:PATH; D:\msys64\ucrt64\bin\cmake.exe -S . -B build-ucrt-ibkr -DCMAKE_PREFIX_PATH=D:/trading-system/dependencies/ucrt64/install`
+  - Result: configure/generate succeeded.
+- Built the new probe:
+  - `D:\msys64\ucrt64\bin\cmake.exe --build build-ucrt-ibkr --target ibkr_paper_order_probe -j 2`
+  - Result: target built successfully.
+- Built all local targets:
+  - `D:\msys64\ucrt64\bin\cmake.exe --build build-ucrt-ibkr -j 2`
+  - Result: `hft_app`, `hft_tests`, `hft_gtests`, and `ibkr_paper_order_probe` built successfully.
+- Ran probe help:
+  - `.\build-ucrt-ibkr\ibkr_paper_order_probe.exe --help`
+  - Result: printed usage and safety rails.
+- Ran safety refusal:
+  - `.\build-ucrt-ibkr\ibkr_paper_order_probe.exe --limit 100`
+  - Result: refused to submit without `--transmit`.
+- Confirmed `ibgateway.exe` is running and `netstat` shows paper Gateway API listening on `0.0.0.0:4002` and `[::]:4002`.
+
+IBKR paper-account order probes run:
+- Safe acceptance/cancel test:
+  - `.\build-ucrt-ibkr\ibkr_paper_order_probe.exe --port 4002 --client-id 9101 --symbol AAPL --action BUY --qty 1 --limit 1 --transmit --timeout-sec 20 --cancel-after-sec 2`
+  - Result: order submitted, then auto-cancelled. Final status `Cancelled`, filled `0`, remaining `1`. IBKR returned normal farm OK messages and cancel code `202`.
+- Too-aggressive marketable limit test:
+  - `.\build-ucrt-ibkr\ibkr_paper_order_probe.exe --port 4002 --client-id 9102 --symbol AAPL --action BUY --qty 1 --limit 1000 --transmit --timeout-sec 45 --cancel-after-sec 10`
+  - Result: IBKR rejected/cancelled because the buy limit was too aggressive relative to current market price. Error referenced current market price around `271.85` and max aggressive limit around `279.84239`.
+- Filled paper order:
+  - `.\build-ucrt-ibkr\ibkr_paper_order_probe.exe --port 4002 --client-id 9103 --symbol AAPL --action BUY --qty 1 --limit 275 --transmit --timeout-sec 45 --cancel-after-sec 10`
+  - Result: final status `Filled`, filled `1`, remaining `0`, average fill `271.86`.
+
+Known risks / follow-up:
+- The new probe only supports simple US stock contracts using the current `STK` / `SMART` / `USD` mapping. It should later grow explicit contract fields or reuse a canonical contract table.
+- `execDetails` is still a no-op in `RealIBKRTransport`; the probe confirms fills through `orderStatus`, not execution detail records.
+- `ctest` was not run because the approval prompt for CTest was declined. The full build did pass.
+- The main `hft_app` still has the previous live-engine order-loop risk in live mode; use `ibkr_paper_order_probe` for controlled paper-account order tests instead of the engine.
+
+## [2026-04-29] - Comprehensive L1/L2 ranking, execution, and cost strategy
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `996ee29d995c1fca7b8e72bdabda0335ac70c92f` (`added live data investigation`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Add a comprehensive detailed description of the last three market-data responses, including tables and explanations.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this comprehensive planning entry at the top.
+
+Deletions / removals:
+- None.
+
+Summary:
+- L2 is richer than L1, but it is not automatically better for every task.
+- L1 should be used for broad ranking and monitoring because it is cheaper, scales to more symbols, and is enough for mid/spread/last/volume style features.
+- L2 should be reserved for the small set of symbols close to order placement, especially passive limit orders where queue, depth, and fill probability matter.
+- The cost-optimized plan is broad L1 plus rotating L2 for about 3 hot symbols, not L2 for the whole universe.
+
+### L1 vs L2 decision
+
+| Question | L1 answer | L2 answer | Practical decision |
+|---|---|---|---|
+| What does it show? | Top of book: best bid, best ask, sizes, last, volume. | Depth of book: multiple price levels on bid/ask. | Use L1 unless we need queue/depth. |
+| Is it good for ranking? | Yes. Enough for broad universe scans, liquidity filters, spread, returns, volatility, 5-second/1-minute features. | Often too expensive/noisy for broad ranking. | Rank with L1. |
+| Is it good for passive limit orders? | Partly. Shows top bid/ask, but little about queue behind the quote. | Yes. Helps estimate queue ahead, nearby liquidity, and fill probability. | Use L2 for execution candidates. |
+| Cost/scaling | Scales much better. IBKR starts at 100 concurrent L1 lines. | IBKR depth is much more constrained. Default depth allowance is about 3 symbols. | Do not buy broad L2. |
+| Storage | Manageable if sampled/resampled. | Much heavier; raw book updates can fill storage quickly. | Store L2 only for hot symbols and short windows. |
+| US nuance | Proper NBBO L1 can be more useful than one venue-specific depth feed. | L2 may be venue-specific, depending on package. | For US, get NBBO L1 before broad L2. |
+
+### Recommended ranking/execution architecture
+
+| Stage | Data | Frequency / scope | Purpose |
+|---|---|---|---|
+| Universe monitor | L1, delayed where acceptable, snapshots, or bars | Broad universe, up to all symbols | Track availability, price, spread, volume, and coarse features. |
+| Ranker | L1 or 5-second/1-minute derived features | Broad universe | Choose candidates using momentum/mean-reversion/volatility/liquidity filters. |
+| Hot set promotion | L1 plus strategy score | Small set, usually top 3 | Decide which symbols deserve L2. |
+| Execution engine | L2/depth, optional tick-by-tick where available | Only hot symbols | Place, adjust, or skip passive limit orders based on depth and queue. |
+| Demotion | L1/L2 health and rank decay | Hot symbols only | Drop L2 subscription when symbol falls out of hot set or no setup remains. |
+| Fill checking | Order status, open orders, executions, positions | Only symbols with orders | Verify fills and reconcile state before more orders. |
+
+Decision: ranking = L1; placing/adjusting passive limit orders = L2. If the system later uses marketable limit orders or crossing orders, L2 matters less, but for passive limit orders it is the right input.
+
+### Cost-optimized L1 coverage table
+
+Assumption: public IBKR Non-Professional pricing. Exact entitlement still depends on account classification, trading permissions, contract resolution, and IBKR account settings.
+
+| Coverage | Subscription choice | Non-Pro cost | Notes |
+|---|---|---:|---|
+| US broad ranking | Free Cboe/IEX non-consolidated L1 | Free | Cheap first pass, but not consolidated NBBO. |
+| US proper NBBO | NYSE Network A + Network B + NASDAQ Network C | About `USD 4.50/mo` total | Roughly `USD 1.50` each in public table; useful for trading-quality US L1. |
+| Euronext FR/NL | Euronext Data Bundle L1 | `EUR 3/mo` | Covers Euronext names such as France/Netherlands listings in the universe. |
+| Germany/Xetra | Spot Market Germany L1 | `EUR 16.25/mo` | Big incremental cost; defer unless German local listings are essential. |
+| Italy | Borsa Italiana L1 | `EUR 4/mo` | Needed for local Italian listing such as `ENI.IT`. |
+| Nordic / Finland / Norway | Nordic Equity L1 | `EUR 2/mo` | Likely covers Nordic equity L1; Oslo specifics should be verified by contract. |
+| Japan / Tokyo | Tokyo Stock Exchange L1 | `JPY 300/mo` | Needed for `.T` / Tokyo local listings. |
+| South Korea | Korea Stock Exchange Stocks L1 | Fee waived | Still must verify account availability and contract permissions. |
+| Taiwan TWSE | Taiwan Stock Exchange L1 | `USD 1/mo` | For `.TW` listings. |
+| Taiwan Taipei Exchange | Taipei Exchange L1 | `TWD 15/mo` | For `.TWO` listings. |
+| Hong Kong | HK Securities Exchange L1 | Fee waived | For `.HK` names; L2 is not free. |
+| Shanghai | Shanghai 5-second snapshot via HKEx first | `USD 1/mo` | Cheaper than true Shanghai streaming L1; use first unless live streaming is essential. |
+| Austria / Vienna | Vienna L1 + indices | `EUR 5/mo` | For `ATS.VI`. |
+
+Lean broad-L1 baseline, excluding optional L2, excluding US paid NBBO, and excluding Germany/Xetra:
+
+```text
+EUR 14 + USD 2 + JPY 300 + TWD 15
+```
+
+Broader baseline with US paid NBBO and Germany/Xetra L1:
+
+```text
+EUR 30.25 + USD 6.50 + JPY 300 + TWD 15
+```
+
+### L2 hot-set package table
+
+L2 should be bought for the venue where the current hot symbols actually trade. Do not buy all L2 packages up front.
+
+| Hot-set L2 package | When useful | Non-Pro cost |
+|---|---|---:|
+| NASDAQ TotalView-OpenView | US tech/semi hot set such as `NVDA`, `AMD`, `AAPL`, `INTC`, depending listing/contract | `USD 16.50/mo` |
+| NYSE OpenBook | NYSE-heavy hot set | `USD 25/mo` |
+| Xetra L2 | German hot set | `EUR 21.75/mo` |
+| Tokyo Stock Exchange L2 | Japan hot set | `JPY 380/mo` |
+| Hong Kong Securities Exchange L2 | Hong Kong hot set | `HKD 225/mo` |
+| Shanghai Stock Exchange L2 | China hot set | `USD 35/mo` |
+
+Preferred first practical setup:
+1. Start with broad L1 and no broad L2.
+2. Use free US non-consolidated data for initial experiments, then add US NBBO if trading US names seriously.
+3. Skip Germany/Xetra initially unless the selected strategy needs the local German listings.
+4. Add NASDAQ L2 first if hot symbols are mostly US semis/tech.
+5. Rotate L2 subscriptions/requests dynamically for the 3 hot symbols rather than subscribing the whole universe to depth.
+
+Sources referenced in prior responses:
+- IBKR Market Data Pricing: https://www.interactivebrokers.com/en/pricing/market-data-pricing.php
+- IBKR Market Data Subscriptions / API notes: https://www.interactivebrokers.com/campus/ibkr-api-page/market-data-subscriptions/
+
+Validation performed:
+- Documentation-only update to handoff log.
+
+Known risks / follow-up:
+- Build the no-order Gateway entitlement probe next. It should resolve each symbol to canonical IBKR `conId`, exchange, primary exchange, currency, requested data level, and observed result: live, delayed, snapshot, no permission, ambiguous contract, or error.
+- The current code still requests L2/depth for all subscribed symbols; implementation should later split L1 ranking from L2 execution.
+
+## [2026-04-29] - Cost-optimized IBKR L1/L2 coverage strategy
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `8b9c691dcadecdfe00a6e53b281af12abe69fad6` (`ci: add safe hft_app paper smoke`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Investigate how to cover most stocks with L1/L2 market data without paying too much.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this planning entry at the top.
+
+Deletions / removals:
+- None.
+
+Findings / decision:
+- Use L1 for broad ranking and universe monitoring.
+- Use L2 only for a rotating hot set, normally the 3 symbols closest to executable order placement.
+- Start with free/cheap coverage: US free non-consolidated Cboe/IEX, fee-waived Korea/Hong Kong L1, delayed data where acceptable, and cheap L1 packages for Euronext, Italy, Nordic, Japan, Taiwan, Austria, and Shanghai 5-second snapshot.
+- For US trading-quality NBBO, add direct Network A/B/C or the IBKR bundle path; direct non-pro rows show USD 1.50 each for NYSE Network A, Network B, and NASDAQ Network C.
+- Germany/Xetra is a large incremental cost at EUR 16.25/month for L1 and EUR 21.75/month for L2, so defer unless German local listings are essential or use ADR/US alternatives where acceptable.
+- Put L2 budget behind one venue at a time. NASDAQ TotalView-OpenView is the natural first US L2 candidate if hot symbols are NASDAQ-heavy; otherwise choose the L2 package for the venue containing the current hot set.
+- Avoid buying L2 for all exchanges. IBKR's default depth allowance is 3 simultaneous L2/depth symbols, while L1 starts at 100 concurrent lines.
+
+Known risks / follow-up:
+- Exact subscriptions must still be validated with canonical IBKR contracts/conIds because current display symbols contain duplicates and ambiguous ADR/local listings.
+- IBKR prices and account eligibility depend on non-professional/professional classification and account settings.
+- A no-order Gateway entitlement probe remains the best next implementation step.
+
 ## [2026-04-29] - Level 1 and Level 2 market data explanation
 
 Model / agent:

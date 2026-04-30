@@ -15,6 +15,7 @@ struct OrderRequest {
   bool is_buy = true;
   double qty = 0.0;
   double limit = 0.0;
+  bool transmit = true;
 };
 
 struct OrderUpdate {

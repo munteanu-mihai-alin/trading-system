@@ -124,6 +124,14 @@ HFT_TEST(test_live_trading_config_mode_names) {
       LiveTradingConfig::from_app(live_cfg).mode_name() == "live",
       "live mode name should be live");
 
+  AppConfig ibkr_paper_cfg;
+  ibkr_paper_cfg.mode = BrokerMode::IBKRPaper;
+  const auto ibkr_paper = LiveTradingConfig::from_app(ibkr_paper_cfg);
+  hft::test::require(ibkr_paper.use_real_ibkr,
+                     "ibkr paper mode should enable real ibkr");
+  hft::test::require(ibkr_paper.mode_name() == "ibkr_paper",
+                     "ibkr paper mode name should be ibkr_paper");
+
   AppConfig sim_cfg;
   sim_cfg.mode = BrokerMode::Sim;
   hft::test::require(LiveTradingConfig::from_app(sim_cfg).mode_name() == "sim",

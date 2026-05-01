@@ -55,6 +55,33 @@ TEST(LiveExecutionEngine, StartReturnsFalseOnConnectFailure) {
   EXPECT_FALSE(engine.start());
 }
 
+TEST(LiveExecutionEngine, IBKRPaperUsesPaperPortAndRealIBKRMode) {
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::IBKRPaper;
+  app.paper_port = 4002;
+  app.client_id = 44;
+  const auto cfg = hft::LiveTradingConfig::from_app(app);
+  EXPECT_TRUE(cfg.use_real_ibkr);
+  EXPECT_EQ(cfg.mode_name(), "ibkr_paper");
+
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, connect("127.0.0.1", 4002, 44)).WillOnce(Return(true));
+  hft::LiveExecutionEngine engine(cfg, std::move(broker));
+  EXPECT_TRUE(engine.start());
+}
+
+TEST(LiveExecutionEngine, IBKRPaperRejectsNonPaperPortByDefault) {
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::IBKRPaper;
+  app.paper_port = 4001;
+  const auto cfg = hft::LiveTradingConfig::from_app(app);
+
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, connect(_, _, _)).Times(0);
+  hft::LiveExecutionEngine engine(cfg, std::move(broker));
+  EXPECT_FALSE(engine.start());
+}
+
 TEST(LiveExecutionEngine, StopCallsBrokerDisconnect) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   EXPECT_CALL(*broker, disconnect()).Times(1);
@@ -93,6 +120,38 @@ TEST(LiveExecutionEngine, StepPlacesOrdersForActivePortfolioItems) {
                                   std::move(broker));
   engine.initialize_universe(10);
   engine.step(0);
+}
+
+TEST(LiveExecutionEngine, StepHonorsOrderDisabledConfig) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+  auto cfg = make_paper_config(/*top_k=*/3);
+  cfg.app.order_enabled = false;
+  hft::LiveExecutionEngine engine(cfg, std::move(broker));
+  engine.initialize_universe(10);
+  engine.step(0);
+}
+
+TEST(LiveExecutionEngine, StepHonorsMaxOrdersPerRun) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(1);
+  auto cfg = make_paper_config(/*top_k=*/3);
+  cfg.app.max_orders_per_run = 1;
+  hft::LiveExecutionEngine engine(cfg, std::move(broker));
+  engine.initialize_universe(10);
+  engine.step(0);
+  engine.step(1);
+}
+
+TEST(LiveExecutionEngine, StepHonorsMaxOrdersPerSymbol) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(1);
+  auto cfg = make_paper_config(/*top_k=*/1);
+  cfg.app.max_orders_per_symbol = 1;
+  hft::LiveExecutionEngine engine(cfg, std::move(broker));
+  engine.initialize_universe(1);
+  engine.step(0);
+  engine.step(1);
 }
 
 TEST(LiveExecutionEngine, ReconcileBrokerStateNoOpsForNonIBKRClient) {

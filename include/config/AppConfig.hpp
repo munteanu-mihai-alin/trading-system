@@ -3,7 +3,7 @@
 
 namespace hft {
 
-enum class BrokerMode { Paper, Live, Sim };
+enum class BrokerMode { Paper, IBKRPaper, Live, Sim };
 
 struct AppConfig {
   BrokerMode mode = BrokerMode::Paper;
@@ -13,6 +13,13 @@ struct AppConfig {
   int client_id = 1;
   int top_k = 3;
   int steps = 500;
+  bool allow_nonstandard_ibkr_paper_port = false;
+  bool order_enabled = true;
+  double order_qty = 10.0;
+  double max_order_qty = 10.0;
+  double max_notional_per_order = 0.0;
+  int max_orders_per_run = 0;
+  int max_orders_per_symbol = 0;
 
   [[nodiscard]] int port() const noexcept {
     if (mode == BrokerMode::Live)

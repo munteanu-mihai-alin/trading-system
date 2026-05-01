@@ -41,6 +41,13 @@ HFT_TEST(test_live_config_maps_mode_name) {
   const auto live = LiveTradingConfig::from_app(cfg);
   hft::test::require(live.use_real_ibkr, "live config should enable real ibkr");
   hft::test::require(live.mode_name() == "live", "mode name should be live");
+
+  cfg.mode = BrokerMode::IBKRPaper;
+  const auto ibkr_paper = LiveTradingConfig::from_app(cfg);
+  hft::test::require(ibkr_paper.use_real_ibkr,
+                     "ibkr paper config should enable real ibkr");
+  hft::test::require(ibkr_paper.mode_name() == "ibkr_paper",
+                     "mode name should be ibkr_paper");
 }
 
 HFT_TEST(test_paper_broker_supports_event_loop_and_depth_subscribe) {

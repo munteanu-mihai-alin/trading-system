@@ -33,7 +33,8 @@ int main() {
   std::unique_ptr<hft::IBroker> broker;
   hft::IBKRClient* raw_ibkr = nullptr;
   if (live_cfg.use_real_ibkr) {
-    std::cout << "Creating real IBKR broker" << std::endl;
+    std::cout << "Creating real IBKR broker for " << live_cfg.mode_name()
+              << " mode" << std::endl;
     broker = std::make_unique<hft::IBKRClient>();
     raw_ibkr = static_cast<hft::IBKRClient*>(broker.get());
   } else {

@@ -4,6 +4,108 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-01] - Make IBKR paper mode usable and configurable from app config
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `aa3aacccd5efece103f3faf36759e8a4f736d69c` (`changed PaperBroker to LocalSimBroker`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Make IBKR paper usable first, with settings adjustable from a config file.
+- Keep the live execution engine path, but make it possible to point that path at an IBKR paper Gateway/TWS session with small, explicit order budgets.
+
+Files changed:
+- `include/config/AppConfig.hpp` - added `BrokerMode::IBKRPaper` and execution safety settings: `allow_nonstandard_ibkr_paper_port`, `order_enabled`, `order_qty`, `max_order_qty`, `max_notional_per_order`, `max_orders_per_run`, and `max_orders_per_symbol`.
+- `src/lib/AppConfig.cpp` - added bool parsing, `mode=ibkr_paper` / `mode=paper_ibkr`, and parsing for the new broker/execution keys.
+- `include/config/LiveTradingConfig.hpp` - maps `IBKRPaper` to the real IBKR client path and exposes `mode_name()` as `ibkr_paper`.
+- `include/engine/LiveExecutionEngine.hpp` / `src/lib/LiveExecutionEngine.cpp` - added paper-port guard, order enable flag, configurable order quantity, max quantity/notional checks, max orders per run, and max orders per symbol.
+- `src/app/main.cpp` - startup message now reports the real IBKR mode name, including `ibkr_paper`.
+- `config.ibkr_paper.example.ini` - new guarded example config for paper Gateway/TWS validation.
+- `tests/unit/AppConfigTest.cpp`, `tests/unit/LiveExecutionEngineTest.cpp`, `tests/unit/TestCoreModels.cpp`, `tests/math/TestMathModels.cpp`, and `tests/module/TestBrokerIntegration.cpp` - added coverage for the new mode and config guardrails.
+- `agent/AGENT_HANDOFF_LOG.md` - appended this implementation record.
+
+Deletions / removals:
+- None for this implementation.
+- Test-generated scratch files from the validation run were removed afterward; unrelated local dirty files were left untouched.
+
+Config behavior:
+- `mode=ibkr_paper` uses the real IBKR broker implementation, but uses `paper_port` rather than `live_port`.
+- `mode=paper` remains local simulation and should not be confused with an IBKR paper account.
+- `IBKRPaper` refuses non-paper ports by default. Accepted paper ports are `4002` for IB Gateway paper and `7497` for TWS paper. A custom port requires `allow_nonstandard_ibkr_paper_port=true`.
+- `order_enabled=false` lets the live engine connect/subscribe/heartbeat without placing orders.
+- `order_qty` controls requested quantity; `max_order_qty` clamps it when positive.
+- `max_notional_per_order`, `max_orders_per_run`, and `max_orders_per_symbol` act as simple order-budget brakes. Values of `0` mean the corresponding limit is disabled.
+
+Example starting point:
+- Use `config.ibkr_paper.example.ini` as the template for a one-symbol, one-step, one-order IBKR paper validation run.
+- The example keeps `top_k=1`, `steps=1`, `order_qty=1`, `max_order_qty=1`, `max_notional_per_order=500`, `max_orders_per_run=1`, and `max_orders_per_symbol=1`.
+
+Validation performed:
+- Ran repo formatter through MSYS2 using Linux-style path:
+  - `D:\msys64\usr\bin\bash.exe -lc "export PATH=/ucrt64/bin:/usr/bin:$PATH; cd /d/trading-system && ./scripts/format_code.sh"`
+  - Result: `Formatted 72 files using .clang-format`.
+- Rebuilt all UCRT targets:
+  - `$env:PATH='D:\msys64\ucrt64\bin;D:\msys64\usr\bin;' + $env:PATH; D:\msys64\ucrt64\bin\cmake.exe --build build-ucrt-ibkr -j 2`
+  - Result: `hft_lib`, `hft_app`, `hft_tests`, `hft_gtests`, and `ibkr_paper_order_probe` built successfully.
+- Ran focused gtests:
+  - `.\build-ucrt-ibkr\hft_gtests.exe --gtest_filter="*AppConfig*:*LiveExecutionEngine*"`
+  - Result: 25 tests passed.
+- Ran legacy test executable:
+  - `.\build-ucrt-ibkr\hft_tests.exe`
+  - Result: all listed tests passed, including `test_app_config_loads_ibkr_paper_mode` and `test_live_trading_config_mode_names`.
+
+Known risks / follow-up:
+- No live app run was performed in `mode=ibkr_paper` during this handoff entry, to avoid placing paper orders without a deliberate user command.
+- The live engine still uses the current ranking/order logic and simple buy-limit behavior. It now has quantity/count/notional brakes, but it is not yet fill-aware and does not block duplicate orders based on open IBKR order state.
+- `execDetails` handling is still a follow-up; fills are currently observed through order status in the probe path.
+- L1/L2 market-data architecture changes remain postponed until IBKR subscriptions are selected.
+
+## [2026-04-30] - Decision: run live execution engine against IBKR paper, postpone L1/L2 rework
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `aa3aacccd5efece103f3faf36759e8a4f736d69c` (`changed PaperBroker to LocalSimBroker`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request / decision:
+- User wants to use the live execution engine against an IBKR paper Gateway session for now.
+- User correctly noted that logging into Gateway in paper mode gives an additional real-money safety boundary.
+- User wants to keep `ibkr_paper_order_probe` but treat it as a utility for latency measurement, API/data queries, and live-data experiments rather than the main trading path.
+- User wants to postpone the L1/L2 market-data architecture rework until after buying/choosing IBKR market-data subscriptions.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this decision record only.
+
+Deletions / removals:
+- None.
+
+Important interpretation:
+- IBKR paper login protects real money, but the app can still create many paper orders/positions if `hft_app` is pointed at paper Gateway with the current live execution loop.
+- The next engineering step should not be L1/L2 rework. It should be adding safety rails so `LiveExecutionEngine` can be run against IBKR paper without order spam.
+
+Recommended next implementation:
+1. Add an explicit config mode or flag for real IBKR paper, for example `mode=ibkr_paper` or `broker=ibkr` + `account_env=paper`, so `mode=paper` remains local simulation and cannot be confused with IBKR paper.
+2. Add a paper-only guard that refuses default live ports (`4001`, `7496`) unless an explicit override is present.
+3. Add order-budget controls to the live execution engine: `max_orders_per_run`, `max_open_orders`, `max_position_per_symbol`, `max_notional_per_order`, and `max_total_notional`.
+4. Add duplicate-order protection: do not place a new order for a symbol while an order is open/pending/partially filled.
+5. Add timeout/cancel behavior and fill/status reconciliation before allowing another order for the same symbol.
+6. Keep `ibkr_paper_order_probe` for one-shot API checks, latency/ack measurements, entitlement probes, and test market-data requests.
+7. Defer L1-for-ranking / L2-for-execution refactor until subscriptions are selected and entitlement results are known.
+
+Validation performed:
+- Documentation-only update to handoff log.
+
+Known risks / follow-up:
+- Do not run current `hft_app` in real-IBKR mode with nonzero `top_k` and multiple `steps` until the above order-budget/duplicate guards exist.
+- Current main app live path can still place repeated buy limit orders on each step for active ranked symbols.
+
 ## [2026-04-30] - Add guarded IBKR paper order probe and rename local simulator broker
 
 Model / agent:

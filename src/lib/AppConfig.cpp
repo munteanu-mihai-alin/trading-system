@@ -15,6 +15,10 @@ static std::string trim(const std::string& s) {
   return s.substr(b, e - b + 1);
 }
 
+static bool parse_bool(const std::string& s) {
+  return s == "1" || s == "true" || s == "yes" || s == "on";
+}
+
 AppConfig AppConfig::load_from_file(const std::string& path) {
   AppConfig cfg{};
   std::ifstream in(path);
@@ -42,6 +46,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
       if (key == "mode") {
         if (val == "live")
           cfg.mode = BrokerMode::Live;
+        else if (val == "ibkr_paper" || val == "paper_ibkr")
+          cfg.mode = BrokerMode::IBKRPaper;
         else if (val == "sim")
           cfg.mode = BrokerMode::Sim;
         else
@@ -58,6 +64,20 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.top_k = std::stoi(val);
       } else if (key == "steps") {
         cfg.steps = std::stoi(val);
+      } else if (key == "allow_nonstandard_ibkr_paper_port") {
+        cfg.allow_nonstandard_ibkr_paper_port = parse_bool(val);
+      } else if (key == "order_enabled") {
+        cfg.order_enabled = parse_bool(val);
+      } else if (key == "order_qty") {
+        cfg.order_qty = std::stod(val);
+      } else if (key == "max_order_qty") {
+        cfg.max_order_qty = std::stod(val);
+      } else if (key == "max_notional_per_order") {
+        cfg.max_notional_per_order = std::stod(val);
+      } else if (key == "max_orders_per_run") {
+        cfg.max_orders_per_run = std::stoi(val);
+      } else if (key == "max_orders_per_symbol") {
+        cfg.max_orders_per_symbol = std::stoi(val);
       }
     } catch (const std::exception& ex) {
       std::cerr << "Warning: invalid config entry '" << key << "'='" << val

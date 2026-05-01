@@ -1,6 +1,7 @@
 #pragma once
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "broker/IBroker.hpp"
@@ -15,6 +16,10 @@ class LiveExecutionEngine {
   LiveTradingConfig cfg_;
   std::unique_ptr<IBroker> broker_;
   int next_order_id_ = 1;
+  int orders_placed_ = 0;
+  std::unordered_map<std::string, int> symbol_order_counts_;
+
+  [[nodiscard]] bool can_route_order(const Stock& stock) const;
 
  public:
   RankingEngine ranking;

@@ -44,6 +44,13 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_EQ(cfg.client_id, 1);
   EXPECT_EQ(cfg.top_k, 3);
   EXPECT_EQ(cfg.steps, 500);
+  EXPECT_FALSE(cfg.allow_nonstandard_ibkr_paper_port);
+  EXPECT_TRUE(cfg.order_enabled);
+  EXPECT_DOUBLE_EQ(cfg.order_qty, 10.0);
+  EXPECT_DOUBLE_EQ(cfg.max_order_qty, 10.0);
+  EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 0.0);
+  EXPECT_EQ(cfg.max_orders_per_run, 0);
+  EXPECT_EQ(cfg.max_orders_per_symbol, 0);
 }
 
 TEST(AppConfig, PortPaperVsLive) {
@@ -52,6 +59,8 @@ TEST(AppConfig, PortPaperVsLive) {
   EXPECT_EQ(cfg.port(), cfg.paper_port);
   cfg.mode = BrokerMode::Sim;
   EXPECT_EQ(cfg.port(), cfg.paper_port);  // sim falls back to paper port
+  cfg.mode = BrokerMode::IBKRPaper;
+  EXPECT_EQ(cfg.port(), cfg.paper_port);
   cfg.mode = BrokerMode::Live;
   EXPECT_EQ(cfg.port(), cfg.live_port);
 }
@@ -72,7 +81,14 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "live_port=2222\n"
       "client_id=42\n"
       "top_k=9\n"
-      "steps=123\n");
+      "steps=123\n"
+      "allow_nonstandard_ibkr_paper_port=true\n"
+      "order_enabled=false\n"
+      "order_qty=1.5\n"
+      "max_order_qty=2\n"
+      "max_notional_per_order=500.25\n"
+      "max_orders_per_run=7\n"
+      "max_orders_per_symbol=2\n");
   const auto cfg = AppConfig::load_from_file(f.path());
   EXPECT_EQ(cfg.mode, BrokerMode::Live);
   EXPECT_EQ(cfg.host, "10.0.0.5");
@@ -81,6 +97,13 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_EQ(cfg.client_id, 42);
   EXPECT_EQ(cfg.top_k, 9);
   EXPECT_EQ(cfg.steps, 123);
+  EXPECT_TRUE(cfg.allow_nonstandard_ibkr_paper_port);
+  EXPECT_FALSE(cfg.order_enabled);
+  EXPECT_DOUBLE_EQ(cfg.order_qty, 1.5);
+  EXPECT_DOUBLE_EQ(cfg.max_order_qty, 2.0);
+  EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 500.25);
+  EXPECT_EQ(cfg.max_orders_per_run, 7);
+  EXPECT_EQ(cfg.max_orders_per_symbol, 2);
 }
 
 TEST(AppConfig, ModeMapping) {
@@ -91,6 +114,14 @@ TEST(AppConfig, ModeMapping) {
   {
     TempIni f("mode=live\n");
     EXPECT_EQ(AppConfig::load_from_file(f.path()).mode, BrokerMode::Live);
+  }
+  {
+    TempIni f("mode=ibkr_paper\n");
+    EXPECT_EQ(AppConfig::load_from_file(f.path()).mode, BrokerMode::IBKRPaper);
+  }
+  {
+    TempIni f("mode=paper_ibkr\n");
+    EXPECT_EQ(AppConfig::load_from_file(f.path()).mode, BrokerMode::IBKRPaper);
   }
   {
     TempIni f("mode=sim\n");

@@ -12,13 +12,16 @@ struct LiveTradingConfig {
   static LiveTradingConfig from_app(const AppConfig& cfg) {
     LiveTradingConfig out;
     out.app = cfg;
-    out.use_real_ibkr = (cfg.mode == BrokerMode::Live);
+    out.use_real_ibkr =
+        (cfg.mode == BrokerMode::Live || cfg.mode == BrokerMode::IBKRPaper);
     return out;
   }
 
   [[nodiscard]] std::string mode_name() const {
     if (app.mode == BrokerMode::Live)
       return "live";
+    if (app.mode == BrokerMode::IBKRPaper)
+      return "ibkr_paper";
     if (app.mode == BrokerMode::Sim)
       return "sim";
     return "paper";

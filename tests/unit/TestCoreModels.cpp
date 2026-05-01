@@ -97,6 +97,27 @@ HFT_TEST(test_app_config_loads_sim_mode) {
   std::remove(path.c_str());
 }
 
+HFT_TEST(test_app_config_loads_ibkr_paper_mode) {
+  const std::string path = "tmp_test_config_ibkr_paper.ini";
+  {
+    std::ofstream out(path);
+    out << "mode=ibkr_paper\n";
+    out << "paper_port=4002\n";
+    out << "order_qty=1\n";
+    out << "max_orders_per_run=1\n";
+  }
+
+  const auto cfg = AppConfig::load_from_file(path);
+  hft::test::require(cfg.mode == BrokerMode::IBKRPaper,
+                     "ibkr_paper mode should parse");
+  hft::test::require(cfg.port() == 4002,
+                     "ibkr_paper mode should use paper port");
+  hft::test::require(cfg.order_qty == 1.0, "order quantity should parse");
+  hft::test::require(cfg.max_orders_per_run == 1,
+                     "max_orders_per_run should parse");
+  std::remove(path.c_str());
+}
+
 // ===== Additional coverage cases =====
 
 HFT_TEST(test_app_config_unknown_mode_falls_back_to_paper) {

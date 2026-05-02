@@ -11,9 +11,9 @@ struct AppConfig {
   int paper_port = 7497;
   int live_port = 7496;
   int client_id = 1;
+  int universe_size = 30;
   int top_k = 3;
   int steps = 500;
-  bool allow_nonstandard_ibkr_paper_port = false;
   bool order_enabled = true;
   double order_qty = 10.0;
   double max_order_qty = 10.0;

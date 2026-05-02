@@ -18,16 +18,6 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
 bool LiveExecutionEngine::start() {
   hl::set_component_state(hl::ComponentId::Engine,
                           hl::ComponentState::Starting);
-  if (cfg_.app.mode == BrokerMode::IBKRPaper &&
-      !cfg_.app.allow_nonstandard_ibkr_paper_port && cfg_.app.port() != 4002 &&
-      cfg_.app.port() != 7497) {
-    hl::raise_error(hl::ComponentId::Engine, /*code=*/4,
-                    "ibkr_paper mode requires paper Gateway/TWS port");
-    hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Error,
-                            /*code=*/4);
-    return false;
-  }
-
   const bool ok =
       broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id);
   if (!ok) {
@@ -58,6 +48,13 @@ void LiveExecutionEngine::step(int t) {
   ranking.step(t);
 
   if (!cfg_.app.order_enabled) {
+    if ((t % 100) == 0) {
+      hl::heartbeat(hl::ComponentId::Engine);
+    }
+    return;
+  }
+
+  if (!sync_next_order_id_from_broker()) {
     if ((t % 100) == 0) {
       hl::heartbeat(hl::ComponentId::Engine);
     }
@@ -109,6 +106,20 @@ bool LiveExecutionEngine::can_route_order(const Stock& stock) const {
       return false;
     }
   }
+  return true;
+}
+
+bool LiveExecutionEngine::sync_next_order_id_from_broker() {
+  auto* ibkr = dynamic_cast<IBKRClient*>(broker_.get());
+  if (ibkr == nullptr) {
+    return true;
+  }
+
+  const int next_valid_id = ibkr->next_valid_order_id();
+  if (next_valid_id <= 0) {
+    return false;
+  }
+  next_order_id_ = std::max(next_order_id_, next_valid_id);
   return true;
 }
 

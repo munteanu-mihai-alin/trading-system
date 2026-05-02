@@ -60,12 +60,12 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.live_port = std::stoi(val);
       } else if (key == "client_id") {
         cfg.client_id = std::stoi(val);
+      } else if (key == "universe_size") {
+        cfg.universe_size = std::stoi(val);
       } else if (key == "top_k") {
         cfg.top_k = std::stoi(val);
       } else if (key == "steps") {
         cfg.steps = std::stoi(val);
-      } else if (key == "allow_nonstandard_ibkr_paper_port") {
-        cfg.allow_nonstandard_ibkr_paper_port = parse_bool(val);
       } else if (key == "order_enabled") {
         cfg.order_enabled = parse_bool(val);
       } else if (key == "order_qty") {

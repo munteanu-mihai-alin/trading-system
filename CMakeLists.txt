@@ -109,6 +109,27 @@ target_link_libraries(hft_ibkr_link_deps INTERFACE
   "${HFT_INTEL_RDFP_LIBRARY}"
 )
 
+if(MINGW)
+  set(HFT_MINGW_COMPAT_LIB_DIR "${CMAKE_BINARY_DIR}/hft_mingw_compat_lib")
+  set(HFT_MINGW_STUB_RT "${HFT_MINGW_COMPAT_LIB_DIR}/librt.a")
+  file(MAKE_DIRECTORY "${HFT_MINGW_COMPAT_LIB_DIR}")
+  if(NOT EXISTS "${HFT_MINGW_STUB_RT}")
+    execute_process(
+      COMMAND "${CMAKE_AR}" qc "${HFT_MINGW_STUB_RT}"
+      RESULT_VARIABLE HFT_MINGW_STUB_RT_RESULT
+      ERROR_VARIABLE HFT_MINGW_STUB_RT_ERROR
+    )
+    if(NOT HFT_MINGW_STUB_RT_RESULT EQUAL 0)
+      message(FATAL_ERROR
+        "Failed to create MinGW librt compatibility archive: ${HFT_MINGW_STUB_RT_ERROR}"
+      )
+    endif()
+  endif()
+  target_link_directories(hft_ibkr_link_deps INTERFACE
+    "${HFT_MINGW_COMPAT_LIB_DIR}"
+  )
+endif()
+
 if(UNIX AND NOT APPLE)
   find_package(Threads REQUIRED)
   target_link_libraries(hft_ibkr_link_deps INTERFACE Threads::Threads)

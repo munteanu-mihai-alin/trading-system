@@ -4,6 +4,78 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-02] - Fix UCRT link failure from protobuf-exported `-lrt`
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `e1429fcb74769763cb7a57477fa65a454a80881e` (`Added real paper-trading`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User-provided failure:
+- UCRT build linked object/static-library stages, then all executable links failed with `ld.exe: cannot find -lrt: No such file or directory`.
+- Affected executables in the pasted log: `ibkr_paper_order_probe.exe`, `hft_app.exe`, `hft_tests.exe`, and `hft_gtests.exe`.
+
+Files changed:
+- `CMakeLists.txt` - when building with MinGW, CMake now creates an empty `librt.a` compatibility archive under `${CMAKE_BINARY_DIR}/hft_mingw_compat_lib` and adds that directory to `hft_ibkr_link_deps`.
+- `agent/AGENT_HANDOFF_LOG.md` - appended this fix record.
+
+Rationale:
+- `rt` / `librt` is a Linux realtime library and does not exist in MSYS2/UCRT.
+- The project does not link `rt` directly. The `-lrt` reference is expected to come from imported dependency metadata, most likely `protobuf::libprotobuf` or one of its exported transitive targets.
+- The dependency-build script already documents this issue and creates a dummy `librt.a` in the install prefix, but the local build can still fail if that archive is missing from the active prefix. The CMake-side compatibility archive makes the project resilient to that missing file.
+
+Validation performed:
+- No build/test rerun was performed after this edit. The fix was made from the user-provided linker log, preserving the current instruction to avoid repeated build/test runs until the code edits are complete.
+
+Known risks / follow-up:
+- The next single UCRT configure/build should regenerate the build system so the new compatibility link directory is present before relinking executables.
+
+## [2026-05-01] - Adjust IBKR paper to same live path and make symbol data scope configurable
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `e1429fcb74769763cb7a57477fa65a454a80881e` (`Added real paper-trading`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User correction / request:
+- Stop running tests/builds for now; do the build once after all code changes are complete.
+- IBKR paper should not be a separate execution behavior from live. It should use the same IBKR live execution path, with the port as the practical difference.
+- Continue wiring the app so IBKR messages are read while engine steps run.
+- Answer whether the app reads all symbol data right now.
+
+Files changed:
+- `include/config/AppConfig.hpp` / `src/lib/AppConfig.cpp` - removed the earlier `allow_nonstandard_ibkr_paper_port` guard setting and added `universe_size` config.
+- `include/engine/LiveExecutionEngine.hpp` / `src/lib/LiveExecutionEngine.cpp` - removed the IBKR-paper-only port guard and added generic IBKR order-id seeding from `nextValidId` before routing orders.
+- `src/app/main.cpp` - starts the IBKR reader loop for any real IBKR mode, waits up to 10 seconds for `nextValidId`, and uses `universe_size` to initialize and subscribe the same symbol set.
+- `config.ibkr_paper.example.ini` - now sets `universe_size=1` and no longer contains a paper-only custom-port override.
+- `tests/unit/AppConfigTest.cpp`, `tests/unit/LiveExecutionEngineTest.cpp`, and `tests/unit/TestCoreModels.cpp` - expectations updated for the same-live-path behavior and new `universe_size` key.
+- `agent/AGENT_HANDOFF_LOG.md` - appended this correction record.
+
+Behavior after this change:
+- `mode=live` and `mode=ibkr_paper` both use the real IBKR client path.
+- The port selection remains the difference: `mode=live` uses `live_port`; `mode=ibkr_paper` uses `paper_port`.
+- Generic execution safety settings still apply to both modes: `order_enabled`, `order_qty`, `max_order_qty`, `max_notional_per_order`, `max_orders_per_run`, and `max_orders_per_symbol`.
+- The app no longer requests depth data for the whole static symbol list by default. It initializes and subscribes only `universe_size` symbols, clamped to the static list size.
+
+Important answer captured:
+- Before this change, the app initialized 30 ranked symbols but requested market depth for the entire static symbol list.
+- After this change, data requests are scoped by `universe_size`; the paper example requests only 1 symbol.
+
+Validation performed:
+- No formatter, build, or tests were run after this correction because the user explicitly asked to defer build/test execution until all changes are complete.
+
+Known risks / follow-up:
+- Run `./scripts/format_code.sh` and a single UCRT build/test pass after the remaining edits are done.
+- The first IBKR paper app run should still be tiny: `universe_size=1`, `top_k=1`, `steps=1`, `order_qty=1`, and `max_orders_per_run=1`.
+- Contract mapping is still hardcoded as `STK` / `SMART` / `USD`, so many non-US symbols in the static universe will not resolve correctly until a proper contract table is added.
+- L1/L2 market-data entitlement work remains postponed until subscriptions are chosen.
+
 ## [2026-05-01] - Make IBKR paper mode usable and configurable from app config
 
 Model / agent:

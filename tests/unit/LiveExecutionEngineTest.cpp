@@ -70,16 +70,17 @@ TEST(LiveExecutionEngine, IBKRPaperUsesPaperPortAndRealIBKRMode) {
   EXPECT_TRUE(engine.start());
 }
 
-TEST(LiveExecutionEngine, IBKRPaperRejectsNonPaperPortByDefault) {
+TEST(LiveExecutionEngine, IBKRPaperUsesConfiguredPaperPortWithoutSpecialPath) {
   hft::AppConfig app;
   app.mode = hft::BrokerMode::IBKRPaper;
   app.paper_port = 4001;
+  app.client_id = 45;
   const auto cfg = hft::LiveTradingConfig::from_app(app);
 
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
-  EXPECT_CALL(*broker, connect(_, _, _)).Times(0);
+  EXPECT_CALL(*broker, connect("127.0.0.1", 4001, 45)).WillOnce(Return(true));
   hft::LiveExecutionEngine engine(cfg, std::move(broker));
-  EXPECT_FALSE(engine.start());
+  EXPECT_TRUE(engine.start());
 }
 
 TEST(LiveExecutionEngine, StopCallsBrokerDisconnect) {

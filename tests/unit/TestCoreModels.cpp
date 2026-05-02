@@ -61,6 +61,7 @@ HFT_TEST(test_app_config_loads_live_mode_and_values) {
   {
     std::ofstream out(path);
     out << "[runtime]\n";
+    out << "universe_size=17\n";
     out << "top_k=7\n";
     out << "steps=42\n";
     out << "[broker]\n";
@@ -77,6 +78,7 @@ HFT_TEST(test_app_config_loads_live_mode_and_values) {
   hft::test::require(cfg.paper_port == 7001, "paper port should parse");
   hft::test::require(cfg.live_port == 7002, "live port should parse");
   hft::test::require(cfg.client_id == 99, "client id should parse");
+  hft::test::require(cfg.universe_size == 17, "universe_size should parse");
   hft::test::require(cfg.top_k == 7, "top_k should parse");
   hft::test::require(cfg.steps == 42, "steps should parse");
   hft::test::require(cfg.port() == 7002,

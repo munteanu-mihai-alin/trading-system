@@ -42,9 +42,9 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_EQ(cfg.paper_port, 7497);
   EXPECT_EQ(cfg.live_port, 7496);
   EXPECT_EQ(cfg.client_id, 1);
+  EXPECT_EQ(cfg.universe_size, 30);
   EXPECT_EQ(cfg.top_k, 3);
   EXPECT_EQ(cfg.steps, 500);
-  EXPECT_FALSE(cfg.allow_nonstandard_ibkr_paper_port);
   EXPECT_TRUE(cfg.order_enabled);
   EXPECT_DOUBLE_EQ(cfg.order_qty, 10.0);
   EXPECT_DOUBLE_EQ(cfg.max_order_qty, 10.0);
@@ -80,9 +80,9 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "paper_port=1111\n"
       "live_port=2222\n"
       "client_id=42\n"
+      "universe_size=17\n"
       "top_k=9\n"
       "steps=123\n"
-      "allow_nonstandard_ibkr_paper_port=true\n"
       "order_enabled=false\n"
       "order_qty=1.5\n"
       "max_order_qty=2\n"
@@ -95,9 +95,9 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_EQ(cfg.paper_port, 1111);
   EXPECT_EQ(cfg.live_port, 2222);
   EXPECT_EQ(cfg.client_id, 42);
+  EXPECT_EQ(cfg.universe_size, 17);
   EXPECT_EQ(cfg.top_k, 9);
   EXPECT_EQ(cfg.steps, 123);
-  EXPECT_TRUE(cfg.allow_nonstandard_ibkr_paper_port);
   EXPECT_FALSE(cfg.order_enabled);
   EXPECT_DOUBLE_EQ(cfg.order_qty, 1.5);
   EXPECT_DOUBLE_EQ(cfg.max_order_qty, 2.0);

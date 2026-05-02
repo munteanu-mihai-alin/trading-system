@@ -20,6 +20,7 @@ class LiveExecutionEngine {
   std::unordered_map<std::string, int> symbol_order_counts_;
 
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
+  [[nodiscard]] bool sync_next_order_id_from_broker();
 
  public:
   RankingEngine ranking;

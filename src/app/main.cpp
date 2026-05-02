@@ -1,6 +1,9 @@
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "bench/bench.hpp"
@@ -27,8 +30,9 @@ int main() {
   const auto cfg = hft::AppConfig::load_from_file(config_path);
   const auto live_cfg = hft::LiveTradingConfig::from_app(cfg);
   std::cout << "Config loaded. mode=" << live_cfg.mode_name()
-            << " steps=" << cfg.steps << " host=" << cfg.host
-            << " client_id=" << cfg.client_id << std::endl;
+            << " steps=" << cfg.steps << " universe_size=" << cfg.universe_size
+            << " host=" << cfg.host << " client_id=" << cfg.client_id
+            << std::endl;
 
   std::unique_ptr<hft::IBroker> broker;
   hft::IBKRClient* raw_ibkr = nullptr;
@@ -53,24 +57,43 @@ int main() {
   }
   std::cout << "Engine started." << std::endl;
 
-  engine.initialize_universe(30);
-  std::cout << "Universe initialized." << std::endl;
+  if (raw_ibkr != nullptr) {
+    std::cout << "Starting IBKR reader loop." << std::endl;
+    raw_ibkr->start_production_event_loop();
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (raw_ibkr->next_valid_order_id() <= 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (raw_ibkr->next_valid_order_id() <= 0) {
+      std::cerr << "IBKR did not provide nextValidId before timeout"
+                << std::endl;
+      engine.stop();
+      hl::set_app_state(hl::AppState::Fatal);
+      hl::shutdown_logging();
+      return 1;
+    }
+    std::cout << "IBKR nextValidId=" << raw_ibkr->next_valid_order_id()
+              << std::endl;
+  }
+
+  const int universe_size = std::clamp(
+      cfg.universe_size, 0, static_cast<int>(hft::kSymbolCompanyList.size()));
+  engine.initialize_universe(universe_size);
+  std::cout << "Universe initialized with " << universe_size << " symbols."
+            << std::endl;
   std::vector<std::string> symbols;
-  for (const auto& item : hft::kSymbolCompanyList)
-    symbols.push_back(item.first);
+  for (int i = 0; i < universe_size; ++i) {
+    symbols.push_back(
+        hft::kSymbolCompanyList[static_cast<std::size_t>(i)].first);
+  }
   std::cout << "Subscribing live books for " << symbols.size() << " symbols..."
             << std::endl;
   engine.subscribe_live_books(symbols);
   std::cout << "Subscriptions requested." << std::endl;
   hl::set_app_state(hl::AppState::Live);
-
-  if (raw_ibkr != nullptr) {
-    std::cout << "Entering IBKR production event loop. This may block until "
-                 "disconnect."
-              << std::endl;
-    raw_ibkr->start_production_event_loop();
-    std::cout << "IBKR production event loop returned." << std::endl;
-  }
 
   std::cout << "Running " << cfg.steps << " engine steps..." << std::endl;
   for (int t = 0; t < cfg.steps; ++t) {

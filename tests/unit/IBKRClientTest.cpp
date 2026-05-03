@@ -114,6 +114,14 @@ TEST(IBKRClient, SubscribeMarketDepthForwardsToTransport) {
   c.subscribe_market_depth(req);
 }
 
+TEST(IBKRClient, SubscribeTopOfBookForwardsToTransport) {
+  auto t = std::make_unique<NiceMockTransport>();
+  EXPECT_CALL(*t, subscribe_top_of_book(_)).Times(1);
+  hft::IBKRClient c(std::move(t));
+  hft::TopOfBookRequest req{1, "FOO"};
+  c.subscribe_top_of_book(req);
+}
+
 TEST(IBKRClient, PumpOnceGatedOnIsConnected) {
   auto t = std::make_unique<NiceMockTransport>();
   // Disconnected: pump_once must NOT propagate. Dtor also calls is_connected
@@ -268,6 +276,23 @@ TEST(IBKRClient, OnMarketDepthUpdateAskSideInsert) {
   const auto book = c.snapshot_book(2);
   EXPECT_DOUBLE_EQ(book.asks[1].price, 101.0);
   EXPECT_DOUBLE_EQ(book.asks[1].size, 25.0);
+}
+
+TEST(IBKRClient, OnTopOfBookCallbacksUpdateSnapshot) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  c.on_top_of_book_price(/*ticker=*/3, /*is_bid=*/true, 99.9);
+  c.on_top_of_book_size(/*ticker=*/3, /*is_bid=*/true, 500.0);
+  c.on_top_of_book_price(/*ticker=*/3, /*is_bid=*/false, 100.1);
+  c.on_top_of_book_size(/*ticker=*/3, /*is_bid=*/false, 400.0);
+
+  const auto top = c.snapshot_top_of_book(3);
+  EXPECT_TRUE(top.valid());
+  EXPECT_DOUBLE_EQ(top.bid_price, 99.9);
+  EXPECT_DOUBLE_EQ(top.bid_size, 500.0);
+  EXPECT_DOUBLE_EQ(top.ask_price, 100.1);
+  EXPECT_DOUBLE_EQ(top.ask_size, 400.0);
+  EXPECT_DOUBLE_EQ(top.mid(), 100.0);
 }
 
 TEST(IBKRClient, OnMarketDepthUpdateDeleteOperationClearsLevel) {

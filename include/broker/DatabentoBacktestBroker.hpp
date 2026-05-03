@@ -16,24 +16,39 @@ class DatabentoBacktestBroker : public IBroker {
     L2Book current;
   };
 
+  struct TopReplaySeries {
+    std::string symbol;
+    std::vector<TopOfBook> books;
+    TopOfBook current;
+  };
+
   bool connected_ = false;
   int current_step_ = 0;
   AppConfig cfg_;
   OrderLifecycleBook lifecycle_;
+  std::unordered_map<int, TopReplaySeries> top_replay_by_ticker_;
   std::unordered_map<int, ReplaySeries> replay_by_ticker_;
   std::unordered_map<int, OrderRequest> working_orders_;
 
-  [[nodiscard]] std::filesystem::path cache_path_for_symbol(
+  [[nodiscard]] std::filesystem::path l1_cache_path_for_symbol(
       const std::string& symbol) const;
-  [[nodiscard]] std::string downloader_command(const std::string& symbol,
-                                               const std::filesystem::path& out,
-                                               int depth) const;
-  bool ensure_symbol_loaded(const MarketDepthRequest& req);
-  bool download_symbol_if_missing(const std::string& symbol,
-                                  const std::filesystem::path& out,
-                                  int depth) const;
+  [[nodiscard]] std::filesystem::path l2_cache_path_for_symbol(
+      const std::string& symbol) const;
+  [[nodiscard]] std::string l1_downloader_command(
+      const std::string& symbol, const std::filesystem::path& out) const;
+  [[nodiscard]] std::string l2_downloader_command(
+      const std::string& symbol, const std::filesystem::path& out,
+      int depth) const;
+  bool ensure_l1_symbol_loaded(const TopOfBookRequest& req);
+  bool ensure_l2_symbol_loaded(const MarketDepthRequest& req);
+  bool download_if_missing(const std::filesystem::path& out,
+                           const std::string& command) const;
+  [[nodiscard]] std::vector<TopOfBook> load_top_books_from_csv(
+      const std::filesystem::path& path) const;
   [[nodiscard]] std::vector<L2Book> load_books_from_csv(
       const std::filesystem::path& path) const;
+  [[nodiscard]] TopOfBook top_for_symbol(const std::string& symbol) const;
+  [[nodiscard]] L2Book depth_for_symbol(const std::string& symbol) const;
   void fill_crossed_orders();
 
  public:
@@ -46,9 +61,11 @@ class DatabentoBacktestBroker : public IBroker {
   void cancel_order(int order_id) override;
   void start_event_loop() override;
   void stop_event_loop() override;
+  void subscribe_top_of_book(const TopOfBookRequest& req) override;
   void subscribe_market_depth(const MarketDepthRequest& req) override;
   void on_step(int t) override;
 
+  [[nodiscard]] TopOfBook snapshot_top_of_book(int ticker_id) const override;
   [[nodiscard]] L2Book snapshot_book(int ticker_id) const override;
   [[nodiscard]] const OrderLifecycleBook* order_lifecycle() const override;
 };

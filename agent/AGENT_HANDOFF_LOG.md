@@ -4,6 +4,59 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-03] - Split Databento backtests into L1 buy data and L2 sell data
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`.
+- HEAD observed as `b99345263390f6754a1b2363389f3e4fb2c3626f` (`added backtesting; reroute ikbr to databento download script for backtesting`).
+- Existing unrelated dirty local items were present and not touched. Do not record VPS IPs, machine IDs, SSH keys, or credentials.
+
+User request:
+- Create a backtesting script using the hftbacktest framework.
+- Add a Databento MBP-1 Python downloader that acts as L1 input for the backtest broker.
+- Make the C++ broker/engine reflect the desired split: L1 for buy/ranking queries and L2 for sell/execution queries.
+
+Files changed:
+- `include/broker/IBroker.hpp` - added `TopOfBookRequest`, `TopOfBook`, `subscribe_top_of_book`, and `snapshot_top_of_book`.
+- `include/broker/IBKRCallbacks.hpp`, `include/broker/IBKRTransport.hpp`, `include/broker/IBKRClient.hpp`, `src/lib/IBKRClient.cpp`, `src/lib/RealIBKRTransport.cpp` - added IBKR top-of-book subscription/callback plumbing through `reqMktData` while preserving depth via `reqMktDepth`.
+- `include/broker/DatabentoBacktestBroker.hpp`, `src/lib/DatabentoBacktestBroker.cpp` - split replay loading into MBP-1 top-of-book and MBP-10 depth caches, with L1 used as the buy fallback and L2 used for sell-side fills.
+- `include/config/AppConfig.hpp`, `src/lib/AppConfig.cpp`, `config.databento_backtest.example.ini`, `tests/unit/AppConfigTest.cpp` - added separate Databento L1/L2 script, dataset, and schema config keys while keeping old L2 aliases.
+- `include/engine/LiveExecutionEngine.hpp`, `src/lib/LiveExecutionEngine.cpp`, `tests/unit/LiveExecutionEngineTest.cpp`, `tests/unit/IBKRClientTest.cpp` - changed universe subscriptions and ranking reconciliation to L1/top-of-book, lazy-subscribed sell-side L2 using separate depth request ids, and added L1 transport/callback unit expectations.
+- `tests/common/FakeIBKRTransport.hpp`, `tests/common/MockIBKRTransport.hpp`, `tests/common/MockIBroker.hpp` - updated test doubles for top-of-book broker APIs.
+- `scripts/databento_download_mbp1.py` - new Databento MBP-1 downloader producing `step,bid_price,bid_size,ask_price,ask_size`, with synthetic mode.
+- `scripts/run_hftbacktest_databento.py` - new initial hftbacktest runner that downloads/reuses MBP-1 for entry reference, downloads/reuses MBP-10 for the sell window, converts depth data to a normalized array, and submits a target SELL scenario.
+
+Deletions / removals:
+- No files removed by this change.
+
+Steps taken:
+1. Added a top-of-book path to the shared broker interface.
+2. Wired IBKR live/paper to use `reqMktData` for L1 and keep `reqMktDepth` for L2.
+3. Split Databento backtest replay into MBP-1 and MBP-10 cache/download paths.
+4. Changed engine buy/ranking data reads to `snapshot_top_of_book`.
+5. Changed sell-side execution to lazy-load L2 only after a position exists, using a separate request-id range from L1.
+6. Added the MBP-1 downloader and an initial hftbacktest sell-window script.
+
+Validation performed:
+- Read-only source inspection and targeted `Select-String` searches.
+- `git diff --check` on the touched tracked files: no whitespace errors reported; only existing LF-to-CRLF warnings from Git.
+- Python AST parse for `scripts/databento_download_mbp1.py` and `scripts/run_hftbacktest_databento.py`: `python ast ok`.
+- No build or test run, per user instruction to avoid builds/tests until all changes are ready.
+
+Known risks / follow-up:
+- `scripts/run_hftbacktest_databento.py` is an initial integration scaffold; exact hftbacktest constructor/module names may need adjustment against the installed package version.
+- The C++ Databento broker still uses a simple crossed best bid/ask fill model; queue-realistic sell testing belongs in hftbacktest.
+- Databento historical downloads require the `databento` Python package and credentials in the runtime environment.
+
+Suggested commit:
+```bash
+git commit -m "feat(backtest): split Databento L1 buys and L2 sell execution"
+```
+
 ## [2026-05-03] - Add Databento-backed broker interface scaffold for backtests
 
 Model / agent:

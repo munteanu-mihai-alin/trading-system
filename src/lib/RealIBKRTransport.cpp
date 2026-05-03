@@ -95,6 +95,16 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
     client_.cancelOrder(order_id, cancel);
   }
 
+  void subscribe_top_of_book(const TopOfBookRequest& req) override {
+    Contract contract;
+    contract.symbol = req.symbol;
+    contract.secType = "STK";
+    contract.exchange = "SMART";
+    contract.currency = "USD";
+    client_.reqMktData(req.ticker_id, contract, "", false, false,
+                       TagValueListSPtr());
+  }
+
   void subscribe_market_depth(const MarketDepthRequest& req) override {
     Contract contract;
     contract.symbol = req.symbol;
@@ -155,8 +165,26 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
       callbacks_->on_next_valid_id(static_cast<int>(orderId));
     }
   }
-  void tickPrice(TickerId, TickType, double, const TickAttrib&) override {}
-  void tickSize(TickerId, TickType, Decimal) override {}
+  void tickPrice(TickerId id, TickType field, double price,
+                 const TickAttrib&) override {
+    if (callbacks_ == nullptr)
+      return;
+    if (field == BID || field == DELAYED_BID) {
+      callbacks_->on_top_of_book_price(static_cast<int>(id), true, price);
+    } else if (field == ASK || field == DELAYED_ASK) {
+      callbacks_->on_top_of_book_price(static_cast<int>(id), false, price);
+    }
+  }
+  void tickSize(TickerId id, TickType field, Decimal size) override {
+    if (callbacks_ == nullptr)
+      return;
+    const double value = DecimalFunctions::decimalToDouble(size);
+    if (field == BID_SIZE || field == DELAYED_BID_SIZE) {
+      callbacks_->on_top_of_book_size(static_cast<int>(id), true, value);
+    } else if (field == ASK_SIZE || field == DELAYED_ASK_SIZE) {
+      callbacks_->on_top_of_book_size(static_cast<int>(id), false, value);
+    }
+  }
   void tickOptionComputation(TickerId, TickType, int, double, double, double,
                              double, double, double, double, double) override {}
   void tickString(TickerId, TickType, const std::string&) override {}

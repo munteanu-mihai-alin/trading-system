@@ -25,6 +25,7 @@ class IBKRTransport {
 
   virtual void place_limit_order(const OrderRequest& req) = 0;
   virtual void cancel_order(int order_id) = 0;
+  virtual void subscribe_top_of_book(const TopOfBookRequest& req) = 0;
   virtual void subscribe_market_depth(const MarketDepthRequest& req) = 0;
 
   // Block (with an internal timeout, typically ~2s) waiting for inbound

@@ -102,14 +102,22 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.expected_daily_shares = std::stod(val);
       } else if (key == "databento_cache_dir") {
         cfg.databento_cache_dir = val;
-      } else if (key == "databento_download_script") {
-        cfg.databento_download_script = val;
       } else if (key == "databento_python") {
         cfg.databento_python = val;
-      } else if (key == "databento_dataset") {
-        cfg.databento_dataset = val;
-      } else if (key == "databento_schema") {
-        cfg.databento_schema = val;
+      } else if (key == "databento_l1_download_script" ||
+                 key == "databento_download_mbp1_script") {
+        cfg.databento_l1_download_script = val;
+      } else if (key == "databento_l2_download_script" ||
+                 key == "databento_download_script") {
+        cfg.databento_l2_download_script = val;
+      } else if (key == "databento_l1_dataset") {
+        cfg.databento_l1_dataset = val;
+      } else if (key == "databento_l2_dataset" || key == "databento_dataset") {
+        cfg.databento_l2_dataset = val;
+      } else if (key == "databento_l1_schema") {
+        cfg.databento_l1_schema = val;
+      } else if (key == "databento_l2_schema" || key == "databento_schema") {
+        cfg.databento_l2_schema = val;
       } else if (key == "databento_start") {
         cfg.databento_start = val;
       } else if (key == "databento_end") {

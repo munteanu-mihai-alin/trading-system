@@ -16,6 +16,8 @@ namespace hl = hft::log;
 
 namespace {
 
+constexpr int kDepthTickerIdOffset = 100000;
+
 [[nodiscard]] bool is_terminal_order_status(OrderLifecycleStatus status) {
   return status == OrderLifecycleStatus::Filled ||
          status == OrderLifecycleStatus::Cancelled ||
@@ -232,6 +234,14 @@ double LiveExecutionEngine::estimate_round_trip_cost_per_share(
   return (buy_cost + sell_cost) / qty + allocated_daily_cost_per_share();
 }
 
+void LiveExecutionEngine::ensure_depth_subscription(const std::string& symbol,
+                                                    int ticker_id) {
+  if (depth_subscribed_symbols_.find(symbol) != depth_subscribed_symbols_.end())
+    return;
+  broker_->subscribe_market_depth(MarketDepthRequest{ticker_id, symbol, 5});
+  depth_subscribed_symbols_.insert(symbol);
+}
+
 void LiveExecutionEngine::refresh_order_state() {
   const auto* lifecycle = broker_->order_lifecycle();
   if (lifecycle == nullptr)
@@ -317,7 +327,9 @@ void LiveExecutionEngine::route_exit_orders() {
     if (idx < 0)
       continue;
 
-    const auto book = broker_->snapshot_book(idx + 1);
+    const int depth_ticker_id = kDepthTickerIdOffset + idx + 1;
+    ensure_depth_subscription(position.symbol, depth_ticker_id);
+    const auto book = broker_->snapshot_book(depth_ticker_id);
     if (!has_valid_top(book))
       continue;
 
@@ -368,7 +380,7 @@ void LiveExecutionEngine::subscribe_live_books(
                           hl::ComponentState::Starting);
   int ticker = 1;
   for (const auto& sym : symbols) {
-    broker_->subscribe_market_depth(MarketDepthRequest{ticker++, sym, 5});
+    broker_->subscribe_top_of_book(TopOfBookRequest{ticker++, sym});
   }
   hl::set_component_state(hl::ComponentId::MarketData,
                           hl::ComponentState::Ready);
@@ -377,11 +389,11 @@ void LiveExecutionEngine::subscribe_live_books(
 void LiveExecutionEngine::reconcile_broker_state() {
   for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
     auto& s = ranking.portfolio.items[i];
-    const auto book = broker_->snapshot_book(static_cast<int>(i + 1));
-    if (book.best_bid() > 0.0 && book.best_ask() > 0.0) {
-      s.mid = 0.5 * (book.best_bid() + book.best_ask());
-      if (book.bids[0].size > 0.0) {
-        s.queue = book.bids[0].size;
+    const auto top = broker_->snapshot_top_of_book(static_cast<int>(i + 1));
+    if (top.valid()) {
+      s.mid = top.mid();
+      if (top.bid_size > 0.0) {
+        s.queue = top.bid_size;
       }
     }
   }

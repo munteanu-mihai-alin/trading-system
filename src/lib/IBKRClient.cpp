@@ -99,6 +99,25 @@ void IBKRClient::subscribe_market_depth(const MarketDepthRequest& req) {
   transport_->subscribe_market_depth(req);
 }
 
+void IBKRClient::subscribe_top_of_book(const TopOfBookRequest& req) {
+  transport_->subscribe_top_of_book(req);
+}
+
+TopOfBook IBKRClient::snapshot_top_of_book(int ticker_id) const {
+  std::lock_guard<std::mutex> lock(books_mutex_);
+  const auto it = top_books_.find(ticker_id);
+  if (it != top_books_.end()) {
+    return it->second;
+  }
+
+  const auto depth = books_.find(ticker_id);
+  if (depth == books_.end()) {
+    return {};
+  }
+  return TopOfBook{depth->second.best_bid(), depth->second.bids[0].size,
+                   depth->second.best_ask(), depth->second.asks[0].size};
+}
+
 L2Book IBKRClient::snapshot_book(int ticker_id) const {
   std::lock_guard<std::mutex> lock(books_mutex_);
   const auto it = books_.find(ticker_id);
@@ -193,6 +212,27 @@ void IBKRClient::on_market_depth_update(int ticker_id, int position,
     } else {
       book.asks[position] = level;
     }
+  }
+}
+
+void IBKRClient::on_top_of_book_price(int ticker_id, bool is_bid,
+                                      double price) {
+  std::lock_guard<std::mutex> lock(books_mutex_);
+  auto& book = top_books_[ticker_id];
+  if (is_bid) {
+    book.bid_price = price;
+  } else {
+    book.ask_price = price;
+  }
+}
+
+void IBKRClient::on_top_of_book_size(int ticker_id, bool is_bid, double size) {
+  std::lock_guard<std::mutex> lock(books_mutex_);
+  auto& book = top_books_[ticker_id];
+  if (is_bid) {
+    book.bid_size = size;
+  } else {
+    book.ask_size = size;
   }
 }
 

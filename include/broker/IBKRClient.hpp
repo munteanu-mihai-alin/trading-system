@@ -27,6 +27,7 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   std::unordered_map<int, std::chrono::high_resolution_clock::time_point>
       send_ts_;
   std::unordered_map<int, double> ack_latency_ms_cache_;
+  std::unordered_map<int, TopOfBook> top_books_;
   std::unordered_map<int, L2Book> books_;
   OrderLifecycleBook lifecycle_;
   std::vector<IBKRError> errors_;
@@ -53,12 +54,14 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   void cancel_order(int order_id) override;
   void start_event_loop() override;
   void stop_event_loop() override;
+  void subscribe_top_of_book(const TopOfBookRequest& req) override;
   void subscribe_market_depth(const MarketDepthRequest& req) override;
   void start_production_event_loop();
   void pump_once();
   bool reconnect_once();
 
   [[nodiscard]] double ack_latency_ms(int order_id) const override;
+  [[nodiscard]] TopOfBook snapshot_top_of_book(int ticker_id) const override;
   [[nodiscard]] L2Book snapshot_book(int ticker_id) const override;
   [[nodiscard]] int next_valid_order_id() const;
   [[nodiscard]] std::vector<IBKRError> errors() const;
@@ -74,6 +77,8 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
                        double remaining, double avg_fill_price) override;
   void on_market_depth_update(int ticker_id, int position, int operation,
                               int side, double price, double size) override;
+  void on_top_of_book_price(int ticker_id, bool is_bid, double price) override;
+  void on_top_of_book_size(int ticker_id, bool is_bid, double size) override;
   void on_next_valid_id(int order_id) override;
   void on_error(const IBKRError& error) override;
   void on_connection_closed() override;

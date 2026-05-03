@@ -66,6 +66,31 @@ namespace {
   return true;
 }
 
+[[nodiscard]] bool parse_top_row(const std::string& line, int& step,
+                                 TopOfBook& top) {
+  std::stringstream ss(line);
+  std::string field;
+  std::vector<std::string> fields;
+  while (std::getline(ss, field, ',')) {
+    fields.push_back(field);
+  }
+  if (fields.size() < 5)
+    return false;
+  if (fields[0] == "step")
+    return false;
+
+  try {
+    step = std::stoi(fields[0]);
+    top.bid_price = std::stod(fields[1]);
+    top.bid_size = std::stod(fields[2]);
+    top.ask_price = std::stod(fields[3]);
+    top.ask_size = std::stod(fields[4]);
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 DatabentoBacktestBroker::DatabentoBacktestBroker(AppConfig cfg)
@@ -105,13 +130,26 @@ void DatabentoBacktestBroker::start_event_loop() {}
 
 void DatabentoBacktestBroker::stop_event_loop() {}
 
+void DatabentoBacktestBroker::subscribe_top_of_book(
+    const TopOfBookRequest& req) {
+  ensure_l1_symbol_loaded(req);
+}
+
 void DatabentoBacktestBroker::subscribe_market_depth(
     const MarketDepthRequest& req) {
-  ensure_symbol_loaded(req);
+  ensure_l2_symbol_loaded(req);
 }
 
 void DatabentoBacktestBroker::on_step(int t) {
   current_step_ = std::max(t, 0);
+  for (auto& item : top_replay_by_ticker_) {
+    auto& series = item.second;
+    if (series.books.empty())
+      continue;
+    const auto idx = static_cast<std::size_t>(std::min<int>(
+        current_step_, static_cast<int>(series.books.size() - 1)));
+    series.current = series.books[idx];
+  }
   for (auto& item : replay_by_ticker_) {
     auto& series = item.second;
     if (series.books.empty())
@@ -121,6 +159,13 @@ void DatabentoBacktestBroker::on_step(int t) {
     series.current = series.books[idx];
   }
   fill_crossed_orders();
+}
+
+TopOfBook DatabentoBacktestBroker::snapshot_top_of_book(int ticker_id) const {
+  const auto it = top_replay_by_ticker_.find(ticker_id);
+  if (it == top_replay_by_ticker_.end())
+    return {};
+  return it->second.current;
 }
 
 L2Book DatabentoBacktestBroker::snapshot_book(int ticker_id) const {
@@ -134,20 +179,43 @@ const OrderLifecycleBook* DatabentoBacktestBroker::order_lifecycle() const {
   return &lifecycle_;
 }
 
-std::filesystem::path DatabentoBacktestBroker::cache_path_for_symbol(
+std::filesystem::path DatabentoBacktestBroker::l1_cache_path_for_symbol(
+    const std::string& symbol) const {
+  return std::filesystem::path(cfg_.databento_cache_dir) /
+         (safe_symbol_filename(symbol) + ".mbp1.csv");
+}
+
+std::filesystem::path DatabentoBacktestBroker::l2_cache_path_for_symbol(
     const std::string& symbol) const {
   return std::filesystem::path(cfg_.databento_cache_dir) /
          (safe_symbol_filename(symbol) + ".mbp10.csv");
 }
 
-std::string DatabentoBacktestBroker::downloader_command(
+std::string DatabentoBacktestBroker::l1_downloader_command(
+    const std::string& symbol, const std::filesystem::path& out) const {
+  std::string cmd = shell_quote(cfg_.databento_python) + " " +
+                    shell_quote(cfg_.databento_l1_download_script) +
+                    " --symbol " + shell_quote(symbol) + " --dataset " +
+                    shell_quote(cfg_.databento_l1_dataset) + " --schema " +
+                    shell_quote(cfg_.databento_l1_schema) + " --output " +
+                    shell_quote(out.string());
+  if (!cfg_.databento_start.empty()) {
+    cmd += " --start " + shell_quote(cfg_.databento_start);
+  }
+  if (!cfg_.databento_end.empty()) {
+    cmd += " --end " + shell_quote(cfg_.databento_end);
+  }
+  return cmd;
+}
+
+std::string DatabentoBacktestBroker::l2_downloader_command(
     const std::string& symbol, const std::filesystem::path& out,
     int depth) const {
   std::string cmd = shell_quote(cfg_.databento_python) + " " +
-                    shell_quote(cfg_.databento_download_script) + " --symbol " +
-                    shell_quote(symbol) + " --dataset " +
-                    shell_quote(cfg_.databento_dataset) + " --schema " +
-                    shell_quote(cfg_.databento_schema) + " --output " +
+                    shell_quote(cfg_.databento_l2_download_script) +
+                    " --symbol " + shell_quote(symbol) + " --dataset " +
+                    shell_quote(cfg_.databento_l2_dataset) + " --schema " +
+                    shell_quote(cfg_.databento_l2_schema) + " --output " +
                     shell_quote(out.string()) + " --depth " +
                     std::to_string(std::max(depth, 1));
   if (!cfg_.databento_start.empty()) {
@@ -159,10 +227,30 @@ std::string DatabentoBacktestBroker::downloader_command(
   return cmd;
 }
 
-bool DatabentoBacktestBroker::ensure_symbol_loaded(
+bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
+    const TopOfBookRequest& req) {
+  const auto out = l1_cache_path_for_symbol(req.symbol);
+  if (!download_if_missing(out, l1_downloader_command(req.symbol, out)))
+    return false;
+
+  auto books = load_top_books_from_csv(out);
+  if (books.empty())
+    return false;
+
+  TopReplaySeries series;
+  series.symbol = req.symbol;
+  series.books = std::move(books);
+  series.current = series.books[std::min<std::size_t>(
+      static_cast<std::size_t>(current_step_), series.books.size() - 1)];
+  top_replay_by_ticker_[req.ticker_id] = std::move(series);
+  return true;
+}
+
+bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
     const MarketDepthRequest& req) {
-  const auto out = cache_path_for_symbol(req.symbol);
-  if (!download_symbol_if_missing(req.symbol, out, req.depth))
+  const auto out = l2_cache_path_for_symbol(req.symbol);
+  if (!download_if_missing(out,
+                           l2_downloader_command(req.symbol, out, req.depth)))
     return false;
 
   auto books = load_books_from_csv(out);
@@ -178,16 +266,39 @@ bool DatabentoBacktestBroker::ensure_symbol_loaded(
   return true;
 }
 
-bool DatabentoBacktestBroker::download_symbol_if_missing(
-    const std::string& symbol, const std::filesystem::path& out,
-    int depth) const {
+bool DatabentoBacktestBroker::download_if_missing(
+    const std::filesystem::path& out, const std::string& command) const {
   if (std::filesystem::exists(out))
     return true;
 
   std::filesystem::create_directories(out.parent_path());
-  const auto cmd = downloader_command(symbol, out, depth);
-  const int rc = std::system(cmd.c_str());
+  const int rc = std::system(command.c_str());
   return rc == 0 && std::filesystem::exists(out);
+}
+
+std::vector<TopOfBook> DatabentoBacktestBroker::load_top_books_from_csv(
+    const std::filesystem::path& path) const {
+  std::ifstream in(path);
+  if (!in.is_open())
+    return {};
+
+  std::vector<TopOfBook> books;
+  std::string line;
+  while (std::getline(in, line)) {
+    int step = 0;
+    TopOfBook top;
+    if (!parse_top_row(line, step, top))
+      continue;
+    if (step < 0)
+      continue;
+
+    const auto idx = static_cast<std::size_t>(step);
+    if (idx >= books.size()) {
+      books.resize(idx + 1);
+    }
+    books[idx] = top;
+  }
+  return books;
 }
 
 std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csv(
@@ -224,23 +335,46 @@ std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csv(
   return books;
 }
 
+TopOfBook DatabentoBacktestBroker::top_for_symbol(
+    const std::string& symbol) const {
+  for (const auto& item : top_replay_by_ticker_) {
+    if (item.second.symbol == symbol) {
+      return item.second.current;
+    }
+  }
+
+  const auto depth = depth_for_symbol(symbol);
+  if (depth.best_bid() <= 0.0 || depth.best_ask() <= 0.0)
+    return {};
+  return TopOfBook{depth.best_bid(), depth.bids[0].size, depth.best_ask(),
+                   depth.asks[0].size};
+}
+
+L2Book DatabentoBacktestBroker::depth_for_symbol(
+    const std::string& symbol) const {
+  for (const auto& item : replay_by_ticker_) {
+    if (item.second.symbol == symbol) {
+      return item.second.current;
+    }
+  }
+  return {};
+}
+
 void DatabentoBacktestBroker::fill_crossed_orders() {
   for (auto it = working_orders_.begin(); it != working_orders_.end();) {
     const auto& req = it->second;
-    L2Book book;
-    for (const auto& item : replay_by_ticker_) {
-      if (item.second.symbol == req.symbol) {
-        book = item.second.current;
-        break;
-      }
-    }
+    const auto book = depth_for_symbol(req.symbol);
+    const auto top = top_for_symbol(req.symbol);
 
     double fill_price = 0.0;
-    if (req.is_buy && book.best_ask() > 0.0 && req.limit >= book.best_ask()) {
-      fill_price = book.best_ask();
-    } else if (!req.is_buy && book.best_bid() > 0.0 &&
-               req.limit <= book.best_bid()) {
-      fill_price = book.best_bid();
+    const double best_ask =
+        (book.best_ask() > 0.0) ? book.best_ask() : top.ask_price;
+    const double best_bid =
+        (book.best_bid() > 0.0) ? book.best_bid() : top.bid_price;
+    if (req.is_buy && best_ask > 0.0 && req.limit >= best_ask) {
+      fill_price = best_ask;
+    } else if (!req.is_buy && best_bid > 0.0 && req.limit <= best_bid) {
+      fill_price = best_bid;
     }
 
     if (fill_price > 0.0) {

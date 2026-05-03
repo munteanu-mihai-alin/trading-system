@@ -29,6 +29,7 @@ class FakeIBKRTransport final : public IBKRTransport {
 
   void place_limit_order(const OrderRequest& /*req*/) override {}
   void cancel_order(int /*order_id*/) override {}
+  void subscribe_top_of_book(const TopOfBookRequest& /*req*/) override {}
   void subscribe_market_depth(const MarketDepthRequest& /*req*/) override {}
   void pump_once() override {}
   void set_callbacks(IBKRCallbacks* /*cb*/) override {}

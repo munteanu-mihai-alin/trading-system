@@ -29,6 +29,9 @@ class IBKRCallbacks {
                                       int operation, int side, double price,
                                       double size) = 0;
 
+  virtual void on_top_of_book_price(int ticker_id, bool is_bid, double price) {}
+  virtual void on_top_of_book_size(int ticker_id, bool is_bid, double size) {}
+
   virtual void on_next_valid_id(int order_id) {}
   virtual void on_error(const IBKRError&) {}
 

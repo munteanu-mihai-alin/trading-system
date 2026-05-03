@@ -12,6 +12,28 @@ struct MarketDepthRequest {
   int depth = 5;
 };
 
+struct TopOfBookRequest {
+  int ticker_id = 0;
+  std::string symbol;
+};
+
+struct TopOfBook {
+  double bid_price = 0.0;
+  double bid_size = 0.0;
+  double ask_price = 0.0;
+  double ask_size = 0.0;
+
+  [[nodiscard]] bool valid() const {
+    return bid_price > 0.0 && ask_price > 0.0 && bid_price <= ask_price;
+  }
+
+  [[nodiscard]] double mid() const {
+    if (!valid())
+      return 0.0;
+    return 0.5 * (bid_price + ask_price);
+  }
+};
+
 struct OrderRequest {
   int id = 0;
   std::string symbol;
@@ -39,11 +61,17 @@ class IBroker {
   virtual void cancel_order(int order_id) = 0;
   virtual void start_event_loop() = 0;
   virtual void stop_event_loop() = 0;
+  virtual void subscribe_top_of_book(const TopOfBookRequest& /*req*/) {}
   virtual void subscribe_market_depth(const MarketDepthRequest& req) = 0;
 
   virtual void on_step(int /*t*/) {}
 
   [[nodiscard]] virtual L2Book snapshot_book(int /*ticker_id*/) const {
+    return {};
+  }
+
+  [[nodiscard]] virtual TopOfBook snapshot_top_of_book(
+      int /*ticker_id*/) const {
     return {};
   }
 

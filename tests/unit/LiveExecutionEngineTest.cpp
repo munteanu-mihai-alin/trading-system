@@ -99,13 +99,15 @@ TEST(LiveExecutionEngine, InitializeUniversePopulatesRanking) {
 
 TEST(LiveExecutionEngine, SubscribeLiveBooksFansOutToBroker) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
-  EXPECT_CALL(*broker, subscribe_market_depth(_)).Times(3);
+  EXPECT_CALL(*broker, subscribe_top_of_book(_)).Times(3);
+  EXPECT_CALL(*broker, subscribe_market_depth(_)).Times(0);
   hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   engine.subscribe_live_books({"AAPL", "MSFT", "GOOG"});
 }
 
 TEST(LiveExecutionEngine, SubscribeLiveBooksHandlesEmptyList) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, subscribe_top_of_book(_)).Times(0);
   EXPECT_CALL(*broker, subscribe_market_depth(_)).Times(0);
   hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   engine.subscribe_live_books({});
@@ -155,18 +157,14 @@ TEST(LiveExecutionEngine, StepHonorsMaxOrdersPerSymbol) {
   engine.step(1);
 }
 
-TEST(LiveExecutionEngine, ReconcileBrokerStateNoOpsForNonIBKRClient) {
-  // reconcile_broker_state() does a dynamic_cast<IBKRClient*> on the broker;
-  // for any other IBroker (mock, paper sim) it must early-return without
-  // calling subscribe_market_depth or place_limit_order on its own.
+TEST(LiveExecutionEngine, ReconcileBrokerStateReadsTopOfBookOnly) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
   EXPECT_CALL(*broker, subscribe_market_depth(_)).Times(0);
+  EXPECT_CALL(*broker, snapshot_top_of_book(_)).Times(5);
   hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   engine.initialize_universe(5);
   engine.reconcile_broker_state();
-  // No portfolio.rank() side-effect to assert here other than no crash.
-  SUCCEED();
 }
 
 TEST(LiveExecutionEngine, StepHeartbeatBoundary) {

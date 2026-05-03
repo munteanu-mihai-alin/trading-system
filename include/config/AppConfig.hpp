@@ -31,10 +31,14 @@ struct AppConfig {
   double daily_inflation_cost = 0.0;
   double expected_daily_shares = 1.0;
   std::string databento_cache_dir = "data/databento";
-  std::string databento_download_script = "scripts/databento_download_l2.py";
   std::string databento_python = "python";
-  std::string databento_dataset = "XNAS.ITCH";
-  std::string databento_schema = "mbp-10";
+  std::string databento_l1_download_script =
+      "scripts/databento_download_mbp1.py";
+  std::string databento_l2_download_script = "scripts/databento_download_l2.py";
+  std::string databento_l1_dataset = "EQUS.MINI";
+  std::string databento_l2_dataset = "XNAS.ITCH";
+  std::string databento_l1_schema = "mbp-1";
+  std::string databento_l2_schema = "mbp-10";
   std::string databento_start;
   std::string databento_end;
 

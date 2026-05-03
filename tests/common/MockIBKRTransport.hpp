@@ -27,6 +27,8 @@ class MockIBKRTransport : public IBKRTransport {
   MOCK_METHOD(bool, is_connected, (), (const, override));
   MOCK_METHOD(void, place_limit_order, (const OrderRequest& req), (override));
   MOCK_METHOD(void, cancel_order, (int order_id), (override));
+  MOCK_METHOD(void, subscribe_top_of_book, (const TopOfBookRequest& req),
+              (override));
   MOCK_METHOD(void, subscribe_market_depth, (const MarketDepthRequest& req),
               (override));
   MOCK_METHOD(void, pump_once, (), (override));

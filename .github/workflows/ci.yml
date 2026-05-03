@@ -52,6 +52,21 @@ jobs:
         run: |
           cmake --build build -j"$(nproc)"
 
+      - name: Package Linux binaries
+        run: |
+          mkdir -p artifacts/linux-bin
+          cp build/hft_app artifacts/linux-bin/
+          cp build/ibkr_paper_order_probe artifacts/linux-bin/
+          cp build/hft_tests artifacts/linux-bin/
+          cp build/hft_gtests artifacts/linux-bin/
+          tar -czf artifacts/trading-system-linux-bin.tar.gz -C artifacts/linux-bin .
+
+      - name: Upload Linux binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-system-linux-bin
+          path: artifacts/trading-system-linux-bin.tar.gz
+
       - name: Test
         run: |
           cd build

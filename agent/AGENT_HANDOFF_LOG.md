@@ -1917,3 +1917,89 @@ Suggested commit:
 ```bash
 git commit -m "docs: rewrite project build and dependency README"
 ```
+
+## [2026-05-03] - Databento/hftbacktest universe and VPS backtest prep
+
+Model / agent:
+- Codex, GPT-5 coding agent
+
+Source state:
+- Local clone at `D:\trading-system`.
+- Remote backtest working directory prepared at `/mnt/HC_Volume_105581071/trading-system`.
+- Databento API secret is intentionally stored outside the repository at `/root/.config/trading-system/databento_api_key` with root-only permissions.
+- No server IPs, API keys, or SSH key material are recorded here.
+
+User request:
+- Keep the original long symbol list but move it out of the active universe.
+- Create a smaller active symbol universe focused on US-listed symbols/ADRs expected to be usable across IBKR and Databento for L1/L2 work.
+- Publish Linux binaries from CI as artifacts for later VPS copying.
+- Add a Databento-backed hftbacktest runner for the last three trading weeks, excluding the current weekend.
+- Load the Databento API key from a private file rather than hardcoding or committing it.
+- Produce backtest metrics/report output.
+
+Files changed:
+- `include/models/symbol_universe.hpp`
+  - renamed the previous full target list to `kLongGoalSymbolCompanyList`
+  - made `kSymbolCompanyList` the active smaller US-listed/ADR universe
+- `.github/workflows/ci.yml`
+  - packages Linux executables into `trading-system-linux-bin.tar.gz`
+  - uploads the tarball as the `trading-system-linux-bin` workflow artifact
+- `scripts/databento_download_mbp1.py`
+  - added optional `--api-key-file`
+  - reads the key from `DATABENTO_API_KEY_FILE` or `~/.config/trading-system/databento_api_key` when present
+  - chunks Databento downloads by day to avoid loading the full multi-week request into one dataframe
+  - requests `stype_in=raw_symbol` and `stype_out=instrument_id`; `raw_symbol` to `raw_symbol` was rejected by Databento for the real smoke run
+- `scripts/databento_download_l2.py`
+  - added the same private key-file loading
+  - chunks MBP-10 downloads by ticker/hour by default
+  - uses the same Databento symbology defaults as the L1 downloader
+- `scripts/run_hftbacktest_databento.py`
+  - default period hardcoded to `2026-04-13T13:30:00Z` through `2026-05-01T20:00:00Z`
+  - default symbols set to `AAPL,NVDA,AMD`
+  - downloads/reuses L1 MBP-1 and L2 MBP-10 CSV caches
+  - requests L1 in 24-hour chunks and L2 in 1-hour chunks by default
+  - converts MBP-10 CSV into hftbacktest v2 event arrays
+  - runs a market buy followed by a target-profit limit sell
+  - writes JSON summary plus Markdown report
+
+Steps taken:
+1. Split the symbol universe into long-term goal vs active Databento/IBKR-compatible universe.
+2. Added CI artifact packaging for Linux binaries.
+3. Added Databento private key-file support without committing any secret.
+4. Prepared the VPS Python environment with `databento` and `hftbacktest`.
+5. Stored the Databento API key outside the repo in a root-only config file.
+6. Ran a synthetic hftbacktest smoke run on the VPS for `AAPL,NVDA,AMD`; the v2 adapter produced filled buy/sell cycles and report output.
+7. Estimated real Databento cost for the default period/symbols before downloading billable data:
+   - `EQUS.MINI` / `mbp-1`: about `$4.74`, about `52,992,025` records
+   - `XNAS.ITCH` / `mbp-10`: about `$14.95`, about `109,058,247` records
+8. Ran a bounded real Databento smoke backtest for `AAPL`, `2026-04-13T13:30:00Z` to `2026-04-13T14:30:00Z`:
+   - estimated cost before run was about `$0.07`
+   - report written at `/mnt/HC_Volume_105581071/trading-system/reports/databento_real_smoke_report.md`
+   - L2 rows after CSV expansion: `3,758,430`
+   - L2 Databento steps: `375,843`
+   - average spread: about `1.42` bps
+   - target sell limit was not touched; hftbacktest ended with final position `1.0`
+
+Validation performed:
+- Python AST parse passed for the three backtest/download scripts.
+- `clang-format --dry-run --Werror` passed for `include/models/symbol_universe.hpp`.
+- `git diff --check` passed for the touched files, with only existing LF-to-CRLF warnings.
+- Secret scan of touched repo files found no Databento key, server IP, or Hetzner string.
+
+Known risks / follow-up:
+- The real Databento run was not completed after the final remote copy/run approval was declined.
+- Multi-week L2 data is large; scripts now request MBP-10 by ticker/hour, but the first real run should still be monitored for disk, memory, and elapsed time.
+- The active universe assumes US-listed symbols/ADRs and the default L2 dataset `XNAS.ITCH`; non-NASDAQ symbols will need dataset routing by primary listing/exchange.
+- CI artifact publishing uploads workflow artifacts, not GitHub Releases.
+
+Suggested next command on VPS once scripts are copied:
+```bash
+cd /mnt/HC_Volume_105581071/trading-system
+. .venv/bin/activate
+python scripts/run_hftbacktest_databento.py \
+  --symbols AAPL,NVDA,AMD \
+  --api-key-file /root/.config/trading-system/databento_api_key \
+  --cache-dir data/databento \
+  --summary reports/databento_backtest_summary.json \
+  --report reports/databento_backtest_report.md
+```

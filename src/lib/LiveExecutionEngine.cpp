@@ -125,6 +125,8 @@ void LiveExecutionEngine::step(int t) {
   for (const auto& s : ranking.portfolio.items) {
     if (!s.active)
       continue;
+    if (!can_open_new_exposure())
+      break;
     if (has_open_exposure(s.symbol))
       continue;
     if (!can_route_order(s))
@@ -183,6 +185,24 @@ bool LiveExecutionEngine::has_open_exposure(const std::string& symbol) const {
     }
   }
   return false;
+}
+
+int LiveExecutionEngine::open_exposure_symbol_count() const {
+  std::unordered_set<std::string> symbols;
+  for (const auto& item : open_positions_) {
+    symbols.insert(item.first);
+  }
+  for (const auto& item : entry_orders_) {
+    symbols.insert(item.second.symbol);
+  }
+  return static_cast<int>(symbols.size());
+}
+
+bool LiveExecutionEngine::can_open_new_exposure() const {
+  if (cfg_.app.max_open_symbols <= 0) {
+    return true;
+  }
+  return open_exposure_symbol_count() < cfg_.app.max_open_symbols;
 }
 
 bool LiveExecutionEngine::sync_next_order_id_from_broker() {

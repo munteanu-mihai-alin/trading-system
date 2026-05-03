@@ -4,6 +4,52 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-03] - Add max-open-symbol cap and buy/sell CI coverage
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`.
+- GitHub CI run checked for pushed commit `361a7e3c7ee645436bd83adaa90b9ba8a6c2824a`.
+- Existing unrelated dirty local items were present and not touched. Do not record VPS IPs, machine IDs, SSH keys, or credentials.
+
+User request:
+- Fix the legacy CI test expectation so it covers the new buy/sell behavior.
+- Add logic to hold at most 3 bought symbols and use only those bought symbols as sell candidates.
+- Explain whether buy ranking keeps running after sells or only under certain conditions.
+
+Files changed:
+- `include/config/AppConfig.hpp`, `src/lib/AppConfig.cpp` - added `max_open_symbols`, defaulting to `3`, and config parsing.
+- `include/engine/LiveExecutionEngine.hpp`, `src/lib/LiveExecutionEngine.cpp` - added exposure-count helpers and stopped buy routing once pending/open exposure reaches `max_open_symbols`.
+- `tests/module/TestBrokerIntegration.cpp` - replaced the stale "every step places top_k orders" expectation with a fill/depth broker test that checks capped buys, generated sell orders, and sell candidates limited to bought symbols.
+- `tests/unit/AppConfigTest.cpp`, `tests/unit/TestCoreModels.cpp` - added config coverage for `max_open_symbols`.
+- `config.ibkr_paper.example.ini`, `config.databento_backtest.example.ini` - documented `max_open_symbols=3`.
+
+Deletions / removals:
+- No files removed.
+
+Steps taken:
+1. Inspected GitHub CI logs and confirmed the current failure is one legacy `hft_tests` assertion.
+2. Added a configurable open-symbol cap.
+3. Updated buy routing to count both filled/open positions and pending buy entries.
+4. Updated the failing legacy test to assert buys plus sells instead of repeated duplicate buys.
+
+Validation performed:
+- `git diff --check` on touched files: no whitespace errors; only LF-to-CRLF Git warnings.
+- `clang-format --dry-run --Werror` on touched C++ files: passed.
+- No build or test run locally, preserving the user's earlier instruction to avoid local builds/tests until requested.
+
+Known risks / follow-up:
+- The new legacy test uses a deterministic test broker that fills buys immediately and provides synthetic L2 for sell scoring; it validates engine routing, not broker exchange realism.
+- After pushing, re-watch CI to confirm the old one-test failure is gone.
+
+Suggested commit:
+```bash
+git commit -m "test(engine): cover capped buys and sell routing"
+```
+
 ## [2026-05-03] - Split Databento backtests into L1 buy data and L2 sell data
 
 Model / agent:

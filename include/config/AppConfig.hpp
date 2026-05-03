@@ -18,6 +18,7 @@ struct AppConfig {
   double order_qty = 10.0;
   double max_order_qty = 10.0;
   double max_notional_per_order = 0.0;
+  int max_open_symbols = 3;
   int max_orders_per_run = 0;
   int max_orders_per_symbol = 0;
   double target_profit_pct = 0.008;

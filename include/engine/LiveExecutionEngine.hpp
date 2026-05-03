@@ -43,6 +43,8 @@ class LiveExecutionEngine {
 
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
+  [[nodiscard]] int open_exposure_symbol_count() const;
+  [[nodiscard]] bool can_open_new_exposure() const;
   [[nodiscard]] bool sync_next_order_id_from_broker();
   [[nodiscard]] int portfolio_index_for_symbol(const std::string& symbol) const;
   [[nodiscard]] double allocated_daily_cost_per_share() const;

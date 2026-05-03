@@ -106,6 +106,7 @@ HFT_TEST(test_app_config_loads_ibkr_paper_mode) {
     out << "mode=ibkr_paper\n";
     out << "paper_port=4002\n";
     out << "order_qty=1\n";
+    out << "max_open_symbols=3\n";
     out << "max_orders_per_run=1\n";
   }
 
@@ -115,6 +116,8 @@ HFT_TEST(test_app_config_loads_ibkr_paper_mode) {
   hft::test::require(cfg.port() == 4002,
                      "ibkr_paper mode should use paper port");
   hft::test::require(cfg.order_qty == 1.0, "order quantity should parse");
+  hft::test::require(cfg.max_open_symbols == 3,
+                     "max_open_symbols should parse");
   hft::test::require(cfg.max_orders_per_run == 1,
                      "max_orders_per_run should parse");
   std::remove(path.c_str());

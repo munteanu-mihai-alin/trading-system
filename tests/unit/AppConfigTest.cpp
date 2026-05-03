@@ -49,6 +49,7 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.order_qty, 10.0);
   EXPECT_DOUBLE_EQ(cfg.max_order_qty, 10.0);
   EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 0.0);
+  EXPECT_EQ(cfg.max_open_symbols, 3);
   EXPECT_EQ(cfg.max_orders_per_run, 0);
   EXPECT_EQ(cfg.max_orders_per_symbol, 0);
   EXPECT_DOUBLE_EQ(cfg.target_profit_pct, 0.008);
@@ -109,6 +110,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "order_qty=1.5\n"
       "max_order_qty=2\n"
       "max_notional_per_order=500.25\n"
+      "max_open_symbols=4\n"
       "max_orders_per_run=7\n"
       "max_orders_per_symbol=2\n"
       "target_profit_pct=0.012\n"
@@ -144,6 +146,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.order_qty, 1.5);
   EXPECT_DOUBLE_EQ(cfg.max_order_qty, 2.0);
   EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 500.25);
+  EXPECT_EQ(cfg.max_open_symbols, 4);
   EXPECT_EQ(cfg.max_orders_per_run, 7);
   EXPECT_EQ(cfg.max_orders_per_symbol, 2);
   EXPECT_DOUBLE_EQ(cfg.target_profit_pct, 0.012);

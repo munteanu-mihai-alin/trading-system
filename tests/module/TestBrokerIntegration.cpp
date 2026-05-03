@@ -1,6 +1,10 @@
 #include "common/TestFramework.hpp"
 
+#include <algorithm>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "broker/ConnectionSupervisor.hpp"
 #include "broker/IBKRClient.hpp"
@@ -15,6 +19,63 @@
 #include "models/symbol_universe.hpp"
 
 using namespace hft;
+
+namespace {
+
+class FilledDepthBroker final : public IBroker {
+  bool connected_ = false;
+  OrderLifecycleBook lifecycle_;
+  std::unordered_map<int, L2Book> books_;
+
+ public:
+  std::vector<OrderRequest> placed;
+
+  bool connect(const std::string&, int, int) override {
+    connected_ = true;
+    return true;
+  }
+
+  void disconnect() override { connected_ = false; }
+  bool is_connected() const override { return connected_; }
+
+  void place_limit_order(const OrderRequest& req) override {
+    placed.push_back(req);
+    lifecycle_.on_submitted(req.id, req.symbol, req.qty);
+    if (req.is_buy) {
+      lifecycle_.on_status(req.id, "Filled", req.qty, 0.0, req.limit);
+    }
+  }
+
+  void cancel_order(int) override {}
+  void start_event_loop() override {}
+  void stop_event_loop() override {}
+  void subscribe_top_of_book(const TopOfBookRequest&) override {}
+
+  void subscribe_market_depth(const MarketDepthRequest& req) override {
+    L2Book book;
+    book.bids[0] = L2Level{100.0, 1000.0};
+    book.asks[0] = L2Level{100.1, 1000.0};
+    book.bids[1] = L2Level{99.9, 900.0};
+    book.asks[1] = L2Level{100.2, 900.0};
+    books_[req.ticker_id] = book;
+  }
+
+  [[nodiscard]] L2Book snapshot_book(int ticker_id) const override {
+    const auto it = books_.find(ticker_id);
+    if (it == books_.end()) {
+      return {};
+    }
+    return it->second;
+  }
+
+  [[nodiscard]] const OrderLifecycleBook* order_lifecycle() const override {
+    return &lifecycle_;
+  }
+
+  [[nodiscard]] double ack_latency_ms(int) const override { return 1.0; }
+};
+
+}  // namespace
 
 HFT_TEST(test_paper_broker_receives_orders) {
   AppConfig cfg;
@@ -590,9 +651,14 @@ HFT_TEST(test_ibkr_client_stub_multiple_order_lifecycle_entries) {
 HFT_TEST(test_live_execution_engine_multiple_steps_with_paper_broker) {
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
-  cfg.top_k = 3;
+  cfg.top_k = 5;
+  cfg.max_open_symbols = 3;
+  cfg.min_sell_execution_score = -1e9;
+  cfg.commission_per_share = 0.0;
+  cfg.half_spread_cost = 0.0;
+  cfg.impact_coefficient = 0.0;
 
-  auto broker = std::make_unique<LocalSimBroker>();
+  auto broker = std::make_unique<FilledDepthBroker>();
   auto* raw = broker.get();
   LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
 
@@ -603,8 +669,27 @@ HFT_TEST(test_live_execution_engine_multiple_steps_with_paper_broker) {
     eng.step(t);
   }
 
-  hft::test::require(static_cast<int>(raw->placed.size()) == 12,
-                     "each step should place top_k orders");
+  int buys = 0;
+  int sells = 0;
+  std::vector<std::string> bought_symbols;
+  for (const auto& order : raw->placed) {
+    if (order.is_buy) {
+      ++buys;
+      bought_symbols.push_back(order.symbol);
+    } else {
+      ++sells;
+      const bool was_bought =
+          std::find(bought_symbols.begin(), bought_symbols.end(),
+                    order.symbol) != bought_symbols.end();
+      hft::test::require(was_bought,
+                         "sell candidates should be bought symbols only");
+    }
+  }
+
+  hft::test::require(buys == 3, "engine should cap bought symbols at three");
+  hft::test::require(sells > 0, "filled buys should create sell candidates");
+  hft::test::require(static_cast<int>(raw->placed.size()) == buys + sells,
+                     "all broker orders should be classified buy or sell");
   eng.stop();
 }
 

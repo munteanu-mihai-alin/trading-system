@@ -58,10 +58,13 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   void pump_once();
   bool reconnect_once();
 
-  [[nodiscard]] double ack_latency_ms(int order_id) const;
-  [[nodiscard]] L2Book snapshot_book(int ticker_id) const;
+  [[nodiscard]] double ack_latency_ms(int order_id) const override;
+  [[nodiscard]] L2Book snapshot_book(int ticker_id) const override;
   [[nodiscard]] int next_valid_order_id() const;
   [[nodiscard]] std::vector<IBKRError> errors() const;
+  [[nodiscard]] const OrderLifecycleBook* order_lifecycle() const override {
+    return &lifecycle_;
+  }
   [[nodiscard]] const OrderLifecycleBook& lifecycle() const {
     return lifecycle_;
   }

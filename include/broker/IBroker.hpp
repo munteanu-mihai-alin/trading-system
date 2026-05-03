@@ -1,6 +1,9 @@
 #pragma once
 #include <string>
 
+#include "broker/OrderLifecycle.hpp"
+#include "models/l2_book.hpp"
+
 namespace hft {
 
 struct MarketDepthRequest {
@@ -37,6 +40,20 @@ class IBroker {
   virtual void start_event_loop() = 0;
   virtual void stop_event_loop() = 0;
   virtual void subscribe_market_depth(const MarketDepthRequest& req) = 0;
+
+  virtual void on_step(int /*t*/) {}
+
+  [[nodiscard]] virtual L2Book snapshot_book(int /*ticker_id*/) const {
+    return {};
+  }
+
+  [[nodiscard]] virtual const OrderLifecycleBook* order_lifecycle() const {
+    return nullptr;
+  }
+
+  [[nodiscard]] virtual double ack_latency_ms(int /*order_id*/) const {
+    return 0.0;
+  }
 };
 
 }  // namespace hft

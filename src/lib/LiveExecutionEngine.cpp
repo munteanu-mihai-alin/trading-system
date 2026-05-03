@@ -98,6 +98,7 @@ void LiveExecutionEngine::initialize_universe(int n_stocks) {
 }
 
 void LiveExecutionEngine::step(int t) {
+  broker_->on_step(t);
   reconcile_broker_state();
   refresh_order_state();
   ranking.step(t);
@@ -232,12 +233,12 @@ double LiveExecutionEngine::estimate_round_trip_cost_per_share(
 }
 
 void LiveExecutionEngine::refresh_order_state() {
-  auto* ibkr = dynamic_cast<IBKRClient*>(broker_.get());
-  if (ibkr == nullptr)
+  const auto* lifecycle = broker_->order_lifecycle();
+  if (lifecycle == nullptr)
     return;
 
   for (auto it = entry_orders_.begin(); it != entry_orders_.end();) {
-    const auto* state = ibkr->lifecycle().get(it->first);
+    const auto* state = lifecycle->get(it->first);
     if (state == nullptr) {
       ++it;
       continue;
@@ -259,7 +260,7 @@ void LiveExecutionEngine::refresh_order_state() {
       position.qty = next_qty;
       position.entry_price = weighted_entry;
       position.entry_ack_latency_ms =
-          std::max(ibkr->ack_latency_ms(it->first), 1.0);
+          std::max(broker_->ack_latency_ms(it->first), 1.0);
       it = entry_orders_.erase(it);
       continue;
     }
@@ -274,7 +275,7 @@ void LiveExecutionEngine::refresh_order_state() {
 
   for (auto it = exit_order_symbols_.begin();
        it != exit_order_symbols_.end();) {
-    const auto* state = ibkr->lifecycle().get(it->first);
+    const auto* state = lifecycle->get(it->first);
     if (state == nullptr) {
       ++it;
       continue;
@@ -303,8 +304,8 @@ void LiveExecutionEngine::refresh_order_state() {
 }
 
 void LiveExecutionEngine::route_exit_orders() {
-  auto* ibkr = dynamic_cast<IBKRClient*>(broker_.get());
-  if (ibkr == nullptr)
+  const auto* lifecycle = broker_->order_lifecycle();
+  if (lifecycle == nullptr)
     return;
 
   for (auto& item : open_positions_) {
@@ -316,7 +317,7 @@ void LiveExecutionEngine::route_exit_orders() {
     if (idx < 0)
       continue;
 
-    const auto book = ibkr->snapshot_book(idx + 1);
+    const auto book = broker_->snapshot_book(idx + 1);
     if (!has_valid_top(book))
       continue;
 
@@ -374,13 +375,9 @@ void LiveExecutionEngine::subscribe_live_books(
 }
 
 void LiveExecutionEngine::reconcile_broker_state() {
-  auto* ibkr = dynamic_cast<IBKRClient*>(broker_.get());
-  if (ibkr == nullptr)
-    return;
-
   for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
     auto& s = ranking.portfolio.items[i];
-    const auto book = ibkr->snapshot_book(static_cast<int>(i + 1));
+    const auto book = broker_->snapshot_book(static_cast<int>(i + 1));
     if (book.best_bid() > 0.0 && book.best_ask() > 0.0) {
       s.mid = 0.5 * (book.best_bid() + book.best_ask());
       if (book.bids[0].size > 0.0) {

@@ -4,6 +4,44 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-03] - Add Databento-backed broker interface scaffold for backtests
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`.
+- Existing unrelated dirty local items were present and not touched. Do not record VPS IPs, machine IDs, SSH keys, or credentials.
+
+User request:
+- See whether the C++ broker code can keep live/paper trading as-is while allowing backtests to use the same engine/broker interface backed by Databento data downloaded through a Python script.
+
+Design implemented:
+- Extended `IBroker` with optional default hooks:
+  - `on_step(int)` for replay brokers.
+  - `snapshot_book(int)` for market-depth snapshots.
+  - `order_lifecycle()` and `ack_latency_ms(int)` for fill/lifecycle state.
+- `IBKRClient` now overrides those hooks without changing its existing live/paper behavior.
+- `LiveExecutionEngine` now calls these generic broker hooks instead of hard-casting to `IBKRClient` for market data and lifecycle, except for IBKR-only `nextValidId` synchronization.
+- Added `DatabentoBacktestBroker`, a new `IBroker` implementation for `mode=databento_backtest`.
+  - `subscribe_market_depth` ensures a symbol CSV exists, calling the Python downloader if absent.
+  - CSV replay exposes `L2Book` snapshots through `snapshot_book`.
+  - `on_step` advances replay time.
+  - Limit orders are tracked in an `OrderLifecycleBook`; marketable buy/sell limits fill against the replayed best ask/bid.
+- Added `scripts/databento_download_l2.py`.
+  - Uses the official Databento Python historical API if installed/configured.
+  - Downloads `mbp-10` by default and flattens `bid_px_N`/`ask_px_N` + sizes into `step,side,level,price,size` CSV for C++ replay.
+  - Includes an explicit `--synthetic` mode for local smoke data without contacting Databento.
+- Added `config.databento_backtest.example.ini` with Databento/backtest settings.
+- Added config parsing for `databento_cache_dir`, `databento_download_script`, `databento_python`, `databento_dataset`, `databento_schema`, `databento_start`, and `databento_end`.
+
+Important limitations:
+- This is a scaffold, not a full hftbacktest integration yet.
+- Current replay downloads per subscribed symbol; later we can make it lazier around candidate sell windows if broad L2 downloads become too costly.
+- Fill simulation is intentionally simple: crossed/marketable limits fill against current best bid/ask; passive queue progression is not yet hftbacktest-grade.
+- No build/test run, per user instruction to avoid builds/tests until all changes are ready.
+
 ## [2026-05-03] - Implement L2-scored target sell exits
 
 Model / agent:

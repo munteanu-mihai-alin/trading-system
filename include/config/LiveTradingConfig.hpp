@@ -24,6 +24,8 @@ struct LiveTradingConfig {
       return "ibkr_paper";
     if (app.mode == BrokerMode::Sim)
       return "sim";
+    if (app.mode == BrokerMode::DatabentoBacktest)
+      return "databento_backtest";
     return "paper";
   }
 };

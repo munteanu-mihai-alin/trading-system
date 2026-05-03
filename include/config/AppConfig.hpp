@@ -3,7 +3,7 @@
 
 namespace hft {
 
-enum class BrokerMode { Paper, IBKRPaper, Live, Sim };
+enum class BrokerMode { Paper, IBKRPaper, Live, Sim, DatabentoBacktest };
 
 struct AppConfig {
   BrokerMode mode = BrokerMode::Paper;
@@ -30,6 +30,13 @@ struct AppConfig {
   double energy_cost_per_kwh = 0.0;
   double daily_inflation_cost = 0.0;
   double expected_daily_shares = 1.0;
+  std::string databento_cache_dir = "data/databento";
+  std::string databento_download_script = "scripts/databento_download_l2.py";
+  std::string databento_python = "python";
+  std::string databento_dataset = "XNAS.ITCH";
+  std::string databento_schema = "mbp-10";
+  std::string databento_start;
+  std::string databento_end;
 
   [[nodiscard]] int port() const noexcept {
     if (mode == BrokerMode::Live)

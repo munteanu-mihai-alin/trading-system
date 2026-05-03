@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "bench/bench.hpp"
+#include "broker/DatabentoBacktestBroker.hpp"
 #include "broker/IBKRClient.hpp"
 #include "broker/LocalSimBroker.hpp"
 #include "config/AppConfig.hpp"
@@ -41,6 +42,9 @@ int main() {
               << " mode" << std::endl;
     broker = std::make_unique<hft::IBKRClient>();
     raw_ibkr = static_cast<hft::IBKRClient*>(broker.get());
+  } else if (cfg.mode == hft::BrokerMode::DatabentoBacktest) {
+    std::cout << "Creating Databento backtest broker" << std::endl;
+    broker = std::make_unique<hft::DatabentoBacktestBroker>(cfg);
   } else {
     std::cout << "Creating local simulated broker" << std::endl;
     broker = std::make_unique<hft::LocalSimBroker>();

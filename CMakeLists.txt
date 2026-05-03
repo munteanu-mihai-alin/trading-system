@@ -19,6 +19,7 @@ set(HFT_INCLUDE_DIRS
 
 set(LIB_SOURCES
   src/lib/AppConfig.cpp
+  src/lib/DatabentoBacktestBroker.cpp
   src/lib/RankingEngine.cpp
   src/lib/IBKRClient.cpp
   src/lib/LiveExecutionEngine.cpp

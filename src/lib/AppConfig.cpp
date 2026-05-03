@@ -48,6 +48,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
           cfg.mode = BrokerMode::Live;
         else if (val == "ibkr_paper" || val == "paper_ibkr")
           cfg.mode = BrokerMode::IBKRPaper;
+        else if (val == "databento_backtest" || val == "backtest")
+          cfg.mode = BrokerMode::DatabentoBacktest;
         else if (val == "sim")
           cfg.mode = BrokerMode::Sim;
         else
@@ -98,6 +100,20 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.daily_inflation_cost = std::stod(val);
       } else if (key == "expected_daily_shares") {
         cfg.expected_daily_shares = std::stod(val);
+      } else if (key == "databento_cache_dir") {
+        cfg.databento_cache_dir = val;
+      } else if (key == "databento_download_script") {
+        cfg.databento_download_script = val;
+      } else if (key == "databento_python") {
+        cfg.databento_python = val;
+      } else if (key == "databento_dataset") {
+        cfg.databento_dataset = val;
+      } else if (key == "databento_schema") {
+        cfg.databento_schema = val;
+      } else if (key == "databento_start") {
+        cfg.databento_start = val;
+      } else if (key == "databento_end") {
+        cfg.databento_end = val;
       }
     } catch (const std::exception& ex) {
       std::cerr << "Warning: invalid config entry '" << key << "'='" << val

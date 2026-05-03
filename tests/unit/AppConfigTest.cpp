@@ -61,6 +61,13 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.energy_cost_per_kwh, 0.0);
   EXPECT_DOUBLE_EQ(cfg.daily_inflation_cost, 0.0);
   EXPECT_DOUBLE_EQ(cfg.expected_daily_shares, 1.0);
+  EXPECT_EQ(cfg.databento_cache_dir, "data/databento");
+  EXPECT_EQ(cfg.databento_download_script, "scripts/databento_download_l2.py");
+  EXPECT_EQ(cfg.databento_python, "python");
+  EXPECT_EQ(cfg.databento_dataset, "XNAS.ITCH");
+  EXPECT_EQ(cfg.databento_schema, "mbp-10");
+  EXPECT_TRUE(cfg.databento_start.empty());
+  EXPECT_TRUE(cfg.databento_end.empty());
 }
 
 TEST(AppConfig, PortPaperVsLive) {
@@ -108,7 +115,14 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "daily_energy_kwh=4.5\n"
       "energy_cost_per_kwh=0.31\n"
       "daily_inflation_cost=1.25\n"
-      "expected_daily_shares=250\n");
+      "expected_daily_shares=250\n"
+      "databento_cache_dir=tmp/db\n"
+      "databento_download_script=scripts/fetch.py\n"
+      "databento_python=python3\n"
+      "databento_dataset=XNYS.PILLAR\n"
+      "databento_schema=mbp-10\n"
+      "databento_start=2025-01-02T14:30:00Z\n"
+      "databento_end=2025-01-02T14:35:00Z\n");
   const auto cfg = AppConfig::load_from_file(f.path());
   EXPECT_EQ(cfg.mode, BrokerMode::Live);
   EXPECT_EQ(cfg.host, "10.0.0.5");
@@ -134,6 +148,13 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.energy_cost_per_kwh, 0.31);
   EXPECT_DOUBLE_EQ(cfg.daily_inflation_cost, 1.25);
   EXPECT_DOUBLE_EQ(cfg.expected_daily_shares, 250.0);
+  EXPECT_EQ(cfg.databento_cache_dir, "tmp/db");
+  EXPECT_EQ(cfg.databento_download_script, "scripts/fetch.py");
+  EXPECT_EQ(cfg.databento_python, "python3");
+  EXPECT_EQ(cfg.databento_dataset, "XNYS.PILLAR");
+  EXPECT_EQ(cfg.databento_schema, "mbp-10");
+  EXPECT_EQ(cfg.databento_start, "2025-01-02T14:30:00Z");
+  EXPECT_EQ(cfg.databento_end, "2025-01-02T14:35:00Z");
 }
 
 TEST(AppConfig, ModeMapping) {
@@ -156,6 +177,16 @@ TEST(AppConfig, ModeMapping) {
   {
     TempIni f("mode=sim\n");
     EXPECT_EQ(AppConfig::load_from_file(f.path()).mode, BrokerMode::Sim);
+  }
+  {
+    TempIni f("mode=databento_backtest\n");
+    EXPECT_EQ(AppConfig::load_from_file(f.path()).mode,
+              BrokerMode::DatabentoBacktest);
+  }
+  {
+    TempIni f("mode=backtest\n");
+    EXPECT_EQ(AppConfig::load_from_file(f.path()).mode,
+              BrokerMode::DatabentoBacktest);
   }
   {
     TempIni f("mode=garbage\n");

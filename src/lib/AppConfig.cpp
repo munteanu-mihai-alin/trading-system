@@ -78,6 +78,26 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.max_orders_per_run = std::stoi(val);
       } else if (key == "max_orders_per_symbol") {
         cfg.max_orders_per_symbol = std::stoi(val);
+      } else if (key == "target_profit_pct") {
+        cfg.target_profit_pct = std::stod(val);
+      } else if (key == "min_sell_execution_score") {
+        cfg.min_sell_execution_score = std::stod(val);
+      } else if (key == "commission_per_share") {
+        cfg.commission_per_share = std::stod(val);
+      } else if (key == "half_spread_cost") {
+        cfg.half_spread_cost = std::stod(val);
+      } else if (key == "impact_coefficient") {
+        cfg.impact_coefficient = std::stod(val);
+      } else if (key == "assumed_daily_volume") {
+        cfg.assumed_daily_volume = std::stod(val);
+      } else if (key == "daily_energy_kwh") {
+        cfg.daily_energy_kwh = std::stod(val);
+      } else if (key == "energy_cost_per_kwh") {
+        cfg.energy_cost_per_kwh = std::stod(val);
+      } else if (key == "daily_inflation_cost") {
+        cfg.daily_inflation_cost = std::stod(val);
+      } else if (key == "expected_daily_shares") {
+        cfg.expected_daily_shares = std::stod(val);
       }
     } catch (const std::exception& ex) {
       std::cerr << "Warning: invalid config entry '" << key << "'='" << val

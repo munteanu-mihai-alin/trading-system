@@ -4,6 +4,197 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-03] - Implement L2-scored target sell exits
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`.
+- Existing unrelated dirty local items were present and not touched. Do not record VPS IPs, machine IDs, SSH keys, or credentials.
+
+User request:
+- Keep buy/ranking logic separate.
+- Use `compute_execution_score` for SELL/exit decisions only.
+- Target net `+0.8%` profit, with estimated costs added on top of the sell limit.
+- Use L2/depth data to estimate sell queue/direction before placing the sell order.
+
+Files changed:
+- `include/execution/score.hpp`
+  - `compute_execution_score` now accepts configurable `reward` and `loss` while preserving old defaults.
+  - Directional probability is clamped to `[0, 1]`.
+- `include/config/AppConfig.hpp` and `src/lib/AppConfig.cpp`
+  - Added sell/cost config: `target_profit_pct`, `min_sell_execution_score`, transaction-cost knobs, daily energy/capital allocation knobs.
+- `src/lib/LiveExecutionEngine.cpp` and `include/engine/LiveExecutionEngine.hpp`
+  - Track submitted buy orders.
+  - Convert filled IBKR buy orders into open positions using `OrderLifecycleBook`.
+  - Compute sell target as `entry_price * (1 + target_profit_pct) + estimated_round_trip_cost_per_share`.
+  - Estimate visible ask queue ahead from L2, directional pressure from book imbalance/microprice, and route SELL limit orders only when `compute_execution_score` clears `min_sell_execution_score`.
+  - Prevent new buy orders for symbols with pending entry orders or open positions.
+- `config.ibkr_paper.example.ini`
+  - Added `[sell_strategy]` and `[costs]` examples.
+- `tests/math/TestMathModels.cpp` and `tests/unit/AppConfigTest.cpp`
+  - Added coverage for configurable execution-score reward/loss and new config keys.
+
+Important behavior:
+- BUY ranking is still driven by the existing ranking engine.
+- The new EV score is used only after an IBKR buy fill is observed.
+- The baseline sell target is net `+0.8%` plus costs; this patch does not yet implement the later "let it run for more" decision.
+- SELL exits currently require the real `IBKRClient` path because the engine reads `OrderLifecycleBook` and L2 snapshots from `IBKRClient`.
+
+Validation:
+- No build or test run, per user instruction to avoid builds/tests until all changes are ready.
+- Performed read-only diff/sanity inspection only.
+
+## [2026-05-03] - Split current universe into Databento-backtestable US symbols
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `e1429fcb74769763cb7a57477fa65a454a80881e` (`Added real paper-trading`).
+- Existing unrelated dirty local items were present and not touched. Do not record VPS IPs, machine IDs, SSH keys, or credentials.
+
+User request:
+- Separate the current stock universe into the symbols that can be used with Databento for historical backtests, especially L2.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this planning note only.
+
+Databento interpretation:
+- Databento historical stock L2 is available through US equities datasets/schemas, especially `mbp-10`.
+- `EQUS.MINI` is useful for broad top-of-book/L1 style data, but it is not an L2 dataset.
+- For L2, use venue/direct datasets such as `XNAS.ITCH`, `XNYS.PILLAR`, `ARCX.PILLAR`, `XASE.PILLAR`, `BATS.PITCH`, `BATY.PITCH`, `EDGA.PITCH`, `EDGX.PITCH`, `MEMX.MEMOIR`, and similar Databento US equity depth datasets.
+- Current non-US local listings such as `.FR`, `.DE`, `.IT`, `.FI`, `.NO`, `.T`, `.TW`, `.TWO`, `.KS`, `.HK`, `.SS`, and `.VI` should be excluded from Databento L2 backtests unless remapped to a US-listed ADR/common stock.
+
+Likely Databento-ready US-listed candidates from the current universe:
+- Tech/semis/infrastructure: `AAPL`, `NVDA`, `AMD`, `INTC`, `MU`, `QCOM`, `ARM`, `ASML`, `AMAT`, `LRCX`, `KLAC`, `SNPS`, `CDNS`, `MKSI`, `ENTG`, `STX`, `WDC`, `PSTG`, `DELL`, `HPQ`, `SMCI`, `CSCO`, `HPE`, `IBM`, `KEYS`.
+- Semiconductor ADRs/foundry/package names: `TSM`, `GFS`, `UMC`, `TSEM`, `ASX`, `AMKR`, `IMOS`.
+- Other US-listed names already in the universe via bare or `.US` symbols: `LEA`, `AWK`, `CEG`, `VST`, `NIO`, `XPEV`, `OKLO`, `SNDK`, `LMT`, `HWM`, `RTX`, `NOC`, `GSM`, `DD`, `LIN`, `APD`.
+
+Useful remaps from current local/global entries:
+- `TTE.FR` can be represented by US-listed `TTE` for Databento/US ADR-style backtests.
+- `NOKIA.FI` can be represented by US-listed `NOK`.
+- `2330.TW` can be represented by US-listed `TSM`.
+- `2303.TW` can be represented by US-listed `UMC`.
+- `3711.TW` can be represented by US-listed `ASX`.
+- `ASML.AS` / `ASML.NL` can be represented by US-listed `ASML`, which already exists in the universe.
+
+Exclude or handle carefully:
+- `AI` currently means Air Liquide in the project list, but US `AI` is C3.ai; do not use it as Air Liquide.
+- `MRK` currently means Merck KGaA in the project list, but US `MRK` is Merck & Co.; do not use it as Merck KGaA.
+- `ASM`, `SIE`, `ATS`, `WCH`, and `WAF` are ambiguous or likely not the intended US-listed instrument.
+- Most local Europe/APAC tickers require non-Databento vendors for historical L2.
+
+Recommended first Databento backtest universe:
+- `AAPL`, `NVDA`, `AMD`, `INTC`, `MU`, `QCOM`, `ARM`, `ASML`, `TSM`, `GFS`, `UMC`, `AMAT`, `LRCX`, `KLAC`, `SNPS`, `CDNS`, `MKSI`, `ENTG`, `STX`, `WDC`, `DELL`, `SMCI`, `CSCO`, `HPE`, `IBM`.
+
+Validation / follow-up:
+- No code/build/test run.
+- Before downloading data, verify each candidate through Databento definitions/symbol lookup and record the exact dataset/symbol mapping in a symbol master.
+
+## [2026-05-03] - Align IBKR live universe with Databento historical backtests
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `e1429fcb74769763cb7a57477fa65a454a80881e` (`Added real paper-trading`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request / decision:
+- Use IBKR market data for real trading and Databento for historical backtests.
+- Keep the same stocks available in both systems, so the live universe and backtest universe do not diverge.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this planning note only.
+
+Planning decision:
+- Start with a US-listed equities/ADR overlap universe, because Databento's stock/equities coverage is US equities and ETFs and the current global universe includes many local non-US listings that Databento will not cover as historical L2.
+- Use IBKR for live L1/L2 entitlements and Databento for historical `mbp-1`/`bbo`/`tbbo` L1 and `mbp-10` L2.
+- The match should be by canonical instrument, not by current display suffix. Example: current `INTC.US` should map to canonical `INTC`; current `TSM` is the US ADR and can be different from `2330.TW`.
+
+Likely first overlap candidates from the current universe:
+- NASDAQ/US tech and semis: `AAPL`, `NVDA`, `AMD`, `INTC`, `MU`, `QCOM`, `ARM`, `ASML`, `AMAT`, `LRCX`, `KLAC`, `SNPS`, `CDNS`, `ENTG`, `MKSI`, `STX`, `WDC`, `SMCI`, `CSCO`.
+- Other US-listed candidates / ADRs: `LEA`, `AWK`, `CEG`, `VST`, `NIO`, `XPEV`, `OKLO`, `PSTG`, `LMT`, `HWM`, `RTX`, `NOC`, `GSM`, `DD`, `LIN`, `APD`, `KEYS`, `IBM`, `TSM`, `GFS`, `UMC`, `TSEM`, `ASX`, `AMKR`, `IMOS`, `DELL`, `HPQ`, `HPE`.
+- Treat these as candidates until verified through Databento definitions and an IBKR contract/conId probe.
+
+Symbols to avoid or remap carefully:
+- Local exchange suffixes such as `.FR`, `.DE`, `.IT`, `.FI`, `.NO`, `.T`, `.TW`, `.TWO`, `.KS`, `.HK`, `.SS`, `.VI` are not Databento US equities symbols.
+- Some bare tickers are ambiguous or represent the wrong company in the US market: `AI` in the current list means Air Liquide locally but US `AI` is C3.ai; `MRK` in the current list means Merck KGaA but US `MRK` is Merck & Co.; `ASM`, `SIE`, and `ATS` also need careful remapping before use.
+
+Recommended implementation shape:
+1. Add a symbol master file, for example `config/symbol_master.csv`.
+2. Include columns: `internal_id`, `company`, `ibkr_symbol`, `ibkr_sec_type`, `ibkr_exchange`, `ibkr_primary_exchange`, `ibkr_currency`, `ibkr_con_id`, `databento_dataset`, `databento_symbol`, `databento_schema_l1`, `databento_schema_l2`, `enabled_live`, `enabled_backtest`.
+3. Build a no-order verifier that checks both sides:
+   - IBKR contract lookup / market-data entitlement probe.
+   - Databento definitions lookup / small historical range availability check.
+4. Only enable symbols where both verifiers pass for the intended L1/L2 level.
+5. Prefer a NASDAQ-heavy first hot set if using one IBKR L2 package, so Databento Nasdaq TotalView-style L2 and IBKR NASDAQ depth are closer.
+
+Known caveat:
+- "Same stock" does not guarantee identical feed. IBKR live L2 and Databento historical L2 can differ by venue, aggregation, and timestamps. For close backtest/live matching, choose the same primary venue/feed family where possible, not only the same ticker.
+
+Sources referenced:
+- Databento equities/stocks documentation: US stocks and ETFs, 15 US exchanges/30 ATSs, historical coverage since 2018, schemas including `mbp-1` L1 and `mbp-10` L2.
+- IBKR market-data docs/pricing already referenced in earlier handoff entries for live L1/L2 entitlements.
+
+## [2026-05-02] - Backtesting and VPS binary deployment notes
+
+Model / agent:
+- Model: GPT-5.5 Thinking, reasoning model
+- Provider/client: Codex desktop
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `e1429fcb74769763cb7a57477fa65a454a80881e` (`Added real paper-trading`).
+- Existing unrelated dirty local items were present and not touched: `.idea/editor.xml`, deleted `agent/_configure_ucrt_noibkr.sh`, `.claude/`, `dependencies/ucrt64/...`, and two untracked `third_party/googletest` metadata files.
+
+User request:
+- Return to `hftbacktest` library brainstorming.
+- Add non-sensitive notes about whether the VPS needs extra binaries or can use downloads from CI.
+- Do not record sensitive server details in handoff.
+
+Files changed:
+- `agent/AGENT_HANDOFF_LOG.md` - appended this planning note only.
+
+Non-sensitive VPS paths/assumptions:
+- Data volume path observed in discussion: `/mnt/HC_Volume_105581071`.
+- Preferred project/data root discussed: `/data/trading`.
+- Suggested data subdirectories: `/data/trading/raw`, `/data/trading/parquet`, `/data/trading/logs`, `/data/trading/backtests`, `/data/trading/tmp`.
+- Do not record server IPs, machine IDs, SSH fingerprints, account credentials, IBKR usernames/passwords, or 2FA/security-token details in handoffs.
+
+Backtesting direction:
+- `hftbacktest` is not an external broker/gateway like IB Gateway; it is an in-process historical replay simulator.
+- The clean integration is a separate backtest run loop that lets `hftbacktest` own historical time, market replay, latency, queue position, and simulated fills.
+- The shared boundary should be strategy decisions, not socket connectivity:
+  - Input: market snapshot/book state + portfolio/order state + config.
+  - Output: order intents/cancels.
+- Avoid running both the C++ wall-clock loop and `hftbacktest` historical loop as independent clocks. If the C++ side orchestrates, it should advance `hftbacktest` explicitly and accept that `hftbacktest` remains the simulated market clock.
+- Good first prototype: Python `hftbacktest` runner emits snapshots/features, calls a thin strategy adapter or exported decision function, submits orders to `hftbacktest`, and writes fills/results to Parquet/CSV for comparison.
+
+VPS binaries/dependencies note:
+- Current CI does not publish deployable `hft_app`, `hft_tests`, `hft_gtests`, or `ibkr_paper_order_probe` binaries as artifacts.
+- Current CI does publish/reuse a Linux dependency bundle (`linux-deps-ubuntu-latest.tar.gz`) through the `linux-deps` GitHub release flow, and uploads coverage artifacts only.
+- For the VPS, there are two viable deployment approaches:
+  1. Build on the VPS using repo scripts and the Linux dependency bundle. This is simple and debuggable, but needs compiler/build tools installed.
+  2. Add a CI packaging artifact/release later that uploads Linux executables plus any required runtime libraries/config templates. Then the VPS can download a known-good CI-built tarball.
+- If using CI-built binaries, pin the CI runner or build container close to the VPS OS to avoid libc/libstdc++ surprises. The VPS discussion currently assumes Ubuntu 24.04 x86-64.
+- IB Gateway remains a separate vendor binary installed on the VPS; it is not produced by our CI.
+- `hftbacktest` will need a Python environment on the VPS or a packaged Python/venv/container. It should not be bundled into the C++ app binary unless we later choose an embedded/interprocess integration.
+- Headless Gateway operation likely needs extra runtime tools: Xvfb or another virtual display, optionally VNC/noVNC for UI access, and later IBC/IBController for auto-restart/login-dialog automation.
+
+Validation performed:
+- Local inspection only. Checked `.github/workflows/ci.yml` and repo references for artifact/upload behavior.
+- No build/test run was performed.
+
+Known risks / follow-up:
+- Need decide whether server deploys should be source-build, CI artifact, or container image.
+- Need decide whether `hftbacktest` prototype stays Python-only first or bridges to C++ strategy decisions early.
+- Need keep all server secrets and access details out of handoff logs.
+
 ## [2026-05-02] - Fix UCRT link failure from protobuf-exported `-lrt`
 
 Model / agent:

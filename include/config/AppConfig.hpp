@@ -20,6 +20,16 @@ struct AppConfig {
   double max_notional_per_order = 0.0;
   int max_orders_per_run = 0;
   int max_orders_per_symbol = 0;
+  double target_profit_pct = 0.008;
+  double min_sell_execution_score = 0.0;
+  double commission_per_share = 0.005;
+  double half_spread_cost = 0.0005;
+  double impact_coefficient = 0.1;
+  double assumed_daily_volume = 1'000'000.0;
+  double daily_energy_kwh = 0.0;
+  double energy_cost_per_kwh = 0.0;
+  double daily_inflation_cost = 0.0;
+  double expected_daily_shares = 1.0;
 
   [[nodiscard]] int port() const noexcept {
     if (mode == BrokerMode::Live)

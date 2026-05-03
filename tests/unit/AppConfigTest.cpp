@@ -51,6 +51,16 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 0.0);
   EXPECT_EQ(cfg.max_orders_per_run, 0);
   EXPECT_EQ(cfg.max_orders_per_symbol, 0);
+  EXPECT_DOUBLE_EQ(cfg.target_profit_pct, 0.008);
+  EXPECT_DOUBLE_EQ(cfg.min_sell_execution_score, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.commission_per_share, 0.005);
+  EXPECT_DOUBLE_EQ(cfg.half_spread_cost, 0.0005);
+  EXPECT_DOUBLE_EQ(cfg.impact_coefficient, 0.1);
+  EXPECT_DOUBLE_EQ(cfg.assumed_daily_volume, 1'000'000.0);
+  EXPECT_DOUBLE_EQ(cfg.daily_energy_kwh, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.energy_cost_per_kwh, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.daily_inflation_cost, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.expected_daily_shares, 1.0);
 }
 
 TEST(AppConfig, PortPaperVsLive) {
@@ -88,7 +98,17 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "max_order_qty=2\n"
       "max_notional_per_order=500.25\n"
       "max_orders_per_run=7\n"
-      "max_orders_per_symbol=2\n");
+      "max_orders_per_symbol=2\n"
+      "target_profit_pct=0.012\n"
+      "min_sell_execution_score=0.003\n"
+      "commission_per_share=0.01\n"
+      "half_spread_cost=0.0007\n"
+      "impact_coefficient=0.2\n"
+      "assumed_daily_volume=123456\n"
+      "daily_energy_kwh=4.5\n"
+      "energy_cost_per_kwh=0.31\n"
+      "daily_inflation_cost=1.25\n"
+      "expected_daily_shares=250\n");
   const auto cfg = AppConfig::load_from_file(f.path());
   EXPECT_EQ(cfg.mode, BrokerMode::Live);
   EXPECT_EQ(cfg.host, "10.0.0.5");
@@ -104,6 +124,16 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 500.25);
   EXPECT_EQ(cfg.max_orders_per_run, 7);
   EXPECT_EQ(cfg.max_orders_per_symbol, 2);
+  EXPECT_DOUBLE_EQ(cfg.target_profit_pct, 0.012);
+  EXPECT_DOUBLE_EQ(cfg.min_sell_execution_score, 0.003);
+  EXPECT_DOUBLE_EQ(cfg.commission_per_share, 0.01);
+  EXPECT_DOUBLE_EQ(cfg.half_spread_cost, 0.0007);
+  EXPECT_DOUBLE_EQ(cfg.impact_coefficient, 0.2);
+  EXPECT_DOUBLE_EQ(cfg.assumed_daily_volume, 123456.0);
+  EXPECT_DOUBLE_EQ(cfg.daily_energy_kwh, 4.5);
+  EXPECT_DOUBLE_EQ(cfg.energy_cost_per_kwh, 0.31);
+  EXPECT_DOUBLE_EQ(cfg.daily_inflation_cost, 1.25);
+  EXPECT_DOUBLE_EQ(cfg.expected_daily_shares, 250.0);
 }
 
 TEST(AppConfig, ModeMapping) {

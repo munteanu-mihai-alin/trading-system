@@ -65,6 +65,15 @@ HFT_TEST(test_execution_score_decreases_with_latency) {
   hft::test::require(s1 > s2, "higher latency should reduce execution score");
 }
 
+HFT_TEST(test_execution_score_uses_configurable_reward_and_loss) {
+  const double low_reward =
+      compute_execution_score(100, 100.1, 0.2, 50, 1000, 1, 0.1, 0.5);
+  const double high_reward =
+      compute_execution_score(100, 100.1, 0.2, 50, 1000, 1, 1.0, 0.5);
+  hft::test::require(high_reward > low_reward,
+                     "higher reward should increase execution score");
+}
+
 // ===== Branch coverage cases =====
 
 HFT_TEST(test_microprice_between_bid_and_ask) {

@@ -19,8 +19,35 @@ class LiveExecutionEngine {
   int orders_placed_ = 0;
   std::unordered_map<std::string, int> symbol_order_counts_;
 
+  struct EntryOrderState {
+    std::string symbol;
+    double qty = 0.0;
+    double limit = 0.0;
+  };
+
+  struct OpenPositionState {
+    std::string symbol;
+    double qty = 0.0;
+    double entry_price = 0.0;
+    double entry_ack_latency_ms = 1.0;
+    int sell_order_id = 0;
+    double sell_limit = 0.0;
+    double sell_score = 0.0;
+  };
+
+  std::unordered_map<int, EntryOrderState> entry_orders_;
+  std::unordered_map<std::string, OpenPositionState> open_positions_;
+  std::unordered_map<int, std::string> exit_order_symbols_;
+
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
+  [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
   [[nodiscard]] bool sync_next_order_id_from_broker();
+  [[nodiscard]] int portfolio_index_for_symbol(const std::string& symbol) const;
+  [[nodiscard]] double allocated_daily_cost_per_share() const;
+  [[nodiscard]] double estimate_round_trip_cost_per_share(
+      double qty, double entry_price, double sell_price_estimate) const;
+  void refresh_order_state();
+  void route_exit_orders();
 
  public:
   RankingEngine ranking;

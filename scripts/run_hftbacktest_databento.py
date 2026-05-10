@@ -2,13 +2,14 @@
 """Run a Databento-backed sell-window backtest with hftbacktest.
 
 Workflow:
-  1. Download/reuse Databento MBP-1 for the buy/ranking/top-of-book side.
+  1. Load/reuse external L1 for the buy/ranking/top-of-book side.
   2. Pick an entry reference from MBP-1.
   3. Download/reuse Databento MBP-10 for the sell/execution window.
   4. Convert MBP-10 replay CSV into hftbacktest's normalized depth format.
-  5. Start hftbacktest with an open long position and submit the target SELL.
+  5. Start hftbacktest with a market buy and submit the target SELL.
 
-This mirrors the C++ split: L1 for buy-side queries, L2 for sell-side execution.
+This mirrors the intended split: non-Databento L1 for buy-side queries,
+Databento L2 only for sell-side execution.
 """
 
 from __future__ import annotations
@@ -41,15 +42,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", default=DEFAULT_BACKTEST_START)
     parser.add_argument("--end", default=DEFAULT_BACKTEST_END)
     parser.add_argument("--cache-dir", default="data/databento")
-    parser.add_argument("--l1-dataset", default="EQUS.MINI")
+    parser.add_argument("--l1-dataset", default="data/l1")
     parser.add_argument("--l2-dataset", default="XNAS.ITCH")
-    parser.add_argument("--l1-script", default="scripts/databento_download_mbp1.py")
+    parser.add_argument("--l1-script", default="scripts/local_l1_csv_provider.py")
     parser.add_argument("--l2-script", default="scripts/databento_download_l2.py")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument(
         "--api-key-file",
         default="",
-        help="Optional private Databento API key file path passed to downloader scripts.",
+        help="Optional private Databento API key file path passed only to the L2 downloader.",
     )
     parser.add_argument("--max-records", type=int, default=0)
     parser.add_argument("--l1-chunk-hours", type=int, default=24)
@@ -95,6 +96,7 @@ def ensure_data(
     dataset: str,
     schema: str,
     chunk_hours: int,
+    api_key_file: str,
 ) -> None:
     if path.exists():
         return
@@ -118,8 +120,8 @@ def ensure_data(
         cmd.extend(["--max-records", str(args.max_records)])
     if chunk_hours > 0:
         cmd.extend(["--chunk-hours", str(chunk_hours)])
-    if args.api_key_file:
-        cmd.extend(["--api-key-file", args.api_key_file])
+    if api_key_file:
+        cmd.extend(["--api-key-file", api_key_file])
     if args.synthetic:
         cmd.append("--synthetic")
     run(cmd)
@@ -519,6 +521,7 @@ def run_symbol(args: argparse.Namespace, symbol: str) -> dict:
         args.l1_dataset,
         "mbp-1",
         args.l1_chunk_hours,
+        "",
     )
     entry_step, entry_price = read_l1_entry(l1_csv)
     ensure_data(
@@ -529,6 +532,7 @@ def run_symbol(args: argparse.Namespace, symbol: str) -> dict:
         args.l2_dataset,
         "mbp-10",
         args.l2_chunk_hours,
+        args.api_key_file,
     )
     data = convert_l2_to_hftbacktest(l2_csv, args.feed_latency_ns)
     hft_npy.parent.mkdir(parents=True, exist_ok=True)
@@ -567,7 +571,7 @@ def write_report(args: argparse.Namespace, summaries: list[dict]) -> str:
         "",
         f"- Period: `{args.start}` to `{args.end}`",
         f"- Symbols: `{', '.join(item['symbol'] for item in summaries)}`",
-        f"- L1 dataset/schema: `{args.l1_dataset}` / `mbp-1`",
+        f"- L1 source/schema: `{args.l1_dataset}` / `mbp-1`",
         f"- L2 dataset/schema: `{args.l2_dataset}` / `mbp-10`",
         f"- L1 chunk size: `{args.l1_chunk_hours}` hours",
         f"- L2 chunk size: `{args.l2_chunk_hours}` hours",

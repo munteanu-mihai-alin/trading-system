@@ -33,10 +33,9 @@ struct AppConfig {
   double expected_daily_shares = 1.0;
   std::string databento_cache_dir = "data/databento";
   std::string databento_python = "python";
-  std::string databento_l1_download_script =
-      "scripts/databento_download_mbp1.py";
+  std::string databento_l1_download_script = "scripts/local_l1_csv_provider.py";
   std::string databento_l2_download_script = "scripts/databento_download_l2.py";
-  std::string databento_l1_dataset = "EQUS.MINI";
+  std::string databento_l1_dataset = "data/l1";
   std::string databento_l2_dataset = "XNAS.ITCH";
   std::string databento_l1_schema = "mbp-1";
   std::string databento_l2_schema = "mbp-10";

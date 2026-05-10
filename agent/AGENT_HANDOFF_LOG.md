@@ -2003,3 +2003,44 @@ python scripts/run_hftbacktest_databento.py \
   --summary reports/databento_backtest_summary.json \
   --report reports/databento_backtest_report.md
 ```
+
+## [2026-05-04] - External L1 and Databento-only L2 split
+
+Model / agent:
+- Codex, GPT-5 coding agent
+
+Source state:
+- Local clone at `D:\trading-system`.
+- No secrets or server addresses recorded.
+
+User clarification:
+- L1 should come from somewhere other than Databento.
+- Databento should be used only for sell-side L2 windows.
+
+Files changed:
+- `scripts/local_l1_csv_provider.py`
+  - new local/external L1 provider
+  - emits the existing `step,bid_price,bid_size,ask_price,ask_size` format
+  - accepts already-normalized MBP-1 CSV or coarse OHLC/close CSV as a proxy
+  - intentionally does not contact Databento
+- `scripts/run_hftbacktest_databento.py`
+  - default L1 script changed to `scripts/local_l1_csv_provider.py`
+  - default L1 source changed to `data/l1`
+  - Databento API key file is passed only to the L2 downloader
+  - wording updated so reports describe L1 as an external source and L2 as Databento MBP-10
+- `include/config/AppConfig.hpp`
+  - C++ backtest defaults now point L1 to `scripts/local_l1_csv_provider.py` and `data/l1`
+  - L2 remains `scripts/databento_download_l2.py` and `XNAS.ITCH`
+- `config.databento_backtest.example.ini`
+  - example config now reflects local/external L1 and Databento-only L2
+- `tests/unit/AppConfigTest.cpp`
+  - default config expectations updated for the new L1 provider/source
+
+Validation performed:
+- Python AST parse passed for the affected Python scripts.
+- `git diff --check` passed for touched files, with only normal LF-to-CRLF warnings.
+- Secret scan of touched files found no Databento key, server IP, or Hetzner string.
+
+Known risks / follow-up:
+- The source of L1 data is not chosen yet; populate `data/l1/<SYMBOL>.csv` or configure `databento_l1_dataset` to another local directory.
+- The local L1 provider can read normalized L1 columns or fall back from OHLC `close`, but a real L1 source with bid/ask is preferable for ranking quality.

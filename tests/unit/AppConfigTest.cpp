@@ -65,10 +65,10 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_EQ(cfg.databento_cache_dir, "data/databento");
   EXPECT_EQ(cfg.databento_python, "python");
   EXPECT_EQ(cfg.databento_l1_download_script,
-            "scripts/databento_download_mbp1.py");
+            "scripts/local_l1_csv_provider.py");
   EXPECT_EQ(cfg.databento_l2_download_script,
             "scripts/databento_download_l2.py");
-  EXPECT_EQ(cfg.databento_l1_dataset, "EQUS.MINI");
+  EXPECT_EQ(cfg.databento_l1_dataset, "data/l1");
   EXPECT_EQ(cfg.databento_l2_dataset, "XNAS.ITCH");
   EXPECT_EQ(cfg.databento_l1_schema, "mbp-1");
   EXPECT_EQ(cfg.databento_l2_schema, "mbp-10");

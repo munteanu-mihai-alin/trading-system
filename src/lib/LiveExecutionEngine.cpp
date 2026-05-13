@@ -136,16 +136,30 @@ void LiveExecutionEngine::step(int t) {
     req.id = next_order_id_++;
     req.symbol = s.symbol;
     req.is_buy = true;
-    req.qty = cfg_.app.order_qty;
-    if (cfg_.app.max_order_qty > 0.0) {
-      req.qty = std::min(req.qty, cfg_.app.max_order_qty);
-    }
     req.limit = s.best_limit;
-    if (req.qty <= 0.0 || req.limit <= 0.0)
+    if (req.limit <= 0.0) {
+      --next_order_id_;
       continue;
+    }
+    req.qty = size_entry_qty(req.limit);
+    if (req.qty <= 0.0) {
+      // Either trade_notional < price (e.g. 500 budget on a 700 stock) or
+      // legacy order_qty knobs zeroed it out. Skip without burning the id.
+      --next_order_id_;
+      continue;
+    }
+    const double order_notional = req.qty * req.limit;
     if (cfg_.app.max_notional_per_order > 0.0 &&
-        req.qty * req.limit > cfg_.app.max_notional_per_order) {
+        order_notional > cfg_.app.max_notional_per_order) {
+      --next_order_id_;
       continue;
+    }
+    // Account-level budget gate: pending + open + this order must not exceed
+    // account_budget. When account_budget <= 0 the gate is disabled.
+    if (cfg_.app.account_budget > 0.0 &&
+        committed_notional() + order_notional > cfg_.app.account_budget) {
+      --next_order_id_;
+      break;  // budget exhausted - no point checking the rest this step
     }
     broker_->place_limit_order(req);
     entry_orders_[req.id] = EntryOrderState{s.symbol, req.qty, req.limit};
@@ -203,6 +217,36 @@ bool LiveExecutionEngine::can_open_new_exposure() const {
     return true;
   }
   return open_exposure_symbol_count() < cfg_.app.max_open_symbols;
+}
+
+double LiveExecutionEngine::committed_notional() const {
+  double total = 0.0;
+  for (const auto& item : entry_orders_) {
+    total += item.second.qty * item.second.limit;
+  }
+  for (const auto& item : open_positions_) {
+    total += item.second.qty * item.second.entry_price;
+  }
+  return total;
+}
+
+double LiveExecutionEngine::size_entry_qty(double limit_price) const {
+  if (limit_price <= 0.0) return 0.0;
+  // Notional-driven sizing wins when configured (default 500 per trade).
+  if (cfg_.app.trade_notional > 0.0) {
+    const double raw = cfg_.app.trade_notional / limit_price;
+    double qty = std::floor(raw);
+    if (cfg_.app.max_order_qty > 0.0) {
+      qty = std::min(qty, std::floor(cfg_.app.max_order_qty));
+    }
+    return qty;
+  }
+  // Legacy fixed-share path: order_qty floored by max_order_qty.
+  double qty = cfg_.app.order_qty;
+  if (cfg_.app.max_order_qty > 0.0) {
+    qty = std::min(qty, cfg_.app.max_order_qty);
+  }
+  return qty;
 }
 
 bool LiveExecutionEngine::sync_next_order_id_from_broker() {

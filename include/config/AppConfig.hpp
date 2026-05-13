@@ -18,6 +18,13 @@ struct AppConfig {
   double order_qty = 10.0;
   double max_order_qty = 10.0;
   double max_notional_per_order = 0.0;
+  // Notional-driven sizing. When `trade_notional > 0`, the engine computes
+  // entry qty as floor(trade_notional / limit_price) and ignores order_qty /
+  // max_order_qty for that calc. `account_budget`, when > 0, caps the sum of
+  // pending + open notional across all symbols. Both are in the order's
+  // currency (USD for US equities).
+  double trade_notional = 500.0;
+  double account_budget = 1500.0;
   int max_open_symbols = 3;
   int max_orders_per_run = 0;
   int max_orders_per_symbol = 0;

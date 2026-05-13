@@ -76,6 +76,10 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.max_order_qty = std::stod(val);
       } else if (key == "max_notional_per_order") {
         cfg.max_notional_per_order = std::stod(val);
+      } else if (key == "trade_notional") {
+        cfg.trade_notional = std::stod(val);
+      } else if (key == "account_budget") {
+        cfg.account_budget = std::stod(val);
       } else if (key == "max_open_symbols") {
         cfg.max_open_symbols = std::stoi(val);
       } else if (key == "max_orders_per_run") {

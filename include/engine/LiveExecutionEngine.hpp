@@ -45,6 +45,13 @@ class LiveExecutionEngine {
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
   [[nodiscard]] int open_exposure_symbol_count() const;
   [[nodiscard]] bool can_open_new_exposure() const;
+  // Sum of entry-order qty*limit (pending) and open-position qty*entry_price.
+  // Used to enforce account_budget across symbols.
+  [[nodiscard]] double committed_notional() const;
+  // floor(trade_notional / limit_price) when trade_notional > 0; else falls
+  // back to order_qty / max_order_qty semantics. Returns 0 when the order
+  // should be skipped (price too high, qty rounds to 0, etc.).
+  [[nodiscard]] double size_entry_qty(double limit_price) const;
   [[nodiscard]] bool sync_next_order_id_from_broker();
   [[nodiscard]] int portfolio_index_for_symbol(const std::string& symbol) const;
   [[nodiscard]] double allocated_daily_cost_per_share() const;

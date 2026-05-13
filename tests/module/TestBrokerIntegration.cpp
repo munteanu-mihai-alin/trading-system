@@ -657,6 +657,10 @@ HFT_TEST(test_live_execution_engine_multiple_steps_with_paper_broker) {
   cfg.commission_per_share = 0.0;
   cfg.half_spread_cost = 0.0;
   cfg.impact_coefficient = 0.0;
+  // This test asserts max_open_symbols specifically; opt out of the new
+  // notional-based sizing and budget gate so its arithmetic stays simple.
+  cfg.trade_notional = 0.0;
+  cfg.account_budget = 0.0;
 
   auto broker = std::make_unique<FilledDepthBroker>();
   auto* raw = broker.get();

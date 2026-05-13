@@ -167,6 +167,49 @@ TEST(LiveExecutionEngine, ReconcileBrokerStateReadsTopOfBookOnly) {
   engine.reconcile_broker_state();
 }
 
+TEST(LiveExecutionEngine, BudgetGateLimitsBuysToAccountBudget) {
+  // With trade_notional=$500 and account_budget=$1500 on stocks priced ~$100,
+  // each buy commits ~$500 of notional and the budget allows exactly three
+  // concurrent buys, regardless of how many ranked items are active or how
+  // permissive max_open_symbols is. This isolates the budget gate from the
+  // max_open_symbols gate (set to 10 so it doesn't fire first).
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(3);
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 10;
+  app.steps = 1;
+  app.trade_notional = 500.0;
+  app.account_budget = 1500.0;
+  app.max_open_symbols = 10;  // disable the per-symbol-count gate
+  app.max_orders_per_run = 0;
+  app.max_orders_per_symbol = 0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(10);
+  engine.step(0);
+}
+
+TEST(LiveExecutionEngine, SkipsSymbolPricedAboveTradeNotional) {
+  // trade_notional=$50 on stocks priced ~$100 yields qty=floor(50/100)=0.
+  // Every symbol must be skipped; the broker must see zero limit orders.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 5;
+  app.steps = 1;
+  app.trade_notional = 50.0;
+  app.account_budget = 10000.0;
+  app.max_open_symbols = 10;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  engine.step(0);
+}
+
 TEST(LiveExecutionEngine, StepHeartbeatBoundary) {
   // step(0) and step(100) both hit the (t % 100) == 0 heartbeat branch; step(1)
   // does not. We just assert the engine survives all three calls.

@@ -78,7 +78,8 @@ class IBroker {
   // Drain (and clear) the per-ticker trade events accumulated since the last
   // call. Returns empty for brokers that don't deliver trades. Engine polls
   // this each step to drive Hawkes from real market activity.
-  [[nodiscard]] virtual std::vector<TradeEvent> drain_trades(int /*ticker_id*/) {
+  [[nodiscard]] virtual std::vector<TradeEvent> drain_trades(
+      int /*ticker_id*/) {
     return {};
   }
 

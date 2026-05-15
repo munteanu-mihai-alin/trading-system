@@ -247,8 +247,7 @@ TEST(LiveExecutionEngine, ReconcileDrivesHawkesFromRealTrades) {
   // ticker_id 1 gets one trade; tickers 2..N get nothing.
   std::vector<hft::TradeEvent> ticker1_trades = {
       hft::TradeEvent{100.50, 100.0, 1'700'000'000'000'000'000LL}};
-  ON_CALL(*broker, drain_trades(1))
-      .WillByDefault(Return(ticker1_trades));
+  ON_CALL(*broker, drain_trades(1)).WillByDefault(Return(ticker1_trades));
   ON_CALL(*broker, drain_trades(::testing::Ne(1)))
       .WillByDefault(Return(std::vector<hft::TradeEvent>{}));
 
@@ -343,7 +342,7 @@ TEST(LiveExecutionEngine, OUGateDisabledWhenWindowSizeZero) {
                                   std::move(broker));
   engine.initialize_universe(5);
   for (auto& s : engine.ranking.portfolio.items) {
-    s.ou.mu = 1.0;            // would block if gate were active
+    s.ou.mu = 1.0;  // would block if gate were active
     s.ou_initialized = true;
   }
   engine.step(0);

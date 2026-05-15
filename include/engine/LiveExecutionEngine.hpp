@@ -56,12 +56,6 @@ class LiveExecutionEngine {
   // share of account_budget instead.
   [[nodiscard]] double size_entry_qty(double limit_price,
                                       double target_notional) const;
-  // Per-symbol notional for this step, computed once per step before the
-  // buy loop based on cfg_.app.position_sizing_rule and the currently
-  // active items + their scores. Returns trade_notional for every symbol
-  // when the rule is "equal" or when score_weighted has no positive score.
-  [[nodiscard]] std::unordered_map<std::string, double>
-  compute_per_symbol_notional() const;
   [[nodiscard]] bool sync_next_order_id_from_broker();
   [[nodiscard]] int portfolio_index_for_symbol(const std::string& symbol) const;
   [[nodiscard]] double allocated_daily_cost_per_share() const;
@@ -90,6 +84,14 @@ class LiveExecutionEngine {
   void subscribe_live_books(const std::vector<std::string>& symbols);
   void reconcile_broker_state();
   void step(int t);
+
+  // Per-symbol target notional for the current step. Computed once per step
+  // inside step() and also exposed publicly so tests can verify the
+  // allocation rule (position_sizing_rule). Returns trade_notional for every
+  // active symbol when the rule is "equal" or when score_weighted has no
+  // positive score.
+  [[nodiscard]] std::unordered_map<std::string, double>
+  compute_per_symbol_notional() const;
 };
 
 }  // namespace hft

@@ -281,12 +281,14 @@ LiveExecutionEngine::compute_per_symbol_notional() const {
       cfg_.app.account_budget > 0.0) {
     double total_score = 0.0;
     for (const auto& s : items) {
-      if (!s.active) continue;
+      if (!s.active)
+        continue;
       total_score += std::max(s.score, 0.0);
     }
     if (total_score > 0.0) {
       for (const auto& s : items) {
-        if (!s.active) continue;
+        if (!s.active)
+          continue;
         const double weight = std::max(s.score, 0.0) / total_score;
         out[s.symbol] = cfg_.app.account_budget * weight;
       }
@@ -295,7 +297,8 @@ LiveExecutionEngine::compute_per_symbol_notional() const {
     // No positive score among active items: fall through to equal sizing.
   }
   for (const auto& s : items) {
-    if (!s.active) continue;
+    if (!s.active)
+      continue;
     out[s.symbol] = cfg_.app.trade_notional;
   }
   return out;
@@ -465,13 +468,11 @@ void LiveExecutionEngine::route_exit_orders() {
     // execution score on exits, falling back to the buy channel if the
     // sell channel hasn't seen any classified events yet (would still
     // be at the default mu=10 baseline).
-    const double lambda_for_exit = std::max(stock.hawkes_sell.lambda,
-                                            std::max(stock.hawkes.lambda,
-                                                     1e-9));
-    const double sell_score =
-        compute_execution_score(mid, sell_limit, sell_directional_mu(book),
-                                lambda_for_exit, queue_ahead, latency_ms,
-                                net_reward, loss);
+    const double lambda_for_exit =
+        std::max(stock.hawkes_sell.lambda, std::max(stock.hawkes.lambda, 1e-9));
+    const double sell_score = compute_execution_score(
+        mid, sell_limit, sell_directional_mu(book), lambda_for_exit,
+        queue_ahead, latency_ms, net_reward, loss);
 
     position.sell_limit = sell_limit;
     position.sell_score = sell_score;
@@ -518,10 +519,9 @@ void LiveExecutionEngine::update_hit_count_tilt() {
     return;
   if (cfg_.app.hit_count_horizon_seconds <= 0.0)
     return;
-  const auto now_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count();
+  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
   const std::int64_t horizon_ns =
       static_cast<std::int64_t>(cfg_.app.hit_count_horizon_seconds * 1e9);
   const double baseline = std::max(cfg_.app.hit_count_baseline, 1.0);
@@ -631,17 +631,14 @@ void LiveExecutionEngine::reconcile_broker_state() {
           double alpha = 0.0;
           if (cfg_.app.ou_halflife_seconds > 0.0) {
             const double dt_s =
-                (s.last_ou_update_ts_ns > 0 &&
-                 now_ns > s.last_ou_update_ts_ns)
+                (s.last_ou_update_ts_ns > 0 && now_ns > s.last_ou_update_ts_ns)
                     ? static_cast<double>(now_ns - s.last_ou_update_ts_ns) *
                           1e-9
                     : 0.0;
-            const double tau =
-                cfg_.app.ou_halflife_seconds / std::log(2.0);
+            const double tau = cfg_.app.ou_halflife_seconds / std::log(2.0);
             alpha = 1.0 - std::exp(-dt_s / std::max(tau, 1e-9));
           } else {
-            alpha =
-                1.0 / static_cast<double>(cfg_.app.ou_window_size);
+            alpha = 1.0 / static_cast<double>(cfg_.app.ou_window_size);
           }
           s.ou.mu = (1.0 - alpha) * s.ou.mu + alpha * s.mid;
           update_ou(s.ou, s.mid);

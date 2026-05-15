@@ -456,7 +456,7 @@ TEST(LiveExecutionEngine, ScoreWeightedSizingAllocatesBudgetByScore) {
   app.mode = hft::BrokerMode::Paper;
   app.top_k = 2;
   app.account_budget = 1000.0;
-  app.trade_notional = 100.0;       // fallback baseline; ignored on this path
+  app.trade_notional = 100.0;  // fallback baseline; ignored on this path
   app.position_sizing_rule = "score_weighted";
   hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
                                   std::move(broker));
@@ -474,7 +474,8 @@ TEST(LiveExecutionEngine, ScoreWeightedSizingAllocatesBudgetByScore) {
   EXPECT_DOUBLE_EQ(alloc.at(sym1), 100.0);
 }
 
-TEST(LiveExecutionEngine, ScoreWeightedSizingFallsBackToEqualWhenAllNonPositive) {
+TEST(LiveExecutionEngine,
+     ScoreWeightedSizingFallsBackToEqualWhenAllNonPositive) {
   // All active items have score <= 0. Allocation must fall back to
   // trade_notional per symbol.
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();

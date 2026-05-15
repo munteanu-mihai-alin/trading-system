@@ -80,12 +80,28 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.trade_notional = std::stod(val);
       } else if (key == "account_budget") {
         cfg.account_budget = std::stod(val);
+      } else if (key == "position_sizing_rule") {
+        cfg.position_sizing_rule = val;
       } else if (key == "ou_window_size") {
         cfg.ou_window_size = std::stoi(val);
+      } else if (key == "ou_halflife_seconds") {
+        cfg.ou_halflife_seconds = std::stod(val);
       } else if (key == "ou_buy_threshold_pct") {
         cfg.ou_buy_threshold_pct = std::stod(val);
       } else if (key == "hawkes_use_real_trades") {
         cfg.hawkes_use_real_trades = parse_bool(val);
+      } else if (key == "hit_count_enabled") {
+        cfg.hit_count_enabled = parse_bool(val);
+      } else if (key == "hit_count_target_pct") {
+        cfg.hit_count_target_pct = std::stod(val);
+      } else if (key == "hit_count_horizon_seconds") {
+        cfg.hit_count_horizon_seconds = std::stod(val);
+      } else if (key == "hit_count_baseline") {
+        cfg.hit_count_baseline = std::stod(val);
+      } else if (key == "hit_count_tilt_min") {
+        cfg.hit_count_tilt_min = std::stod(val);
+      } else if (key == "hit_count_tilt_max") {
+        cfg.hit_count_tilt_max = std::stod(val);
       } else if (key == "max_open_symbols") {
         cfg.max_open_symbols = std::stoi(val);
       } else if (key == "max_orders_per_run") {

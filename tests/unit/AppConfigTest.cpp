@@ -51,9 +51,17 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 0.0);
   EXPECT_DOUBLE_EQ(cfg.trade_notional, 500.0);
   EXPECT_DOUBLE_EQ(cfg.account_budget, 1500.0);
+  EXPECT_EQ(cfg.position_sizing_rule, "equal");
   EXPECT_EQ(cfg.ou_window_size, 0);
+  EXPECT_DOUBLE_EQ(cfg.ou_halflife_seconds, 0.0);
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, 0.0);
   EXPECT_FALSE(cfg.hawkes_use_real_trades);
+  EXPECT_FALSE(cfg.hit_count_enabled);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.008);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 60.0);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_baseline, 5.0);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_tilt_min, 1.0);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_tilt_max, 3.0);
   EXPECT_EQ(cfg.max_open_symbols, 3);
   EXPECT_EQ(cfg.max_orders_per_run, 0);
   EXPECT_EQ(cfg.max_orders_per_symbol, 0);
@@ -117,9 +125,17 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "max_notional_per_order=500.25\n"
       "trade_notional=750\n"
       "account_budget=2500\n"
+      "position_sizing_rule=score_weighted\n"
       "ou_window_size=4096\n"
+      "ou_halflife_seconds=900\n"
       "ou_buy_threshold_pct=-0.005\n"
       "hawkes_use_real_trades=true\n"
+      "hit_count_enabled=true\n"
+      "hit_count_target_pct=0.012\n"
+      "hit_count_horizon_seconds=300\n"
+      "hit_count_baseline=10\n"
+      "hit_count_tilt_min=0.5\n"
+      "hit_count_tilt_max=5\n"
       "max_open_symbols=4\n"
       "max_orders_per_run=7\n"
       "max_orders_per_symbol=2\n"
@@ -158,9 +174,17 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.max_notional_per_order, 500.25);
   EXPECT_DOUBLE_EQ(cfg.trade_notional, 750.0);
   EXPECT_DOUBLE_EQ(cfg.account_budget, 2500.0);
+  EXPECT_EQ(cfg.position_sizing_rule, "score_weighted");
   EXPECT_EQ(cfg.ou_window_size, 4096);
+  EXPECT_DOUBLE_EQ(cfg.ou_halflife_seconds, 900.0);
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, -0.005);
   EXPECT_TRUE(cfg.hawkes_use_real_trades);
+  EXPECT_TRUE(cfg.hit_count_enabled);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.012);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 300.0);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_baseline, 10.0);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_tilt_min, 0.5);
+  EXPECT_DOUBLE_EQ(cfg.hit_count_tilt_max, 5.0);
   EXPECT_EQ(cfg.max_open_symbols, 4);
   EXPECT_EQ(cfg.max_orders_per_run, 7);
   EXPECT_EQ(cfg.max_orders_per_symbol, 2);

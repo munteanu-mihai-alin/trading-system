@@ -25,13 +25,23 @@ struct AppConfig {
   // currency (USD for US equities).
   double trade_notional = 500.0;
   double account_budget = 1500.0;
-  // Ornstein-Uhlenbeck mean-reversion entry gate. When `ou_window_size > 0`,
-  // each ranking-step update advances Stock::ou.mu by a slow EWMA of the
-  // observed mid (effective half-life ~ ou_window_size * ln 2 samples), and
-  // the buy path skips symbols where mid > ou.mu * (1 + ou_buy_threshold_pct)
-  // - i.e. "don't buy stocks priced above their trailing mean by more than
-  // the threshold." Set ou_window_size = 0 to disable the gate entirely.
+  // Position-sizing rule. "equal" (default) uses trade_notional per active
+  // symbol. "score_weighted" divides account_budget proportionally to each
+  // active symbol's score (after ranking + tilt); symbols with non-positive
+  // score get zero. "rank_weighted" allocates by rank position using
+  // rank_weights below. score_weighted falls back to equal when total
+  // active score is non-positive.
+  std::string position_sizing_rule = "equal";
+  // Ornstein-Uhlenbeck mean-reversion entry gate. Two parameterisations:
+  //   - ou_halflife_seconds > 0 (preferred): dt-weighted EWMA where the
+  //     half-life is in wall-clock seconds, consistent across symbols of
+  //     different trade rates.
+  //   - ou_window_size > 0 (legacy): sample-count EWMA where alpha =
+  //     1/ou_window_size. Used only when ou_halflife_seconds <= 0.
+  // Gate fires when ou_halflife_seconds > 0 OR ou_window_size > 0; the buy
+  // path skips symbols where mid > ou.mu * (1 + ou_buy_threshold_pct).
   int ou_window_size = 0;
+  double ou_halflife_seconds = 0.0;
   double ou_buy_threshold_pct = 0.0;
   // When true, LiveExecutionEngine subscribes to IBKR AllLast trade prints
   // for the live universe and drives the Stock::hawkes intensity from real
@@ -39,6 +49,18 @@ struct AppConfig {
   // Hawkes stays on RankingEngine's synthetic event clock. Default false
   // so existing tests and configs are unaffected.
   bool hawkes_use_real_trades = false;
+  // Empirical "+target_pct hit-count" buy-side ranking tilt. Per-symbol
+  // counter of historical price-increase windows that hit the target
+  // return, multiplicatively tilting the ranking score. Disabled by
+  // default; opt-in via hit_count_enabled. Horizon is the window length
+  // in seconds; baseline is the hit-count divisor for the tilt; tilt
+  // floors/ceilings clamp the resulting multiplier.
+  bool hit_count_enabled = false;
+  double hit_count_target_pct = 0.008;
+  double hit_count_horizon_seconds = 60.0;
+  double hit_count_baseline = 5.0;
+  double hit_count_tilt_min = 1.0;
+  double hit_count_tilt_max = 3.0;
   int max_open_symbols = 3;
   int max_orders_per_run = 0;
   int max_orders_per_symbol = 0;

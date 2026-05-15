@@ -74,6 +74,10 @@ void RankingEngine::step(int t) {
     s.score = best_score;
     if (s.cooldown > 0)
       s.score *= 0.1;
+    // Empirical hit-count tilt: applied after cooldown so the post-tilt
+    // value is what ranking/active-flag logic sees. Default 1.0 keeps
+    // existing behaviour identical when the feature is off.
+    s.score *= s.score_tilt;
   }
 
   portfolio.rank();

@@ -237,6 +237,82 @@ TEST(LiveExecutionEngine, SubscribeLiveBooksSkipsTradesWhenDisabled) {
   engine.subscribe_live_books({"AAPL", "MSFT", "GOOG"});
 }
 
+TEST(LiveExecutionEngine, TwoChannelHawkesRoutesBuyAggressorToHawkes) {
+  // Trade at ask (or above) is buy-aggressor: s.hawkes.lambda jumps,
+  // s.hawkes_sell.lambda stays at the default 10.0.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  ON_CALL(*broker, snapshot_top_of_book(1))
+      .WillByDefault(Return(hft::TopOfBook{100.0, 50.0, 100.10, 50.0}));
+  ON_CALL(*broker, drain_trades(1))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{
+          {/*price=*/100.20, /*qty=*/10.0,
+           /*exch_ts_ns=*/1'700'000'000'000'000'000LL}}));
+  ON_CALL(*broker, drain_trades(::testing::Ne(1)))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{}));
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.hawkes_use_real_trades = true;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  engine.reconcile_broker_state();
+  EXPECT_GT(engine.ranking.portfolio.items[0].hawkes.lambda, 10.0);
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].hawkes_sell.lambda, 10.0);
+}
+
+TEST(LiveExecutionEngine, TwoChannelHawkesRoutesSellAggressorToHawkesSell) {
+  // Trade at bid (or below) is sell-aggressor: hawkes_sell.lambda jumps,
+  // hawkes.lambda stays at the default 10.0.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  ON_CALL(*broker, snapshot_top_of_book(1))
+      .WillByDefault(Return(hft::TopOfBook{100.0, 50.0, 100.10, 50.0}));
+  ON_CALL(*broker, drain_trades(1))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{
+          {/*price=*/99.90, /*qty=*/10.0,
+           /*exch_ts_ns=*/1'700'000'000'000'000'000LL}}));
+  ON_CALL(*broker, drain_trades(::testing::Ne(1)))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{}));
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.hawkes_use_real_trades = true;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  engine.reconcile_broker_state();
+  EXPECT_GT(engine.ranking.portfolio.items[0].hawkes_sell.lambda, 10.0);
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].hawkes.lambda, 10.0);
+}
+
+TEST(LiveExecutionEngine, TwoChannelHawkesMidTradeUpdatesNeitherChannel) {
+  // Trade strictly inside the spread (>bid and <ask) is ambiguous;
+  // neither channel is updated. last_trade_ts_ns still advances so the
+  // next event's dt is sensible.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  ON_CALL(*broker, snapshot_top_of_book(1))
+      .WillByDefault(Return(hft::TopOfBook{100.0, 50.0, 100.10, 50.0}));
+  ON_CALL(*broker, drain_trades(1))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{
+          {/*price=*/100.05, /*qty=*/10.0,
+           /*exch_ts_ns=*/1'700'000'000'000'000'000LL}}));
+  ON_CALL(*broker, drain_trades(::testing::Ne(1)))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{}));
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.hawkes_use_real_trades = true;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  engine.reconcile_broker_state();
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].hawkes.lambda, 10.0);
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].hawkes_sell.lambda, 10.0);
+}
+
 TEST(LiveExecutionEngine, ReconcileDrivesHawkesFromRealTrades) {
   // With hawkes_use_real_trades=true, reconcile_broker_state must drain
   // trade events from the broker and feed them into Stock::hawkes. Each
@@ -265,6 +341,50 @@ TEST(LiveExecutionEngine, ReconcileDrivesHawkesFromRealTrades) {
   EXPECT_GT(lambda_after, lambda_before);
   // Untouched symbols stay at baseline.
   EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[1].hawkes.lambda, 10.0);
+}
+
+TEST(LiveExecutionEngine, HitCountTiltMultipliesScoreAfterRankingStep) {
+  // Pre-seed item 0 with a high score_tilt and item 1 with the default 1.0.
+  // After ranking.step, item 0's score must be exactly tilt times the
+  // would-be untilted score. We assert the relationship between the two
+  // items rather than absolute values (the raw score is non-trivial to
+  // mirror in a test).
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.steps = 1;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(2);
+  // Capture the un-tilted score by stepping once with both tilts at 1.0.
+  engine.ranking.portfolio.items[0].score_tilt = 1.0;
+  engine.ranking.portfolio.items[1].score_tilt = 1.0;
+  engine.ranking.step(0);
+  // Lookup by symbol because ranking sorts items in place.
+  auto find_score = [&](const std::string& sym) -> double {
+    for (const auto& it : engine.ranking.portfolio.items) {
+      if (it.symbol == sym)
+        return it.score;
+    }
+    return 0.0;
+  };
+  const std::string sym0 = engine.ranking.portfolio.items[0].symbol;
+  const std::string sym1 = engine.ranking.portfolio.items[1].symbol;
+  const double baseline_score = find_score(sym0);
+  // Now apply 2x tilt to sym0 and 1x to sym1, re-run, verify ratio.
+  for (auto& s : engine.ranking.portfolio.items) {
+    if (s.symbol == sym0)
+      s.score_tilt = 2.0;
+    else if (s.symbol == sym1)
+      s.score_tilt = 1.0;
+  }
+  engine.ranking.step(1);
+  const double tilted_score = find_score(sym0);
+  // Hawkes lambda and cooldown can drift across steps so we can't assert
+  // exact equality; we assert the tilted score is strictly greater and the
+  // ratio is in the right ballpark (tilt is multiplicative).
+  EXPECT_GT(tilted_score, baseline_score * 1.5);
 }
 
 TEST(LiveExecutionEngine, ReconcileSkipsHawkesUpdateWhenDisabled) {
@@ -322,6 +442,101 @@ TEST(LiveExecutionEngine, OUGateAllowsBuysAtOrBelowMean) {
   engine.initialize_universe(5);
   for (auto& s : engine.ranking.portfolio.items) {
     s.ou.mu = 1000.0;
+    s.ou_initialized = true;
+  }
+  engine.step(0);
+}
+
+TEST(LiveExecutionEngine, ScoreWeightedSizingAllocatesBudgetByScore) {
+  // With position_sizing_rule="score_weighted" and account_budget=$1000:
+  // item 0 has score 9, item 1 has score 1, both active. Allocations
+  // should be 900 and 100 respectively.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 2;
+  app.account_budget = 1000.0;
+  app.trade_notional = 100.0;       // fallback baseline; ignored on this path
+  app.position_sizing_rule = "score_weighted";
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(2);
+  // Pre-seed scores + active flags so we can assert without driving step().
+  engine.ranking.portfolio.items[0].score = 9.0;
+  engine.ranking.portfolio.items[0].active = true;
+  engine.ranking.portfolio.items[1].score = 1.0;
+  engine.ranking.portfolio.items[1].active = true;
+  const auto alloc = engine.compute_per_symbol_notional();
+  ASSERT_EQ(alloc.size(), 2u);
+  const auto sym0 = engine.ranking.portfolio.items[0].symbol;
+  const auto sym1 = engine.ranking.portfolio.items[1].symbol;
+  EXPECT_DOUBLE_EQ(alloc.at(sym0), 900.0);
+  EXPECT_DOUBLE_EQ(alloc.at(sym1), 100.0);
+}
+
+TEST(LiveExecutionEngine, ScoreWeightedSizingFallsBackToEqualWhenAllNonPositive) {
+  // All active items have score <= 0. Allocation must fall back to
+  // trade_notional per symbol.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 2;
+  app.account_budget = 1000.0;
+  app.trade_notional = 500.0;
+  app.position_sizing_rule = "score_weighted";
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(2);
+  engine.ranking.portfolio.items[0].score = 0.0;
+  engine.ranking.portfolio.items[0].active = true;
+  engine.ranking.portfolio.items[1].score = -1.0;
+  engine.ranking.portfolio.items[1].active = true;
+  const auto alloc = engine.compute_per_symbol_notional();
+  EXPECT_DOUBLE_EQ(alloc.at(engine.ranking.portfolio.items[0].symbol), 500.0);
+  EXPECT_DOUBLE_EQ(alloc.at(engine.ranking.portfolio.items[1].symbol), 500.0);
+}
+
+TEST(LiveExecutionEngine, EqualSizingDefaultUsesTradeNotional) {
+  // Default rule "equal" keeps every active symbol at trade_notional.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.account_budget = 999.0;
+  app.trade_notional = 333.0;
+  // position_sizing_rule left at default "equal"
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  for (auto& s : engine.ranking.portfolio.items) {
+    s.score = 10.0;
+    s.active = true;
+  }
+  const auto alloc = engine.compute_per_symbol_notional();
+  ASSERT_EQ(alloc.size(), 3u);
+  for (const auto& kv : alloc) {
+    EXPECT_DOUBLE_EQ(kv.second, 333.0);
+  }
+}
+
+TEST(LiveExecutionEngine, OUGateEnabledViaHalflifeSeconds) {
+  // ou_halflife_seconds > 0 is the new preferred parameterisation; it
+  // should enable the gate even when ou_window_size is 0.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 5;
+  app.steps = 1;
+  app.ou_window_size = 0;
+  app.ou_halflife_seconds = 600.0;  // 10 min half-life
+  app.ou_buy_threshold_pct = 0.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  for (auto& s : engine.ranking.portfolio.items) {
+    s.ou.mu = 1.0;
     s.ou_initialized = true;
   }
   engine.step(0);

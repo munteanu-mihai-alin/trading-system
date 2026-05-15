@@ -7,6 +7,7 @@
 #include "models/micro.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -122,6 +123,10 @@ void LiveExecutionEngine::step(int t) {
   refresh_order_state();
   route_exit_orders();
 
+  // Compute per-symbol target notional once per step (equal vs
+  // score_weighted vs rank_weighted, etc.). Picked up below.
+  const auto per_symbol_notional = compute_per_symbol_notional();
+
   for (const auto& s : ranking.portfolio.items) {
     if (!s.active)
       continue;
@@ -133,10 +138,11 @@ void LiveExecutionEngine::step(int t) {
       continue;
     // Mean-reversion entry gate: only buy when mid is at-or-below the
     // trailing OU mean by at least ou_buy_threshold_pct. Disabled when
-    // ou_window_size == 0 or when the OU state has not yet been primed
-    // by a real mid observation (e.g. on the very first step before
-    // reconcile_broker_state sees a valid top-of-book).
-    if (cfg_.app.ou_window_size > 0 && s.ou_initialized) {
+    // both ou_halflife_seconds <= 0 and ou_window_size == 0, or when the
+    // OU state has not yet been primed by a real mid observation.
+    const bool ou_gate_active =
+        (cfg_.app.ou_halflife_seconds > 0.0 || cfg_.app.ou_window_size > 0);
+    if (ou_gate_active && s.ou_initialized) {
       const double mu_cap = s.ou.mu * (1.0 + cfg_.app.ou_buy_threshold_pct);
       if (s.mid > mu_cap)
         continue;
@@ -151,9 +157,14 @@ void LiveExecutionEngine::step(int t) {
       --next_order_id_;
       continue;
     }
-    req.qty = size_entry_qty(req.limit);
+    double target_notional = cfg_.app.trade_notional;
+    const auto pit = per_symbol_notional.find(s.symbol);
+    if (pit != per_symbol_notional.end()) {
+      target_notional = pit->second;
+    }
+    req.qty = size_entry_qty(req.limit, target_notional);
     if (req.qty <= 0.0) {
-      // Either trade_notional < price (e.g. 500 budget on a 700 stock) or
+      // Either target_notional < price (e.g. 500 budget on a 700 stock) or
       // legacy order_qty knobs zeroed it out. Skip without burning the id.
       --next_order_id_;
       continue;
@@ -240,12 +251,14 @@ double LiveExecutionEngine::committed_notional() const {
   return total;
 }
 
-double LiveExecutionEngine::size_entry_qty(double limit_price) const {
+double LiveExecutionEngine::size_entry_qty(double limit_price,
+                                           double target_notional) const {
   if (limit_price <= 0.0)
     return 0.0;
-  // Notional-driven sizing wins when configured (default 500 per trade).
-  if (cfg_.app.trade_notional > 0.0) {
-    const double raw = cfg_.app.trade_notional / limit_price;
+  // Notional-driven sizing wins when configured (default 500 per trade,
+  // or a per-symbol share when position_sizing_rule != "equal").
+  if (target_notional > 0.0) {
+    const double raw = target_notional / limit_price;
     double qty = std::floor(raw);
     if (cfg_.app.max_order_qty > 0.0) {
       qty = std::min(qty, std::floor(cfg_.app.max_order_qty));
@@ -258,6 +271,34 @@ double LiveExecutionEngine::size_entry_qty(double limit_price) const {
     qty = std::min(qty, cfg_.app.max_order_qty);
   }
   return qty;
+}
+
+std::unordered_map<std::string, double>
+LiveExecutionEngine::compute_per_symbol_notional() const {
+  std::unordered_map<std::string, double> out;
+  const auto& items = ranking.portfolio.items;
+  if (cfg_.app.position_sizing_rule == "score_weighted" &&
+      cfg_.app.account_budget > 0.0) {
+    double total_score = 0.0;
+    for (const auto& s : items) {
+      if (!s.active) continue;
+      total_score += std::max(s.score, 0.0);
+    }
+    if (total_score > 0.0) {
+      for (const auto& s : items) {
+        if (!s.active) continue;
+        const double weight = std::max(s.score, 0.0) / total_score;
+        out[s.symbol] = cfg_.app.account_budget * weight;
+      }
+      return out;
+    }
+    // No positive score among active items: fall through to equal sizing.
+  }
+  for (const auto& s : items) {
+    if (!s.active) continue;
+    out[s.symbol] = cfg_.app.trade_notional;
+  }
+  return out;
 }
 
 bool LiveExecutionEngine::sync_next_order_id_from_broker() {
@@ -420,10 +461,17 @@ void LiveExecutionEngine::route_exit_orders() {
         {1.0, position.entry_ack_latency_ms, stock.latency.mean_latency()});
     const double net_reward = position.entry_price * profit_pct;
     const double loss = cost_per_share;
+    // Two-channel Hawkes: use the SELL-aggressor intensity for the
+    // execution score on exits, falling back to the buy channel if the
+    // sell channel hasn't seen any classified events yet (would still
+    // be at the default mu=10 baseline).
+    const double lambda_for_exit = std::max(stock.hawkes_sell.lambda,
+                                            std::max(stock.hawkes.lambda,
+                                                     1e-9));
     const double sell_score =
         compute_execution_score(mid, sell_limit, sell_directional_mu(book),
-                                std::max(stock.hawkes.lambda, 1e-9),
-                                queue_ahead, latency_ms, net_reward, loss);
+                                lambda_for_exit, queue_ahead, latency_ms,
+                                net_reward, loss);
 
     position.sell_limit = sell_limit;
     position.sell_score = sell_score;
@@ -465,6 +513,44 @@ void LiveExecutionEngine::subscribe_live_books(
                           hl::ComponentState::Ready);
 }
 
+void LiveExecutionEngine::update_hit_count_tilt() {
+  if (!cfg_.app.hit_count_enabled)
+    return;
+  if (cfg_.app.hit_count_horizon_seconds <= 0.0)
+    return;
+  const auto now_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+  const std::int64_t horizon_ns =
+      static_cast<std::int64_t>(cfg_.app.hit_count_horizon_seconds * 1e9);
+  const double baseline = std::max(cfg_.app.hit_count_baseline, 1.0);
+  for (auto& s : ranking.portfolio.items) {
+    if (s.mid <= 0.0)
+      continue;
+    if (s.window_open_ts_ns == 0) {
+      // Bootstrap: open the first window at the current observation.
+      s.window_open_mid = s.mid;
+      s.window_open_ts_ns = now_ns;
+      continue;
+    }
+    if (now_ns - s.window_open_ts_ns < horizon_ns)
+      continue;
+    if (s.window_open_mid > 0.0) {
+      const double ret = (s.mid - s.window_open_mid) / s.window_open_mid;
+      if (ret >= cfg_.app.hit_count_target_pct) {
+        ++s.hit_count;
+      }
+    }
+    // Always slide the window forward, regardless of hit/miss.
+    s.window_open_mid = s.mid;
+    s.window_open_ts_ns = now_ns;
+    const double raw_tilt = static_cast<double>(s.hit_count) / baseline;
+    s.score_tilt = std::clamp(raw_tilt, cfg_.app.hit_count_tilt_min,
+                              cfg_.app.hit_count_tilt_max);
+  }
+}
+
 void LiveExecutionEngine::update_hawkes_from_trades() {
   if (!cfg_.app.hawkes_use_real_trades)
     return;
@@ -472,14 +558,38 @@ void LiveExecutionEngine::update_hawkes_from_trades() {
     auto& s = ranking.portfolio.items[i];
     const int ticker_id = static_cast<int>(i + 1);
     const auto trades = broker_->drain_trades(ticker_id);
+    if (trades.empty())
+      continue;
+    // Lee-Ready aggressor classification against the most-recent top-of-book
+    // snapshot. price >= ask -> buy-aggressor (lifts s.hawkes), price <= bid
+    // -> sell-aggressor (lifts s.hawkes_sell). Mid-of-spread trades have no
+    // reliable classification at this seam (no prior-trade tick rule yet),
+    // so they update neither channel - safer than guessing.
+    const auto top = broker_->snapshot_top_of_book(ticker_id);
+    const double bid = top.bid_price;
+    const double ask = top.ask_price;
+    const bool top_valid = bid > 0.0 && ask > 0.0 && bid <= ask;
     for (const auto& t : trades) {
-      // Compute dt in seconds. First-ever observation gets a small default
-      // (1 ms) so Hawkes does not decay to baseline on a huge first dt.
       double dt_s = 0.001;
       if (s.last_trade_ts_ns > 0 && t.exch_ts_ns > s.last_trade_ts_ns) {
         dt_s = static_cast<double>(t.exch_ts_ns - s.last_trade_ts_ns) * 1e-9;
       }
-      s.hawkes.update(dt_s, /*event=*/1);
+      if (top_valid) {
+        if (t.price >= ask) {
+          s.hawkes.update(dt_s, /*event=*/1);
+        } else if (t.price <= bid) {
+          s.hawkes_sell.update(dt_s, /*event=*/1);
+        } else {
+          // Mid-of-spread trade; classification ambiguous. Update neither
+          // channel but still advance last_trade_ts_ns below so dt for the
+          // next event is sensible.
+        }
+      } else {
+        // No usable quote context (e.g. early ticks before top-of-book
+        // arrived). Fall back to single-channel behaviour on the buy side
+        // so we don't lose every event in the bootstrap window.
+        s.hawkes.update(dt_s, /*event=*/1);
+      }
       s.last_trade_ts_ns = t.exch_ts_ns;
     }
   }
@@ -487,6 +597,7 @@ void LiveExecutionEngine::update_hawkes_from_trades() {
 
 void LiveExecutionEngine::reconcile_broker_state() {
   update_hawkes_from_trades();
+  update_hit_count_tilt();
   for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
     auto& s = ranking.portfolio.items[i];
     const auto top = broker_->snapshot_top_of_book(static_cast<int>(i + 1));
@@ -495,20 +606,46 @@ void LiveExecutionEngine::reconcile_broker_state() {
       if (top.bid_size > 0.0) {
         s.queue = top.bid_size;
       }
-      // Slow EWMA toward the observed mid so ou.mu tracks the trailing
-      // mean over ~ou_window_size samples. First observation bootstraps
-      // ou.mu to the current mid so the gate is not pinned to the default
-      // 100.0 for non-$100 symbols.
-      if (cfg_.app.ou_window_size > 0 && s.mid > 0.0) {
+      // EWMA toward the observed mid so ou.mu tracks the trailing mean.
+      // Two parameterisations:
+      //   1. ou_halflife_seconds > 0: dt-weighted EWMA in wall-clock time
+      //      via alpha = 1 - exp(-dt_s / tau), tau = halflife / ln 2.
+      //      Consistent across symbols of different update rates.
+      //   2. ou_window_size > 0 (legacy): sample-count EWMA with
+      //      alpha = 1 / window_size.
+      // First observation bootstraps ou.mu to the current mid so the gate
+      // is not pinned to the default 100.0 for non-$100 symbols.
+      const bool ou_enabled =
+          cfg_.app.ou_halflife_seconds > 0.0 || cfg_.app.ou_window_size > 0;
+      if (ou_enabled && s.mid > 0.0) {
+        const auto now_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count();
         if (!s.ou_initialized) {
           s.ou.mu = s.mid;
           s.ou.x = s.mid;
           s.ou_initialized = true;
+          s.last_ou_update_ts_ns = now_ns;
         } else {
-          const double alpha =
-              1.0 / static_cast<double>(cfg_.app.ou_window_size);
+          double alpha = 0.0;
+          if (cfg_.app.ou_halflife_seconds > 0.0) {
+            const double dt_s =
+                (s.last_ou_update_ts_ns > 0 &&
+                 now_ns > s.last_ou_update_ts_ns)
+                    ? static_cast<double>(now_ns - s.last_ou_update_ts_ns) *
+                          1e-9
+                    : 0.0;
+            const double tau =
+                cfg_.app.ou_halflife_seconds / std::log(2.0);
+            alpha = 1.0 - std::exp(-dt_s / std::max(tau, 1e-9));
+          } else {
+            alpha =
+                1.0 / static_cast<double>(cfg_.app.ou_window_size);
+          }
           s.ou.mu = (1.0 - alpha) * s.ou.mu + alpha * s.mid;
           update_ou(s.ou, s.mid);
+          s.last_ou_update_ts_ns = now_ns;
         }
       }
     }

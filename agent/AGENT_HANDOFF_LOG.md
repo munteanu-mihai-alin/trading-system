@@ -4,6 +4,93 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-15] - Investigation: Hawkes intensity does not consume real IBKR trade events #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Local clone at `D:\trading-system`, latest commit observed as `cc1879b`
+  (`feat(engine,scripts): notional-driven trade sizing with account budget;
+  IBKR historical L1 exporter`), unpushed at investigation time.
+
+User question prompting the investigation:
+- "So hawkes works for the trading system, it uses real ikbr data right now
+  if started on live trading, right?" The user assumed Hawkes was already
+  wired to the live IBKR feed because the engine routes orders through IBKR
+  in live mode.
+
+Findings (verified by grep + file inspection, no code change):
+- `hft::Hawkes::update(dt, event)` is called from exactly one site:
+  `src/lib/RankingEngine.cpp:40`, with
+  `event = ((t + symbol.back()) % 2)`. That is a deterministic 0/1 toggle
+  parameterised on tick number and the last character of the ticker. It is
+  not driven by market data.
+- `RealIBKRTransport::tickByTickAllLast` (the TWS callback that delivers
+  trade prints in live mode) is overridden with an empty body
+  (`src/lib/RealIBKRTransport.cpp:293`). Even when IBKR is sending real
+  trade events, they are dropped on the floor at the transport layer.
+- `IBKRCallbacks` does not expose an `on_trade(...)` callback; there is no
+  current routing path for trade prints into `IBKRClient` or
+  `LiveExecutionEngine`.
+- Top-of-book prices/sizes from `tickPrice` / `tickSize` and full L2 from
+  `updateMktDepth` *are* wired through to the engine. The asymmetry is real:
+  in live mode buys see real top-of-book mid but a synthetic Hawkes
+  intensity and a synthetic fill-probability (`FillModel` runs against the
+  internal `hft::Simulator` order book, not against IBKR's L2). Sells use
+  real L2 for queue-ahead and directional-pressure estimation.
+- Net consequence: if live trading were enabled today, the *ranking* score
+  `p_fill * lambda` would have both inputs disconnected from the market.
+  The system would still place real orders with real money, but on a signal
+  uncorrelated with real-market behaviour.
+
+Proposed fix (not implemented; awaiting user approval per the `#todo` flow):
+1. Add `virtual void on_trade(int ticker_id, double qty, double price,
+   bool is_buyer_initiated, std::int64_t exch_ts_ns) = 0;` to
+   `IBKRCallbacks`. Defaulted-empty implementations on `FakeIBKRTransport`
+   and `MockIBKRTransport` to keep existing tests compiling.
+2. Replace the empty `tickByTickAllLast` body in
+   `src/lib/RealIBKRTransport.cpp` with a body that forwards to
+   `callbacks_->on_trade(...)` after converting the IBKR `Decimal` size and
+   classifying buyer- vs. seller-initiated using the tick's `pastLimit` /
+   `unreported` flags as a fall-back.
+3. Add `IBroker::subscribe_trades(int ticker_id, std::string symbol)` (or
+   piggyback on `subscribe_top_of_book` if we want trade ticks for the same
+   universe). In `RealIBKRTransport`, implement it as
+   `client_.reqTickByTickData(ticker_id, contract, "AllLast", 0, false)`.
+4. In `IBKRClient`, implement `on_trade` and forward into a per-ticker
+   structure (e.g. last-event timestamp + a callback registered by the
+   engine).
+5. `LiveExecutionEngine` registers a trade-event consumer that, on each
+   trade, locates the matching `Stock`, computes
+   `dt = now_ns - s.last_trade_ts_ns`, and calls `s.hawkes.update(dt, 1)`.
+   `s.last_trade_ts_ns` becomes a new field on `Stock`.
+6. New unit test in `tests/unit/IBKRClientTest.cpp` driving the new
+   `on_trade` callback and asserting Hawkes lambda changes.
+7. Open question: single-channel (any trade is an event) vs two-channel
+   (buyer-initiated vs seller-initiated as separate Hawkes processes with
+   cross-excitation). Single-channel is the trivial first wiring; two-
+   channel is the proper microstructure formulation and requires extending
+   the `Hawkes` struct. The user's call.
+
+Validation performed:
+- None beyond static inspection. No code changes in this entry.
+
+Known risks / follow-up:
+- `#todo`. This entry is the open investigation. Future agents must scan
+  the log for `#todo` per `AGENT_WORKFLOW.md` and surface this item to the
+  user before working on it.
+- Until this is fixed, **do not enable live trading**. Real money on a
+  synthetic signal is a foreseeable loss.
+- The synthetic fill-probability is a *separate* `#todo` not raised here;
+  fixing the Hawkes signal alone leaves the ranking partially synthetic.
+
+Suggested commit (for the investigation note only):
+```bash
+git commit -m "docs(agent): log #todo - Hawkes intensity not wired to real IBKR trades"
+```
+
 ## [2026-05-03] - Add max-open-symbol cap and buy/sell CI coverage
 
 Model / agent:

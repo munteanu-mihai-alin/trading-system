@@ -25,6 +25,48 @@ Do **not** add a handoff entry for:
 
 When in doubt, append a short handoff entry. The log should help the next agent continue from the latest project state.
 
+## Open investigations: `#todo` and `#Done`
+
+Some handoff entries describe an investigation or design follow-up that nobody
+has acted on yet. Those entries carry a `#todo` tag in the title and/or in the
+"Known risks / follow-up" section.
+
+Every agent must:
+
+1. On session start, scan `AGENT_HANDOFF_LOG.md` for entries tagged `#todo`
+   and that are **not** tagged `#Done`. A short search like
+   `grep -n "#todo" agent/AGENT_HANDOFF_LOG.md` is sufficient.
+2. If at least one `#todo` looks relevant to the current task, surface it to
+   the user and **ask whether to work on it now**. Do not start solving a
+   `#todo` without explicit user approval — the entry may still be in design
+   discussion, may conflict with the user's current direction, or may have
+   blockers documented elsewhere.
+3. When the user approves, solve the `#todo`. The fix lands as its own new
+   handoff entry describing what was done (normal entry rules apply).
+4. After the fix is committed (or otherwise accepted by the user), edit the
+   **original** `#todo` entry's title to append `#Done` next to the existing
+   `#todo` tag, and add a one-line back-reference to the resolving entry's
+   date and title. Do not delete the original entry — keeping it preserves
+   the investigation trail.
+
+A `#todo` entry stays valid until it is explicitly retagged `#Done`. Once
+`#Done`, future agents must skip it during the on-start scan; it remains in
+the log only as historical context.
+
+Title format for an open investigation:
+```text
+## [YYYY-MM-DD] - <short title> #todo
+```
+
+Title format after the investigation is resolved:
+```text
+## [YYYY-MM-DD] - <short title> #todo #Done (resolved by [YYYY-MM-DD] <resolver entry title>)
+```
+
+If a `#todo` is intentionally abandoned (decided against, superseded, no longer
+relevant), retag it `#todo #Done` with a one-line note explaining why, so the
+search-and-skip rule still works.
+
 ## Mandatory model and provider identity
 
 Every handoff entry must include:

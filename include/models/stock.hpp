@@ -19,6 +19,11 @@ struct Stock {
 
   Hawkes hawkes;
   OUState ou;
+  // Set on the first real observation that primes ou.mu away from its
+  // default value; otherwise the mean-reversion gate would block buys on
+  // any symbol whose actual price differs from OUState's default mu=100
+  // (e.g. $250 AAPL) until the EWMA has converged.
+  bool ou_initialized = false;
   LatencyModel latency;
   MyOrderState my_order;
 

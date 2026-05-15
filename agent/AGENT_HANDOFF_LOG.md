@@ -4,6 +4,110 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-15] - Wire OU mean-reversion gate into the buy decision
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Local clone at `D:\trading-system`, on `main`, two unpushed commits ahead of
+  `origin/main`: `cc1879b` (notional sizing + IBKR L1 exporter) and `0e2cafa`
+  (this log + workflow #todo/#Done protocol). This entry adds a third.
+
+User intent:
+- The user remembered designing an entry rule of the form "buy when price is
+  under the mean daily/weekly price". A search confirmed the OU mean-reversion
+  scaffolding existed (`include/models/ou.hpp`, `OUState` declared on every
+  `Stock`) but had **zero call sites** in `src/` - it was declared and never
+  used. The user asked to wire it in, since it matches their original
+  intuition and gives the buy decision the alpha/direction signal that
+  Hawkes (still on synthetic events; see sibling #todo below) does not.
+
+Design choice:
+- Use a slow EWMA on the observed top-of-book mid to track the trailing mean,
+  rather than a deque-based exact rolling mean. O(1) state per symbol, no
+  history buffer, effective half-life ~`ou_window_size * ln 2` samples.
+- Bootstrap `ou.mu` to the first observed mid on each symbol via a new
+  `Stock::ou_initialized` flag, otherwise the default `mu=100.0` would block
+  buys on any non-$100 symbol (e.g. $250 AAPL) for ~3500 samples until the
+  EWMA converged.
+- Gate the buy loop with `if (mid > ou.mu * (1 + ou_buy_threshold_pct)) skip`.
+- Off by default (`ou_window_size = 0`). Opt-in via config so existing tests
+  and the live IBKR paper config are unaffected until the user has run a
+  backtest to pick a threshold.
+
+Files changed:
+- `include/config/AppConfig.hpp` - add `ou_window_size` (default `0`) and
+  `ou_buy_threshold_pct` (default `0.0`); inline doc explains semantics.
+- `src/lib/AppConfig.cpp` - parse `ou_window_size` and `ou_buy_threshold_pct`.
+- `include/models/stock.hpp` - add `bool ou_initialized = false;` to `Stock`.
+- `src/lib/LiveExecutionEngine.cpp` -
+  - `reconcile_broker_state`: on each top-of-book update, bootstrap
+    `s.ou.mu = s.mid` on first valid observation, then EWMA `s.ou.mu` with
+    `alpha = 1 / ou_window_size` and call `update_ou(s.ou, s.mid)`.
+  - Buy loop: skip candidate when `mid > ou.mu * (1 + ou_buy_threshold_pct)`,
+    placed before sizing/budget gates so a gated-out symbol doesn't burn a
+    next-order-id.
+- `tests/unit/AppConfigTest.cpp` - extend defaults and `ParsesAllKnownKeys`.
+- `tests/unit/LiveExecutionEngineTest.cpp` - three new tests:
+  `OUGateBlocksBuysAboveMean`, `OUGateAllowsBuysAtOrBelowMean`,
+  `OUGateDisabledWhenWindowSizeZero`. They pre-seed `s.ou.mu` and
+  `s.ou_initialized` directly through `engine.ranking.portfolio.items`,
+  exploiting the existing public-field structure.
+- `config.ibkr_paper.example.ini` - new `[entry_strategy]` section, gate
+  documented but disabled (`ou_window_size=0`).
+- `config.databento_backtest.example.ini` - `[entry_strategy]` section with
+  gate ON (`ou_window_size=4096`, `ou_buy_threshold_pct=0.0`) so the
+  upcoming Databento smoke exercises it.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Searched the codebase for mean/avg/rolling/EMA/VWAP/momentum references;
+   only `EWMAVolatility` and the OU scaffolding turned up, both unused in
+   `src/lib/`.
+2. Confirmed `OUState`'s only call sites are its own struct definition and
+   `Stock::ou` field declaration. Dead scaffolding matching the user's
+   original design intent.
+3. Designed the wiring (EWMA on mu, bootstrap flag, opt-in via config) to
+   not disturb existing behaviour when not configured.
+4. Implemented and wrote three engine-level tests + AppConfig coverage.
+
+Validation performed:
+- Static inspection only. The agent's UCRT64 sandbox compiler is silently
+  killed by something in the harness (cc1plus exits 1 with no stderr on any
+  input; `g++ --version` works but `cc1plus.exe --version` produces no
+  output and exit 0). User must build + ctest from a regular UCRT64 shell:
+  ```bash
+  export PATH=/ucrt64/bin:$PATH
+  cmake --build build-ucrt-ibkr --target hft_gtests hft_tests -j 8
+  ctest --test-dir build-ucrt-ibkr --output-on-failure
+  ```
+
+Known risks / follow-up:
+- The "trailing mean" is over the top-of-book sample stream the engine sees,
+  not over a clock-time window. With high-frequency ticks the half-life
+  shrinks vs. wall-clock; with sparse data it grows. A future refinement is
+  to weight the EWMA by `dt` so the half-life is in seconds rather than
+  samples.
+- `OUState::theta`/`x` are still defaults; only `mu` is being updated, and
+  `update_ou` nudges `x` toward observed but `x` is not yet read anywhere.
+  Worth deciding whether the gate should use `mu` (mean) or `x` (smoothed
+  observation) as the reference. Current code uses `mu`.
+- The gate is direction-blind in one sense: it blocks buys above the mean
+  but does not require a *rising* signal, so on a strongly downtrending
+  symbol it will buy repeatedly. Combine with a momentum filter later.
+- See sibling `#todo` below: Hawkes is still on synthetic events. Buy
+  decision now has the alpha signal (OU) wired to real data, but the
+  fill-rate weight (`λ`) and the simulated `FillModel` are still synthetic.
+
+Suggested commit:
+```bash
+git commit -m "feat(engine): OU mean-reversion entry gate (opt-in via ou_window_size)"
+```
+
 ## [2026-05-15] - Investigation: Hawkes intensity does not consume real IBKR trade events #todo
 
 Model / agent:
@@ -85,6 +189,11 @@ Known risks / follow-up:
   synthetic signal is a foreseeable loss.
 - The synthetic fill-probability is a *separate* `#todo` not raised here;
   fixing the Hawkes signal alone leaves the ranking partially synthetic.
+- Sibling resolved: see `[2026-05-15] - Wire OU mean-reversion gate into
+  the buy decision`. OU (the alpha/direction signal) is now wired to real
+  IBKR mid via `LiveExecutionEngine::reconcile_broker_state`. Hawkes (the
+  activity/fill-rate signal) remains on synthetic events and is what this
+  `#todo` still covers.
 
 Suggested commit (for the investigation note only):
 ```bash

@@ -131,6 +131,16 @@ void LiveExecutionEngine::step(int t) {
       continue;
     if (!can_route_order(s))
       continue;
+    // Mean-reversion entry gate: only buy when mid is at-or-below the
+    // trailing OU mean by at least ou_buy_threshold_pct. Disabled when
+    // ou_window_size == 0 or when the OU state has not yet been primed
+    // by a real mid observation (e.g. on the very first step before
+    // reconcile_broker_state sees a valid top-of-book).
+    if (cfg_.app.ou_window_size > 0 && s.ou_initialized) {
+      const double mu_cap = s.ou.mu * (1.0 + cfg_.app.ou_buy_threshold_pct);
+      if (s.mid > mu_cap)
+        continue;
+    }
 
     OrderRequest req;
     req.id = next_order_id_++;
@@ -459,6 +469,22 @@ void LiveExecutionEngine::reconcile_broker_state() {
       s.mid = top.mid();
       if (top.bid_size > 0.0) {
         s.queue = top.bid_size;
+      }
+      // Slow EWMA toward the observed mid so ou.mu tracks the trailing
+      // mean over ~ou_window_size samples. First observation bootstraps
+      // ou.mu to the current mid so the gate is not pinned to the default
+      // 100.0 for non-$100 symbols.
+      if (cfg_.app.ou_window_size > 0 && s.mid > 0.0) {
+        if (!s.ou_initialized) {
+          s.ou.mu = s.mid;
+          s.ou.x = s.mid;
+          s.ou_initialized = true;
+        } else {
+          const double alpha =
+              1.0 / static_cast<double>(cfg_.app.ou_window_size);
+          s.ou.mu = (1.0 - alpha) * s.ou.mu + alpha * s.mid;
+          update_ou(s.ou, s.mid);
+        }
       }
     }
   }

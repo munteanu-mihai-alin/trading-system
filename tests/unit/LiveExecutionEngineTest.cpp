@@ -210,6 +210,72 @@ TEST(LiveExecutionEngine, SkipsSymbolPricedAboveTradeNotional) {
   engine.step(0);
 }
 
+TEST(LiveExecutionEngine, OUGateBlocksBuysAboveMean) {
+  // ou.mu primed to 1.0 (far below the ranking engine's ~$100 default mids).
+  // Every active candidate has mid > mu * (1 + threshold=0) -> every buy is
+  // gated out.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 5;
+  app.steps = 1;
+  app.ou_window_size = 100;
+  app.ou_buy_threshold_pct = 0.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  for (auto& s : engine.ranking.portfolio.items) {
+    s.ou.mu = 1.0;
+    s.ou_initialized = true;
+  }
+  engine.step(0);
+}
+
+TEST(LiveExecutionEngine, OUGateAllowsBuysAtOrBelowMean) {
+  // ou.mu primed well above mid: gate is permissive, ranking and budget
+  // still let through at least one buy.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(AtLeast(1));
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 5;
+  app.steps = 1;
+  app.ou_window_size = 100;
+  app.ou_buy_threshold_pct = 0.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  for (auto& s : engine.ranking.portfolio.items) {
+    s.ou.mu = 1000.0;
+    s.ou_initialized = true;
+  }
+  engine.step(0);
+}
+
+TEST(LiveExecutionEngine, OUGateDisabledWhenWindowSizeZero) {
+  // ou_window_size=0 (default) disables the gate; even with ou.mu primed
+  // far below mid the buy path must still place orders.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(AtLeast(1));
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 5;
+  app.steps = 1;
+  app.ou_window_size = 0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  for (auto& s : engine.ranking.portfolio.items) {
+    s.ou.mu = 1.0;            // would block if gate were active
+    s.ou_initialized = true;
+  }
+  engine.step(0);
+}
+
 TEST(LiveExecutionEngine, StepHeartbeatBoundary) {
   // step(0) and step(100) both hit the (t % 100) == 0 heartbeat branch; step(1)
   // does not. We just assert the engine survives all three calls.

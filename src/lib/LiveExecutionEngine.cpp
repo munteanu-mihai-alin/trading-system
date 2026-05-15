@@ -231,7 +231,8 @@ double LiveExecutionEngine::committed_notional() const {
 }
 
 double LiveExecutionEngine::size_entry_qty(double limit_price) const {
-  if (limit_price <= 0.0) return 0.0;
+  if (limit_price <= 0.0)
+    return 0.0;
   // Notional-driven sizing wins when configured (default 500 per trade).
   if (cfg_.app.trade_notional > 0.0) {
     const double raw = cfg_.app.trade_notional / limit_price;

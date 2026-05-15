@@ -4,6 +4,251 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-16] - Empirical "+0.8% hit-count" buy-side ranking signal #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at the Hawkes-wiring commit (`fffde79`) at investigation time.
+
+Context:
+- The user's original ranking intuition was to count, per symbol, how often
+  it has historically delivered the **`target_profit_pct`** (currently
+  `0.008` = +0.8%) over a chosen holding horizon. Stocks where the exit
+  target is empirically reachable should rank higher. None of the existing
+  signals capture this directly:
+  - Hawkes `λ` counts ANY trade activity, no direction or magnitude.
+  - OU `μ` measures distance from the trailing mean (mean-reversion).
+  - `FillModel p_fill` measures order-placement feasibility, not return.
+
+Proposed scope:
+- Per `Stock`, add `int hit_count_window = 0;` plus a small ring/queue of
+  recent mid samples (or just two scalars: `last_window_open_mid` and
+  `window_open_ts_ns`).
+- Sample `s.mid` every `K` seconds (configurable); when
+  `(mid_now - mid_window_open) / mid_window_open >= cfg.target_profit_pct`,
+  increment a counter and reset the window. Slide-or-decay so the counter
+  reflects recent behaviour.
+- Use the counter as a multiplicative tilt on the ranking score:
+  `score *= clamp(hit_count / hit_count_baseline, hit_floor, hit_ceiling)`.
+  Disabled by default via a config knob.
+- Source of historical samples to bootstrap the counter:
+  - Live: warm up over the first `K * N` seconds after subscribe.
+  - Backtest / paper: feed the existing `data/l1/<SYMBOL>.csv` (from
+    `scripts/ibkr_historical_l1.py`) through a one-shot warm-up pass at
+    engine start.
+
+Open design questions:
+- Holding horizon for the +0.8% measurement (5 min, 30 min, 1 trading
+  day)? Should match how long you expect to hold a position.
+- Sample cadence vs window length: a 1-second sample with a 5-minute
+  window over 5 trading days = 130,000 samples per symbol, manageable.
+- Slide vs decay: slide is simpler and exact; decay is O(1) memory but
+  loses the precise count.
+- Hard gate vs soft tilt: should symbols with `hit_count == 0` be barred
+  outright, or just down-weighted?
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- Cross-checks the OU gate: if OU blocks "above mean" entries, the
+  hit-count tilt might never get to compute on symbols that are
+  trending up. Order in `step()` matters; tilt should multiply score
+  BEFORE OU gates fire (so OU still has final say) but AFTER ranking
+  sorts have happened — i.e. inside `RankingEngine::step` not in the
+  engine's buy loop.
+- Survivorship: a symbol that historically hits +0.8% often may have
+  done so because it is volatile / illiquid / event-driven. Pair with
+  `EWMAVolatility` (currently unused) to normalise.
+- Closely related to the "Real alpha signal beyond OU mean-reversion"
+  bullet I'd mentioned in earlier review; this is the concrete proposal.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(engine): +0.8% hit-count ranking tilt (opt-in)"
+```
+
+## [2026-05-16] - Two-channel Hawkes (buy-aggressor vs sell-aggressor cross-excitation) #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at the Hawkes-wiring commit (`fffde79`).
+
+Context:
+- The Hawkes resolver entry chose single-channel ("any trade is an event")
+  to keep the first wire-up small. The proper microstructure formulation
+  is two-channel: separate intensities for buy-initiated and sell-initiated
+  trades with cross-excitation (a buy-initiated event lifts both
+  `λ_buy` AND `λ_sell` because aggressive buying tends to provoke aggressive
+  selling and vice versa). With two channels, `λ_buy` weights the buy
+  ranking while `λ_sell` weights the sell-side execution score.
+
+Proposed scope:
+- Extend `hft::Hawkes` to two-channel form:
+  ```cpp
+  struct Hawkes2 {
+    double mu_buy, mu_sell;
+    double alpha_self_buy,  alpha_cross_buy;
+    double alpha_self_sell, alpha_cross_sell;
+    double beta;
+    double lambda_buy, lambda_sell;
+    void update(double dt, bool was_buy_aggressor);
+  };
+  ```
+- Aggressor classification at the source: `TickAttribLast::pastLimit` and
+  `unreported` are unreliable. Use Lee-Ready: trade at-or-above ask =
+  buy-initiated, at-or-below bid = sell-initiated, mid = use prior
+  trade's tick rule. Requires the engine to keep the most recent
+  best_bid/best_ask cached alongside the trade event.
+- In `LiveExecutionEngine::update_hawkes_from_trades`, pass the
+  classification into the update.
+- In ranking, replace `p_fill * lambda` with
+  `p_fill * lambda_buy` for the buy ranking.
+- In `route_exit_orders`, the existing `compute_execution_score` already
+  receives `lambda`; pass `lambda_sell` instead.
+
+Open design questions:
+- Hawkes2 params: keep the single-channel `Hawkes` for backward compat,
+  or migrate all call sites? Migration is cleaner long-term.
+- Cross-excitation magnitudes: literature ranges from 0.1 to 0.5 of self-
+  excitation. Defaults TBD via backtest.
+- Aggressor classification edge cases: trades exactly at mid, trades on
+  hidden venues (no public quote ref). Lee-Ready degrades on these.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- Sibling resolved: `[2026-05-16] - Wire Hawkes intensity to real IBKR
+  AllLast trade prints` brought single-channel Hawkes online. This entry
+  is the proper-microstructure follow-up.
+- Backtests against Databento MBP-10 give the bid/ask context needed for
+  Lee-Ready cheaply, so this is best calibrated alongside the one-week
+  Databento `#todo`.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(model): two-channel Hawkes with Lee-Ready aggressor classification"
+```
+
+## [2026-05-16] - OU EWMA in wall-clock time rather than samples #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at the OU-gate commit (`a2c6b34`).
+
+Context:
+- The OU mean-reversion gate updates `s.ou.mu` with a fixed `alpha = 1 /
+  ou_window_size`, where the window is **measured in samples of the
+  top-of-book stream the engine consumes**. Under bursty activity the
+  half-life is wall-clock-short; under sparse activity it is wall-clock-
+  long. Different symbols in the same universe therefore see different
+  effective half-lives even with identical config.
+- Cleaner: weight the EWMA by `dt` between consecutive observations so
+  the half-life is in seconds:
+  ```
+  alpha = 1 - exp(-dt_seconds / tau_seconds)
+  s.ou.mu = (1 - alpha) * s.ou.mu + alpha * s.mid
+  ```
+  with `tau_seconds = ou_halflife_seconds / ln 2`.
+
+Proposed scope:
+- Add `Stock::last_ou_update_ts_ns`.
+- Replace `ou_window_size` (samples) with `ou_halflife_seconds`
+  (double). Keep the old name as a fallback / deprecation alias.
+- Update `reconcile_broker_state` to compute `dt = now_ns -
+  last_ou_update_ts_ns` and set alpha from that.
+- Adjust the `ou_initialized` bootstrap accordingly.
+
+Open design questions:
+- What does "now" mean here? `std::chrono::steady_clock::now()` is
+  process-monotonic and matches the engine's perception of time, but
+  the trade prints carry exchange timestamps - using one for OU and
+  the other for Hawkes is slightly inconsistent. Pick one.
+- Backtest mode plays through historical data; the wall clock there is
+  the replay time, not real time. Honour the broker's `on_step(t)` for
+  backtest paths.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it. Small
+  change, ~50 LOC plus tests, but breaks the existing config key name.
+- Sibling resolved: `[2026-05-15] - Wire OU mean-reversion gate into
+  the buy decision`.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(engine): OU EWMA half-life in seconds, dt-weighted"
+```
+
+## [2026-05-16] - Position sizing proportional to ranking score #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at the notional-sizing commit (`cc1879b`).
+
+Context:
+- Today `size_entry_qty(limit_price) = floor(trade_notional / limit_price)`
+  regardless of where the symbol sits in the ranking. Symbol #1 and symbol
+  #3 get the same $500 notional. That throws away the information in the
+  score: if symbol #1 has score `10.0` and symbol #3 has score `2.0`,
+  putting equal capital on them is leaving expected return on the table.
+
+Proposed scope:
+- Introduce a configurable allocation rule for notional:
+  - `equal` (current default) - `trade_notional` per active symbol.
+  - `score_weighted` - given top-K active symbols with scores
+    `s_1, ..., s_K`, allocate `notional_i = account_budget * s_i / sum(s_i)`.
+    Cap by `max_notional_per_order`. Skip symbols where the resulting qty
+    rounds to 0.
+  - `kelly_lite` (optional later) - a simple fractional-Kelly variant
+    using `EWMAVolatility` once it's wired in by the FillModel `#todo`.
+- Config knob `position_sizing_rule` (string) with default `equal` to keep
+  existing behaviour.
+
+Open design questions:
+- Score normalisation: scores aren't units-of-PnL, so fraction-of-budget
+  shouldn't depend on absolute score magnitudes. Use rank-position weights
+  (1st gets 50%, 2nd 30%, 3rd 20%) as a simpler alternative?
+- Interaction with `account_budget`: with score-proportional sizing the
+  sum of `qty * limit` always equals `account_budget` by construction;
+  the existing budget gate becomes a no-op. Worth keeping the gate as a
+  belt-and-suspenders check anyway.
+- When the ranking shifts mid-day (a symbol drops out of top-K, a new
+  one enters), do we resize the existing position? Current design only
+  considers fresh entries; modifying existing fills is out of scope.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- Closely tied to the `+0.8% hit-count` and FillModel `#todo`s; once
+  scores are derived from richer signals, score-proportional sizing
+  becomes more meaningful. Worth implementing only AFTER at least one
+  of those `#todo`s lands so the score has real economic content.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(engine): score-proportional position sizing (opt-in)"
+```
+
 ## [2026-05-16] - Wire Hawkes intensity to real IBKR AllLast trade prints
 
 Model / agent:

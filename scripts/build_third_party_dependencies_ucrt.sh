@@ -12,6 +12,14 @@ DEPS_DIR="${ROOT_DIR}/dependencies/ucrt64"
 BUILD_DIR="${DEPS_DIR}/build"
 INSTALL_DIR="${DEPS_DIR}/install"
 
+# Memory-aware parallelism. Protobuf's C++ code generators are template-heavy
+# and each parallel cc1plus instance can use 1.5-2 GB on UCRT64 / MinGW gcc;
+# on a 16 GB box -j$(nproc) reliably OOMs. Default protobuf to -j 2 (safe on
+# 8 GB) and let everything else use $(nproc). Override either via env:
+#   DEPS_BUILD_JOBS=4 DEPS_BUILD_JOBS_PROTOBUF=3 bash scripts/...
+DEPS_BUILD_JOBS="${DEPS_BUILD_JOBS:-$(nproc)}"
+DEPS_BUILD_JOBS_PROTOBUF="${DEPS_BUILD_JOBS_PROTOBUF:-2}"
+
 # Prefer the UCRT64 MinGW-w64 compilers over the Cygwin-based MSYS2 base
 # compilers. The base /usr/bin/gcc defines __CYGWIN__ which causes libraries
 # like Abseil to refuse to compile. Override only when the UCRT64 toolchain is
@@ -90,7 +98,7 @@ cmake -S "${ABSEIL_SRC}" -B "${BUILD_DIR}/abseil" \
   -DCMAKE_SHARED_LINKER_FLAGS="-L${INSTALL_DIR}/lib" \
   -DBUILD_SHARED_LIBS=OFF \
   -DABSL_PROPAGATE_CXX_STD=ON
-cmake --build "${BUILD_DIR}/abseil" -j"$(nproc)"
+cmake --build "${BUILD_DIR}/abseil" -j "${DEPS_BUILD_JOBS}"
 cmake --install "${BUILD_DIR}/abseil"
 
 echo "==> Building protobuf 29.3 from third_party/protobuf-29.3 (static libs for MinGW stability)"
@@ -107,7 +115,7 @@ cmake -S "${PROTOBUF_SRC}" -B "${BUILD_DIR}/protobuf" \
   -Dprotobuf_BUILD_TESTS=OFF \
   -Dprotobuf_BUILD_SHARED_LIBS=OFF \
   -Dprotobuf_ABSL_PROVIDER=package
-cmake --build "${BUILD_DIR}/protobuf" -j"$(nproc)"
+cmake --build "${BUILD_DIR}/protobuf" -j "${DEPS_BUILD_JOBS_PROTOBUF}"
 cmake --install "${BUILD_DIR}/protobuf"
 
 echo "==> Building Intel decimal library from third_party/IntelRDFPMathLib20U4"
@@ -220,7 +228,7 @@ cmake -S "${RDFP_BUILD_SRC}" -B "${RDFP_BUILD_DIR}" \
   -DRDFP_SRC_ROOT_CMAKE="${RDFP_SRC_ROOT_CMAKE}" \
   -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}"
 
-cmake --build "${RDFP_BUILD_DIR}" -j"$(nproc)"
+cmake --build "${RDFP_BUILD_DIR}" -j "${DEPS_BUILD_JOBS}"
 cmake --install "${RDFP_BUILD_DIR}"
 
 if [[ ! -f "${INSTALL_DIR}/lib/libintelrdfpmath.a" ]]; then
@@ -269,7 +277,7 @@ cmake -S "${SPDLOG_SRC}" -B "${BUILD_DIR}/spdlog" \
   -DSPDLOG_BUILD_EXAMPLE=OFF \
   -DSPDLOG_BUILD_TESTS=OFF \
   -DSPDLOG_INSTALL=ON
-cmake --build "${BUILD_DIR}/spdlog" -j"$(nproc)"
+cmake --build "${BUILD_DIR}/spdlog" -j "${DEPS_BUILD_JOBS}"
 cmake --install "${BUILD_DIR}/spdlog"
 
 if [[ ! -f "${INSTALL_DIR}/lib/libspdlog.a" ]]; then
@@ -292,7 +300,7 @@ cmake -S "${GTEST_SRC}" -B "${BUILD_DIR}/googletest" \
   -DINSTALL_GTEST=ON \
   -DBUILD_SHARED_LIBS=OFF \
   -Dgtest_force_shared_crt=ON
-cmake --build "${BUILD_DIR}/googletest" -j"$(nproc)"
+cmake --build "${BUILD_DIR}/googletest" -j "${DEPS_BUILD_JOBS}"
 cmake --install "${BUILD_DIR}/googletest"
 
 # Verify the four expected static archives. The exact filenames differ between

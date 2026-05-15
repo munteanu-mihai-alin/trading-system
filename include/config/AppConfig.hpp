@@ -33,6 +33,12 @@ struct AppConfig {
   // the threshold." Set ou_window_size = 0 to disable the gate entirely.
   int ou_window_size = 0;
   double ou_buy_threshold_pct = 0.0;
+  // When true, LiveExecutionEngine subscribes to IBKR AllLast trade prints
+  // for the live universe and drives the Stock::hawkes intensity from real
+  // trade events (dt between consecutive trades on the symbol). When false,
+  // Hawkes stays on RankingEngine's synthetic event clock. Default false
+  // so existing tests and configs are unaffected.
+  bool hawkes_use_real_trades = false;
   int max_open_symbols = 3;
   int max_orders_per_run = 0;
   int max_orders_per_symbol = 0;

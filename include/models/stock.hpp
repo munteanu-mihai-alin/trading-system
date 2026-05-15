@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 
 #include "execution/latency_model.hpp"
@@ -18,6 +19,11 @@ struct Stock {
   double score = 0.0;
 
   Hawkes hawkes;
+  // Venue timestamp of the last consumed trade event, in Unix nanoseconds.
+  // 0 means "no trade observed yet"; the engine uses a small default dt
+  // (~1 ms) for the very first event to avoid Hawkes decaying to baseline
+  // on huge first-event dt.
+  std::int64_t last_trade_ts_ns = 0;
   OUState ou;
   // Set on the first real observation that primes ou.mu away from its
   // default value; otherwise the mean-reversion gate would block buys on

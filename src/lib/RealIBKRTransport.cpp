@@ -115,6 +115,18 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
                         TagValueListSPtr());
   }
 
+  void subscribe_trades(const TopOfBookRequest& req) override {
+    Contract contract;
+    contract.symbol = req.symbol;
+    contract.secType = "STK";
+    contract.exchange = "SMART";
+    contract.currency = "USD";
+    // "AllLast" delivers every trade print on the symbol. Backfill 0 since
+    // we only care about live activity; ignoreSize false so the size field
+    // is populated.
+    client_.reqTickByTickData(req.ticker_id, contract, "AllLast", 0, false);
+  }
+
   void pump_once() override {
     if (!connected_)
       return;
@@ -290,9 +302,19 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
                              bool) override {}
   void historicalTicksLast(int, const std::vector<HistoricalTickLast>&,
                            bool) override {}
-  void tickByTickAllLast(int, int, time_t, double, Decimal,
-                         const TickAttribLast&, const std::string&,
-                         const std::string&) override {}
+  void tickByTickAllLast(int reqId, int /*tickType*/, time_t exch_time,
+                         double price, Decimal size, const TickAttribLast&,
+                         const std::string&, const std::string&) override {
+    if (callbacks_ == nullptr) {
+      return;
+    }
+    const double qty = DecimalFunctions::decimalToDouble(size);
+    // IBKR delivers exchange time in Unix seconds; convert to nanoseconds
+    // so the engine's dt arithmetic stays in one unit system.
+    const std::int64_t exch_ts_ns =
+        static_cast<std::int64_t>(exch_time) * 1'000'000'000LL;
+    callbacks_->on_trade(reqId, price, qty, exch_ts_ns);
+  }
   void tickByTickBidAsk(int, time_t, double, double, Decimal, Decimal,
                         const TickAttribBidAsk&) override {}
   void tickByTickMidPoint(int, time_t, double) override {}

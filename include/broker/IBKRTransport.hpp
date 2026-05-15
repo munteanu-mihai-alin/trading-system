@@ -27,6 +27,11 @@ class IBKRTransport {
   virtual void cancel_order(int order_id) = 0;
   virtual void subscribe_top_of_book(const TopOfBookRequest& req) = 0;
   virtual void subscribe_market_depth(const MarketDepthRequest& req) = 0;
+  // AllLast trade-print subscription. Default no-op so existing transport
+  // doubles (FakeIBKRTransport, MockIBKRTransport) keep compiling without
+  // change; production implementation lives in RealIBKRTransport and calls
+  // EClientSocket::reqTickByTickData(..., "AllLast", ...).
+  virtual void subscribe_trades(const TopOfBookRequest& /*req*/) {}
 
   // Block (with an internal timeout, typically ~2s) waiting for inbound
   // traffic from the broker, then dispatch one batch of decoded messages

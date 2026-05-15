@@ -60,6 +60,9 @@ class LiveExecutionEngine {
   void ensure_depth_subscription(const std::string& symbol, int ticker_id);
   void refresh_order_state();
   void route_exit_orders();
+  // Per-step drain of broker trade prints into Stock::hawkes, gated on
+  // cfg_.app.hawkes_use_real_trades.
+  void update_hawkes_from_trades();
 
  public:
   RankingEngine ranking;

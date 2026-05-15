@@ -4,6 +4,355 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-16] - Wire Hawkes intensity to real IBKR AllLast trade prints
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Local clone at `D:\trading-system`, on `main`, at `c3a45c5` (protobuf
+  parallelism cap) - the previous Hawkes investigation's #todo entry was at
+  the top of the log and explicitly authorised by the user for resolution
+  ("finish the #todo").
+
+User intent:
+- Resolve the `[2026-05-15] - Investigation: Hawkes intensity does not
+  consume real IBKR trade events #todo`. Buy ranking's `λ` was driven by a
+  deterministic toy event clock; this change makes it consume real IBKR
+  trade prints when explicitly opted in via config.
+
+Design decisions:
+- **Single-channel Hawkes for now** - every trade is one event, regardless
+  of aggressor side. Two-channel (buy-aggressor / sell-aggressor with
+  cross-excitation) is the proper microstructure formulation but requires
+  extending `Hawkes` and a reliable aggressor classifier; not in scope.
+- **Opt-in via `hawkes_use_real_trades` (default false)**. Off keeps
+  existing tests / paper config behaviour unchanged. On causes the engine
+  to also call `subscribe_trades` for every symbol and to drain trade events
+  each step.
+- **Per-ticker FIFO inside `IBKRClient`**, drained by the engine - mirrors
+  the `OrderLifecycleBook` polling pattern used for fills, rather than
+  registering a callback closure inside the engine.
+- **dt in nanoseconds end-to-end**, converted to seconds (`* 1e-9`) at the
+  Hawkes-update boundary. First-ever observation on a symbol uses a default
+  `dt = 1 ms` so Hawkes does not decay to baseline on a huge first-event dt.
+
+Files changed:
+- `include/broker/IBKRCallbacks.hpp` - add `virtual void on_trade(int
+  ticker_id, double price, double qty, std::int64_t exch_ts_ns) {}` to the
+  inbound surface, default no-op.
+- `include/broker/IBKRTransport.hpp` - add `virtual void subscribe_trades(
+  const TopOfBookRequest&) {}` default no-op.
+- `include/broker/IBroker.hpp` - add `struct TradeEvent { price, qty,
+  exch_ts_ns }`, `virtual void subscribe_trades(...)` default no-op, and
+  `virtual std::vector<TradeEvent> drain_trades(int ticker_id) { return {}; }`
+  default empty so brokers that don't deliver trades (`LocalSimBroker`,
+  `DatabentoBacktestBroker`) compile unchanged.
+- `include/broker/IBKRClient.hpp`, `src/lib/IBKRClient.cpp` - implement
+  `subscribe_trades` (forwards to transport), `on_trade` (locks
+  `books_mutex_`, appends to `trade_events_[ticker_id]`), and `drain_trades`
+  (locks, moves out the vector). `trade_events_` is a new
+  `std::unordered_map<int, std::vector<TradeEvent>>`.
+- `src/lib/RealIBKRTransport.cpp` -
+  - Replace the empty `tickByTickAllLast` body with a real implementation
+    that calls `DecimalFunctions::decimalToDouble(size)` and forwards via
+    `callbacks_->on_trade(reqId, price, qty, exch_time * 1e9)`.
+  - Implement `subscribe_trades` via
+    `client_.reqTickByTickData(req.ticker_id, contract, "AllLast", 0, false)`.
+- `include/models/stock.hpp` - add `std::int64_t last_trade_ts_ns = 0;` so
+  the engine can compute event spacing per symbol.
+- `include/config/AppConfig.hpp`, `src/lib/AppConfig.cpp` - add
+  `bool hawkes_use_real_trades = false;` plus parsing.
+- `include/engine/LiveExecutionEngine.hpp`, `src/lib/LiveExecutionEngine.cpp`:
+  - New private `void update_hawkes_from_trades()` that iterates universe,
+    drains trades per ticker_id, and calls `s.hawkes.update(dt_s, 1)`.
+  - `reconcile_broker_state()` calls `update_hawkes_from_trades()` first so
+    the rest of the step sees the updated `λ`.
+  - `subscribe_live_books()` additionally calls `broker_->subscribe_trades`
+    for every symbol when `cfg_.app.hawkes_use_real_trades`.
+- `tests/common/MockIBKRTransport.hpp` - `MOCK_METHOD` for
+  `subscribe_trades`.
+- `tests/common/FakeIBKRTransport.hpp` - empty `subscribe_trades` override.
+- `tests/common/MockIBroker.hpp` - `MOCK_METHOD` for `subscribe_trades` and
+  `drain_trades`.
+- `tests/unit/IBKRClientTest.cpp` - new tests:
+  `SubscribeTradesForwardsToTransport`, `OnTradeAccumulatesPerTickerAndDrain
+  Empties`, `DrainTradesEmptyForUnknownTicker`.
+- `tests/unit/LiveExecutionEngineTest.cpp` - new tests:
+  `SubscribeLiveBooksAlsoSubscribesTradesWhenEnabled`,
+  `SubscribeLiveBooksSkipsTradesWhenDisabled`,
+  `ReconcileDrivesHawkesFromRealTrades`,
+  `ReconcileSkipsHawkesUpdateWhenDisabled`.
+- `tests/unit/AppConfigTest.cpp` - default + parse coverage for
+  `hawkes_use_real_trades`.
+- `config.ibkr_paper.example.ini` - documents the knob, leaves it off until
+  the AllLast market-data subscription is confirmed live on the account.
+- `config.databento_backtest.example.ini` - leaves the knob off explicitly
+  with a comment that `DatabentoBacktestBroker` does not produce trades on
+  this path.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Added `on_trade` callback shape and `TradeEvent` struct.
+2. Implemented the transport-side `subscribe_trades` and replaced the empty
+   `tickByTickAllLast` with the forwarding body that decodes Decimal size
+   and packs Unix-seconds time as nanoseconds.
+3. Plumbed `IBKRClient` to accumulate per-ticker trades and expose
+   `drain_trades` through `IBroker`.
+4. Wired the engine to subscribe to trades and drain them each step,
+   gated by `hawkes_use_real_trades`.
+5. Added unit-test coverage at both the IBKRClient seam and the engine seam.
+6. Retagged the [2026-05-15] Hawkes investigation `#todo` with `#Done` and
+   a back-reference to this entry per the workflow protocol.
+
+Validation performed:
+- Static inspection only. Agent's UCRT64 sandbox compiler still
+  silently-killed; user must build + ctest from a regular UCRT64 shell:
+  ```bash
+  export PATH=/ucrt64/bin:$PATH
+  cmake --build build-ucrt-ibkr --target hft_gtests hft_tests -j 8
+  ctest --test-dir build-ucrt-ibkr --output-on-failure
+  ```
+
+Known risks / follow-up:
+- **IBKR market-data prerequisite**: `reqTickByTickData(..., "AllLast", ...)`
+  requires that the account has the consolidated/NBBO trade-prints
+  subscription for the symbol. On a fresh paper account without the US
+  Securities Snapshot and Futures Value Bundle, the call returns error 354
+  ("Requested market data is not subscribed") and no on_trade fires.
+  Verify the bundle on the IBKR side before flipping the config knob on
+  in production.
+- **Single-channel Hawkes**: signal collapses buyer-initiated and seller-
+  initiated trades into one event stream. Two-channel is the proper next
+  iteration; would let `λ_buy` weight the buy ranking while `λ_sell`
+  weights the sell-side execution score.
+- **No event-rate sanity cap**: in an active stock (>1000 trades/sec) the
+  per-step drain can be hundreds of events. Each `Hawkes::update` is O(1)
+  so memory is fine, but lambda can spike well above the model's
+  steady-state range. Worth adding a per-step event cap or moving to
+  per-event update done on the reader thread later.
+- **`last_trade_ts_ns` only updates on consumed events**, not on subscribe.
+  If the first trade arrives 5 hours after subscribe, dt = 1 ms by our
+  default rule, which slightly understates the actual quietness. Cosmetic.
+- The fill-probability (`FillModel`) is **still synthetic** - it runs
+  against the internal `Simulator` order book, not against IBKR's real L2.
+  Wiring Hawkes alone leaves the buy decision two-thirds market-aware
+  (real `s.mid`, real `λ`) but one-third synthetic (`p_fill`). See the
+  new `#todo` immediately below.
+
+Suggested commit:
+```bash
+git commit -m "feat(engine): drive Hawkes from real IBKR AllLast trade prints (opt-in)"
+```
+
+## [2026-05-16] - Wire FillModel and remaining ranking inputs to real market data #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Local clone at `D:\trading-system`, on `main`, expected to be at the
+  Hawkes-resolver commit after this entry lands.
+
+Context (why this is a `#todo` not a fix):
+- The Hawkes `#todo` only resolved the activity weight `λ`. The other two
+  inputs to the buy ranking score `p_fill × λ` are still synthetic:
+  1. `FillModel::compute` runs against the internal `hft::Simulator`
+     order book seeded by random external_flow, not against IBKR's real L2.
+  2. The 8 candidate limit prices are a hardcoded `mid ± 0.10` in `0.025`
+     steps - wrong for sub-$30 or >$500 stocks and wrong for sub-cent tick
+     sizes.
+  3. `RankingEngine::initialize` sets `s.mid = 100.0 + 0.05*i` as a
+     synthetic seed; real `s.mid` only arrives after the first
+     `reconcile_broker_state`. Cosmetic but pollutes the very first
+     ranking step.
+  4. `risk/EWMAVolatility.h` exists but is referenced only in tests; no
+     code reads `σ` to risk-adjust score or size.
+
+Proposed scope:
+- Replace the `FillModel` simulator-book input path with real IBKR L2:
+  - Use `IBKRClient::snapshot_book(ticker_id)` to obtain the real book.
+  - Compute `queue_ahead` at each candidate limit from the real book's
+    bid levels (sum of sizes at price >= L, since we're buying).
+  - Estimate `traded_at_level` from accumulated trade volume at that
+    level over a rolling window (cheap to do alongside the Hawkes wire).
+- Make the 8-candidate grid relative to spread and tick:
+  - Read the symbol's tick size from `reqContractDetails` (cache it).
+  - Span ±N ticks around the bid, where N is configurable
+    (`fill_candidate_n_ticks`, default 4).
+- Bootstrap `s.mid` from the first `reconcile_broker_state` rather than
+  the `100.0 + 0.05*i` seed.
+- Wire `EWMAVolatility` into per-symbol `σ` tracking from mid returns,
+  add a knob `risk_adjust_score` that divides the ranking score by
+  max(σ, σ_floor) when set.
+
+Open design questions:
+- Hold candidate evaluation per-tick or per-event? Per-tick is what the
+  code does now; per-trade-event would be more reactive but heavier.
+- Use full L2 ladder or just top-of-book + estimated cumulative ladder?
+  Real ladders are noisy and IBKR's L2 is delayed for some venues.
+
+Validation performed:
+- None; this is an investigation note, not a code change.
+
+Known risks / follow-up:
+- `#todo`. Surface to user and get approval before working on it.
+- Sibling: `[2026-05-16] - Wire Hawkes intensity to real IBKR AllLast trade
+  prints` resolved the `λ` input; this entry covers everything else needed
+  to make the buy ranking fully market-aware.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(engine): real-L2-driven FillModel and tick-relative candidate grid"
+```
+
+## [2026-05-16] - Run a one-week real Databento backtest with OU gate ON and calibrate thresholds #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- VPS workdir `/mnt/HC_Volume_105581071/trading-system/` already has the
+  scripts (`run_hftbacktest_databento.py`, `databento_download_l2.py`,
+  `databento_download_mbp1.py`) and the venv.
+- Prior synthetic and 1-hour real smoke runs at
+  `reports/databento_real_smoke_report.md` and
+  `reports/databento_synthetic_hourly_report.md`.
+
+Context:
+- The 1-hour real Databento smoke for `AAPL` ended with `final_position=1.0`
+  - the price never moved +80 bps in an hour, so the sell limit was never
+  touched. Expected for a quiet intraday window; the strategy was never
+  validated end-to-end against real data.
+- Full one-week run is ~`$15-20` Databento billing (AAPL+NVDA+AMD,
+  2026-04-13 -> 2026-05-01). User has explicitly OK'd the budget.
+- OU gate is now wired (`a2c6b34`) and ON in the backtest example config,
+  but `ou_buy_threshold_pct=0.0` was picked without data. The right
+  threshold needs to be calibrated against a real-data run; -0.005 or
+  -0.001 might be more selective.
+
+Proposed scope:
+- Copy any updated scripts/config to Hetzner (`scp scripts/run_hftbacktest_*
+  hetzner:/mnt/HC_Volume_105581071/trading-system/scripts/`).
+- (Optional but recommended) Run `ibkr_historical_l1.py` locally for
+  AAPL/NVDA/AMD over the same window, copy CSVs to `data/l1/` on VPS.
+  Otherwise the L1 fallback synthesises bid/ask from coarser sources.
+- Kick off the one-week run on Hetzner with the OU gate at default
+  threshold:
+  ```bash
+  ssh hetzner 'cd /mnt/HC_Volume_105581071/trading-system && . .venv/bin/activate && \
+    python scripts/run_hftbacktest_databento.py \
+      --symbols AAPL,NVDA,AMD \
+      --start 2026-04-13T13:30:00Z --end 2026-05-01T20:00:00Z \
+      --api-key-file /root/.config/trading-system/databento_api_key \
+      --summary reports/oneweek_summary.json --report reports/oneweek_report.md'
+  ```
+- Inspect: fill rate, filled-vs-touched, equity, average spread, target
+  touch counts. If sells fire reasonably, sweep `ou_buy_threshold_pct`
+  over `{-0.01, -0.005, -0.001, 0, +0.001, +0.005}` against the same
+  cached L2 CSVs (re-downloads are free at that point) and pick the best.
+
+Open design questions:
+- Should the backtest also test with `ou_window_size` swept? Half-life of
+  4096 samples vs 8192 vs 2048 may matter more than threshold.
+- How to handle overnight gaps in the EWMA - reset `ou_initialized` at
+  session-open boundaries? Currently it carries across days.
+
+Validation performed:
+- None.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get explicit approval again before kicking
+  the billable download (the user OK'd ~$20; verify before exceeding).
+- Disk/memory: prior estimates show ~3.7M L2 rows per symbol-hour. One
+  week × 3 symbols × 6.5 RTH hours = ~700M rows at peak. Monitor
+  `/mnt/HC_Volume_105581071/trading-system/data/databento/` size during
+  the run.
+- Run wall-clock: previous 1-hour run took ~minutes; 8 trading days × 3
+  symbols is likely several hours. Run via `tmux` or `nohup` on Hetzner.
+- Sibling `#todo`: `[2026-05-16] - Wire FillModel and remaining ranking
+  inputs to real market data` - if that is resolved first, the
+  calibration changes (the buy score changes), so the resulting
+  thresholds may not transfer. Worth re-running after FillModel work.
+
+Suggested commit (when calibration is recorded):
+```bash
+git commit -m "docs(backtest): record one-week Databento run + OU threshold calibration"
+```
+
+## [2026-05-16] - Live-trading prerequisites (kill-switch, paper endurance, data subs, ops hardening) #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Aggregated from "hard blockers" identified during the 2026-05-16
+  end-to-end review. Listed as a single `#todo` because no item is large
+  on its own but together they gate enabling real-money live trading.
+
+Context:
+- None of the live-mode safety / operational pieces exist yet. The engine
+  is structurally capable of routing orders to live IBKR but the
+  guardrails and operational hardening are missing. Each sub-item is
+  a small change (under ~150 LOC); together they belong in one
+  pre-flight checklist.
+
+Sub-items (each can become its own follow-up entry when worked):
+
+1. **Daily-loss kill-switch.** Track realized + unrealized PnL since
+   session open. When loss exceeds configurable `daily_loss_kill_usd`,
+   cancel all open orders, refuse to place new ones, and set component
+   state Engine -> Error. No code today; engine has `OrderLifecycleBook`
+   for fills and `open_positions_` with `entry_price` so the math is
+   close at hand.
+2. **Paper-trade endurance run.** Spin `hft_app` against real IBKR paper
+   port for a full RTH session, watch for partial-fill edge cases,
+   cancel/reject behaviour, reconnect handling, and overnight order
+   state. Existing `ibkr_paper_order_probe` covers the round-trip; a
+   long-running scenario does not exist.
+3. **Confirm IBKR market-data subscriptions** for the active universe.
+   The sibling Hawkes entry needs AllLast trade prints (NYSE Network A +
+   Network B + NASDAQ Network C, ~$4.50/mo per earlier handoff). Verify
+   in IBKR Account Management before turning `hawkes_use_real_trades=true`.
+4. **Hetzner operational hardening.** Currently the VPS has no
+   auto-restart on `hft_app` crash, no log rotation, and no alerting.
+   Add systemd unit + logrotate config + a thin "alert if stopped" hook.
+   100 GB rolling-compressed log retention was the earlier budget.
+5. **IB Gateway 2FA / session management on VPS.** The gateway can't be
+   left logged in indefinitely on a paper account without periodic
+   re-auth. Document the operational procedure for keeping the session
+   alive and reconnecting after IBKR's nightly restart.
+6. **Cost calibration.** `AppConfig` has `commission_per_share`,
+   `half_spread_cost`, `impact_coefficient` etc. with reasonable
+   defaults. Calibrate them against the user's actual IBKR tier (likely
+   `IBKR Pro` with tiered pricing) before live trading - the sell
+   `target_profit_pct = 0.008` is the minimum profitable trade given
+   these costs, and being off by 0.05 on commission alone meaningfully
+   changes that.
+
+Validation performed:
+- None.
+
+Known risks / follow-up:
+- `#todo`. None of this is sequential with the FillModel `#todo` and the
+  one-week Databento `#todo`, but all three must be resolved before the
+  user enables live mode.
+- This entry is intentionally broad. A future agent picking it up may
+  prefer to split it into per-sub-item `#todo`s and retag this one
+  `#Done (split into ...)` for clarity.
+
+Suggested commit (when sub-items land):
+- One commit per sub-item, e.g.
+  ```bash
+  git commit -m "feat(engine): daily-loss kill switch + AppConfig.daily_loss_kill_usd"
+  ```
+
 ## [2026-05-15] - Wire OU mean-reversion gate into the buy decision
 
 Model / agent:
@@ -108,7 +457,7 @@ Suggested commit:
 git commit -m "feat(engine): OU mean-reversion entry gate (opt-in via ou_window_size)"
 ```
 
-## [2026-05-15] - Investigation: Hawkes intensity does not consume real IBKR trade events #todo
+## [2026-05-15] - Investigation: Hawkes intensity does not consume real IBKR trade events #todo #Done (resolved by [2026-05-16] Wire Hawkes intensity to real IBKR AllLast trade prints)
 
 Model / agent:
 - Model: Claude Opus 4.7 (Anthropic), reasoning model

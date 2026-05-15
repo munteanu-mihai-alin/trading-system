@@ -103,6 +103,21 @@ void IBKRClient::subscribe_top_of_book(const TopOfBookRequest& req) {
   transport_->subscribe_top_of_book(req);
 }
 
+void IBKRClient::subscribe_trades(const TopOfBookRequest& req) {
+  transport_->subscribe_trades(req);
+}
+
+std::vector<TradeEvent> IBKRClient::drain_trades(int ticker_id) {
+  std::lock_guard<std::mutex> lock(books_mutex_);
+  const auto it = trade_events_.find(ticker_id);
+  if (it == trade_events_.end() || it->second.empty()) {
+    return {};
+  }
+  std::vector<TradeEvent> out;
+  out.swap(it->second);
+  return out;
+}
+
 TopOfBook IBKRClient::snapshot_top_of_book(int ticker_id) const {
   std::lock_guard<std::mutex> lock(books_mutex_);
   const auto it = top_books_.find(ticker_id);
@@ -234,6 +249,14 @@ void IBKRClient::on_top_of_book_size(int ticker_id, bool is_bid, double size) {
   } else {
     book.ask_size = size;
   }
+}
+
+void IBKRClient::on_trade(int ticker_id, double price, double qty,
+                          std::int64_t exch_ts_ns) {
+  // Reader-thread entry. Cheap append into the per-ticker FIFO; the engine
+  // thread drains via drain_trades() each step.
+  std::lock_guard<std::mutex> lock(books_mutex_);
+  trade_events_[ticker_id].push_back(TradeEvent{price, qty, exch_ts_ns});
 }
 
 void IBKRClient::on_next_valid_id(int order_id) {

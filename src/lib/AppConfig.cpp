@@ -84,6 +84,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.ou_window_size = std::stoi(val);
       } else if (key == "ou_buy_threshold_pct") {
         cfg.ou_buy_threshold_pct = std::stod(val);
+      } else if (key == "hawkes_use_real_trades") {
+        cfg.hawkes_use_real_trades = parse_bool(val);
       } else if (key == "max_open_symbols") {
         cfg.max_open_symbols = std::stoi(val);
       } else if (key == "max_orders_per_run") {

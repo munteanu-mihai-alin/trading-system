@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace hft {
@@ -31,6 +32,13 @@ class IBKRCallbacks {
 
   virtual void on_top_of_book_price(int ticker_id, bool is_bid, double price) {}
   virtual void on_top_of_book_size(int ticker_id, bool is_bid, double size) {}
+
+  // Single trade print on `ticker_id`. `exch_ts_ns` is the venue timestamp
+  // in Unix nanoseconds; consumers compute event spacing from it to drive
+  // Hawkes (or any other event-rate model). Default no-op so callbacks
+  // that don't care about trades don't have to override.
+  virtual void on_trade(int ticker_id, double price, double qty,
+                        std::int64_t exch_ts_ns) {}
 
   virtual void on_next_valid_id(int order_id) {}
   virtual void on_error(const IBKRError&) {}

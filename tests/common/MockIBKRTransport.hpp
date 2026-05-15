@@ -31,6 +31,8 @@ class MockIBKRTransport : public IBKRTransport {
               (override));
   MOCK_METHOD(void, subscribe_market_depth, (const MarketDepthRequest& req),
               (override));
+  MOCK_METHOD(void, subscribe_trades, (const TopOfBookRequest& req),
+              (override));
   MOCK_METHOD(void, pump_once, (), (override));
   MOCK_METHOD(void, set_callbacks, (IBKRCallbacks * cb), (override));
 };

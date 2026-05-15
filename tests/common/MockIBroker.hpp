@@ -27,6 +27,10 @@ class MockIBroker : public IBroker {
               (override));
   MOCK_METHOD(void, subscribe_market_depth, (const MarketDepthRequest& req),
               (override));
+  MOCK_METHOD(void, subscribe_trades, (const TopOfBookRequest& req),
+              (override));
+  MOCK_METHOD(std::vector<TradeEvent>, drain_trades, (int ticker_id),
+              (override));
   MOCK_METHOD(void, on_step, (int t), (override));
   MOCK_METHOD(TopOfBook, snapshot_top_of_book, (int ticker_id),
               (const, override));

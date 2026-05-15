@@ -53,6 +53,7 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.account_budget, 1500.0);
   EXPECT_EQ(cfg.ou_window_size, 0);
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, 0.0);
+  EXPECT_FALSE(cfg.hawkes_use_real_trades);
   EXPECT_EQ(cfg.max_open_symbols, 3);
   EXPECT_EQ(cfg.max_orders_per_run, 0);
   EXPECT_EQ(cfg.max_orders_per_symbol, 0);
@@ -118,6 +119,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "account_budget=2500\n"
       "ou_window_size=4096\n"
       "ou_buy_threshold_pct=-0.005\n"
+      "hawkes_use_real_trades=true\n"
       "max_open_symbols=4\n"
       "max_orders_per_run=7\n"
       "max_orders_per_symbol=2\n"
@@ -158,6 +160,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.account_budget, 2500.0);
   EXPECT_EQ(cfg.ou_window_size, 4096);
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, -0.005);
+  EXPECT_TRUE(cfg.hawkes_use_real_trades);
   EXPECT_EQ(cfg.max_open_symbols, 4);
   EXPECT_EQ(cfg.max_orders_per_run, 7);
   EXPECT_EQ(cfg.max_orders_per_symbol, 2);

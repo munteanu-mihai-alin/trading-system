@@ -455,13 +455,38 @@ void LiveExecutionEngine::subscribe_live_books(
                           hl::ComponentState::Starting);
   int ticker = 1;
   for (const auto& sym : symbols) {
-    broker_->subscribe_top_of_book(TopOfBookRequest{ticker++, sym});
+    broker_->subscribe_top_of_book(TopOfBookRequest{ticker, sym});
+    if (cfg_.app.hawkes_use_real_trades) {
+      broker_->subscribe_trades(TopOfBookRequest{ticker, sym});
+    }
+    ++ticker;
   }
   hl::set_component_state(hl::ComponentId::MarketData,
                           hl::ComponentState::Ready);
 }
 
+void LiveExecutionEngine::update_hawkes_from_trades() {
+  if (!cfg_.app.hawkes_use_real_trades)
+    return;
+  for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
+    auto& s = ranking.portfolio.items[i];
+    const int ticker_id = static_cast<int>(i + 1);
+    const auto trades = broker_->drain_trades(ticker_id);
+    for (const auto& t : trades) {
+      // Compute dt in seconds. First-ever observation gets a small default
+      // (1 ms) so Hawkes does not decay to baseline on a huge first dt.
+      double dt_s = 0.001;
+      if (s.last_trade_ts_ns > 0 && t.exch_ts_ns > s.last_trade_ts_ns) {
+        dt_s = static_cast<double>(t.exch_ts_ns - s.last_trade_ts_ns) * 1e-9;
+      }
+      s.hawkes.update(dt_s, /*event=*/1);
+      s.last_trade_ts_ns = t.exch_ts_ns;
+    }
+  }
+}
+
 void LiveExecutionEngine::reconcile_broker_state() {
+  update_hawkes_from_trades();
   for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
     auto& s = ranking.portfolio.items[i];
     const auto top = broker_->snapshot_top_of_book(static_cast<int>(i + 1));

@@ -348,4 +348,41 @@ TEST(IBKRClient, ReconnectOnceShortCircuitsWhenAlreadyConnected) {
   EXPECT_TRUE(c.reconnect_once());
 }
 
+TEST(IBKRClient, SubscribeTradesForwardsToTransport) {
+  auto t = std::make_unique<NiceMockTransport>();
+  EXPECT_CALL(*t, subscribe_trades(_)).Times(1);
+  hft::IBKRClient c(std::move(t));
+  c.subscribe_trades(hft::TopOfBookRequest{7, "AAPL"});
+}
+
+TEST(IBKRClient, OnTradeAccumulatesPerTickerAndDrainEmpties) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  c.on_trade(/*ticker_id=*/7, /*price=*/100.5, /*qty=*/200.0,
+             /*exch_ts_ns=*/1'700'000'000'000'000'000LL);
+  c.on_trade(/*ticker_id=*/7, /*price=*/100.7, /*qty=*/50.0,
+             /*exch_ts_ns=*/1'700'000'000'500'000'000LL);
+  c.on_trade(/*ticker_id=*/8, /*price=*/250.0, /*qty=*/10.0,
+             /*exch_ts_ns=*/1'700'000'000'000'000'000LL);
+
+  auto t7 = c.drain_trades(7);
+  ASSERT_EQ(t7.size(), 2u);
+  EXPECT_DOUBLE_EQ(t7[0].price, 100.5);
+  EXPECT_DOUBLE_EQ(t7[1].qty, 50.0);
+
+  // A second drain on the same ticker should be empty.
+  auto t7_again = c.drain_trades(7);
+  EXPECT_TRUE(t7_again.empty());
+
+  auto t8 = c.drain_trades(8);
+  ASSERT_EQ(t8.size(), 1u);
+  EXPECT_DOUBLE_EQ(t8[0].price, 250.0);
+}
+
+TEST(IBKRClient, DrainTradesEmptyForUnknownTicker) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  EXPECT_TRUE(c.drain_trades(999).empty());
+}
+
 }  // namespace

@@ -210,6 +210,79 @@ TEST(LiveExecutionEngine, SkipsSymbolPricedAboveTradeNotional) {
   engine.step(0);
 }
 
+TEST(LiveExecutionEngine, SubscribeLiveBooksAlsoSubscribesTradesWhenEnabled) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  // 3 symbols -> 3 top-of-book + 3 trade subscriptions.
+  EXPECT_CALL(*broker, subscribe_top_of_book(_)).Times(3);
+  EXPECT_CALL(*broker, subscribe_trades(_)).Times(3);
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.hawkes_use_real_trades = true;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.subscribe_live_books({"AAPL", "MSFT", "GOOG"});
+}
+
+TEST(LiveExecutionEngine, SubscribeLiveBooksSkipsTradesWhenDisabled) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, subscribe_top_of_book(_)).Times(3);
+  EXPECT_CALL(*broker, subscribe_trades(_)).Times(0);
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.hawkes_use_real_trades = false;  // explicit
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.subscribe_live_books({"AAPL", "MSFT", "GOOG"});
+}
+
+TEST(LiveExecutionEngine, ReconcileDrivesHawkesFromRealTrades) {
+  // With hawkes_use_real_trades=true, reconcile_broker_state must drain
+  // trade events from the broker and feed them into Stock::hawkes. Each
+  // event with event=1 lifts lambda by alpha=5 (decay over our chosen
+  // dt is negligible), so after a single event lambda should jump well
+  // above the default baseline of 10.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  // ticker_id 1 gets one trade; tickers 2..N get nothing.
+  std::vector<hft::TradeEvent> ticker1_trades = {
+      hft::TradeEvent{100.50, 100.0, 1'700'000'000'000'000'000LL}};
+  ON_CALL(*broker, drain_trades(1))
+      .WillByDefault(Return(ticker1_trades));
+  ON_CALL(*broker, drain_trades(::testing::Ne(1)))
+      .WillByDefault(Return(std::vector<hft::TradeEvent>{}));
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.steps = 1;
+  app.hawkes_use_real_trades = true;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  const double lambda_before = engine.ranking.portfolio.items[0].hawkes.lambda;
+  engine.reconcile_broker_state();
+  const double lambda_after = engine.ranking.portfolio.items[0].hawkes.lambda;
+  EXPECT_GT(lambda_after, lambda_before);
+  // Untouched symbols stay at baseline.
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[1].hawkes.lambda, 10.0);
+}
+
+TEST(LiveExecutionEngine, ReconcileSkipsHawkesUpdateWhenDisabled) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  // drain_trades must NOT be called when the feature is off.
+  EXPECT_CALL(*broker, drain_trades(::testing::_)).Times(0);
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.steps = 1;
+  app.hawkes_use_real_trades = false;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  engine.reconcile_broker_state();
+}
+
 TEST(LiveExecutionEngine, OUGateBlocksBuysAboveMean) {
   // ou.mu primed to 1.0 (far below the ranking engine's ~$100 default mids).
   // Every active candidate has mid > mu * (1 + threshold=0) -> every buy is

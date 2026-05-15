@@ -1,10 +1,18 @@
 #pragma once
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "broker/OrderLifecycle.hpp"
 #include "models/l2_book.hpp"
 
 namespace hft {
+
+struct TradeEvent {
+  double price = 0.0;
+  double qty = 0.0;
+  std::int64_t exch_ts_ns = 0;
+};
 
 struct MarketDepthRequest {
   int ticker_id = 0;
@@ -63,6 +71,16 @@ class IBroker {
   virtual void stop_event_loop() = 0;
   virtual void subscribe_top_of_book(const TopOfBookRequest& /*req*/) {}
   virtual void subscribe_market_depth(const MarketDepthRequest& req) = 0;
+  // Subscribe to AllLast trade prints on ticker_id. Default no-op so brokers
+  // that don't deliver trades (DatabentoBacktestBroker, LocalSimBroker) keep
+  // compiling. Live IBKR implements it via reqTickByTickData.
+  virtual void subscribe_trades(const TopOfBookRequest& /*req*/) {}
+  // Drain (and clear) the per-ticker trade events accumulated since the last
+  // call. Returns empty for brokers that don't deliver trades. Engine polls
+  // this each step to drive Hawkes from real market activity.
+  [[nodiscard]] virtual std::vector<TradeEvent> drain_trades(int /*ticker_id*/) {
+    return {};
+  }
 
   virtual void on_step(int /*t*/) {}
 

@@ -4,6 +4,91 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-16] - Build a C++-side backtest runner that drives LiveExecutionEngine through DatabentoBacktestBroker #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `7590a72` (CI build-fix on top of the four-feature commit).
+
+Context:
+- The Python backtest harness in `scripts/run_hftbacktest_databento.py`
+  drives hftbacktest directly: it reads the first valid ask from the L1
+  CSV, market-buys one share, and submits a target-profit limit sell.
+  It does NOT instantiate `LiveExecutionEngine` and therefore does NOT
+  exercise any of the BUY-side logic that has been shipped this week:
+  - Hawkes intensity (real-trade wired, two-channel)
+  - OU mean-reversion gate (samples or half-life seconds)
+  - +target_pct hit-count tilt
+  - Score-weighted position sizing
+  - Budget gate, max_open_symbols, max_orders_per_run/_per_symbol
+- This was a latent gap: the original 2026-05-16 "Run a one-week real
+  Databento backtest" #todo implicitly assumed the backtest would
+  validate the strategy. It only validates the sell-side L2 execution
+  path. Buy ranking is bypassed entirely.
+
+Proposed scope:
+- Add a new C++ backtest entry point, e.g. `src/app/hft_backtest.cpp` or
+  a flag on `hft_app` that runs in backtest mode. It would:
+  1. Construct `DatabentoBacktestBroker` from `AppConfig.databento_*`
+     fields (mode=databento_backtest).
+  2. Construct `LiveExecutionEngine` with that broker.
+  3. Call `subscribe_live_books` over the universe.
+  4. Loop `engine.step(t)` until the replay broker's clock exhausts
+     the cached L2 CSV.
+  5. Drain `OrderLifecycleBook` for filled orders, compute PnL net of
+     fees from `AppConfig.commission_per_share`, etc.
+  6. Write a Markdown report similar to the Python script's output.
+- `DatabentoBacktestBroker::on_step(int t)` already exists (header
+  inspected during earlier work). It needs to:
+  - Advance the replay clock and surface `snapshot_top_of_book` and
+    `snapshot_book` against the current step's L2 (already implemented).
+  - Optionally surface `drain_trades` to drive the new Hawkes wiring;
+    today it returns empty. To support the hawkes_use_real_trades
+    feature in backtest, parse trade prints from the MBP-10 dataset
+    (each "trade" event in MBP-10 has a flag) and queue them.
+- L1 input: the existing CSVs at `data/l1/<SYM>.mbp1.csv` from the
+  ibkr_historical_l1.py backfill can drive `s.mid` in
+  `reconcile_broker_state` via a small `LocalL1CsvBroker` adapter, OR
+  the engine can read top-of-book directly from the L2 ladder's level 0.
+
+Open design questions:
+- Which broker delivers `s.mid`? Options: (a) reuse MBP-10 level 0 as
+  L1 proxy; (b) wire a separate L1 source from the L1 CSVs; (c) ship
+  both flows behind a config knob. Cleanest: `DatabentoBacktestBroker`
+  already exposes `snapshot_top_of_book` that derives from
+  `snapshot_book().bids[0]/asks[0]`. Use that.
+- How does the backtest drive Hawkes? Lee-Ready aggressor classification
+  on MBP-10 requires a separate "trades" channel (Databento has it as
+  the MBP-1 schema). For first cut, feed Hawkes from MBP-10 level 0
+  changes as a poor-man's event stream; cross-check against the live
+  AllLast path later.
+- Reporting: keep the Python harness as the L2-execution validator; the
+  C++ harness as the strategy validator. Side-by-side reports help
+  triangulate.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- Sibling `#todo`: `[2026-05-16] - Run a one-week real Databento
+  backtest with OU gate ON and calibrate thresholds`. The cost-of-data
+  is the SAME between the Python harness and a C++ runner; the L2 CSVs
+  are cached after the first download. So adding the C++ harness adds
+  zero Databento cost - it just reads the same cached data through a
+  different consumer. Run both harnesses against the same window.
+- Without this, every BUY-side change is theoretical until live paper
+  trading, which is the opposite of how strategy validation should
+  flow.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(backtest): C++ backtest runner driving LiveExecutionEngine through DatabentoBacktestBroker"
+```
+
 ## [2026-05-16] - Implement first 4 ranking-side #todos (hit-count, two-channel Hawkes, OU half-life in seconds, score-weighted sizing)
 
 Model / agent:

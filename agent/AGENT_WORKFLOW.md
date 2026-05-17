@@ -93,21 +93,30 @@ Do not write `unknown` for the model or provider/client field. Use `unknown` onl
 2. If direct cloning is unavailable, use the latest repo zip, raw GitHub file contents, or user-provided logs available in the current environment.
 3. Never silently delete code or files. List deletions explicitly.
 4. Keep scripts and generated files as valid multiline text files. Do not flatten YAML, Bash, CMake, C++, Markdown, or config files into one line.
-5. For any patch or generated artifact, state:
+5. **Run `./scripts/format_code.sh` after C++ edits and before staging the
+   commit.** The script applies `.clang-format` to every `*.hpp`/`*.h`/
+   `*.cpp` under `include/`, `src/`, and `tests/`. If the formatter
+   modifies anything, re-`git add` those files before `git commit` so
+   the commit includes the formatted version. On UCRT64 the binary is
+   `/d/msys64/mingw64/bin/clang-format.exe` - prepend
+   `/d/msys64/mingw64/bin` to `PATH` if `clang-format` isn't on yours.
+   Linters/CI will flag unformatted C++; skipping this step costs a CI
+   round-trip per missed file.
+6. For any patch or generated artifact, state:
    - changed files
    - deletions/removals
    - validation performed
    - known risks
    - suggested commit message
-6. For CI/build changes, explain the relationship between:
+7. For CI/build changes, explain the relationship between:
    - `third_party/` source trees
    - `dependencies/<toolchain>/install` dependency prefixes
    - project build directories such as `build-ucrt-ibkr`
-7. For UCRT work, remember:
+8. For UCRT work, remember:
    - `third_party/` stores source code
    - `dependencies/ucrt64/install` stores compiled dependency outputs
    - `third_party/twsapi/client` supplies headers/sources for `twsapi_vendor`; root CMake builds it from source unless **`libtwsapi_vendor.a`** is already installed under **`CMAKE_PREFIX_PATH`** (Linux **`linux-deps`** bundle ships that prebuilt archive)
-8. For Linux CI dependency work, remember:
+9. For Linux CI dependency work, remember:
    - `scripts/rebuild_linux_deps_ci.sh` builds `dependencies/linux/install`
    - it archives `dependencies/linux/linux-deps-ubuntu-latest.tar.gz`
    - CI can publish/download this archive as a `linux-deps` release asset
@@ -127,14 +136,18 @@ Do not write `unknown` for the model or provider/client field. Use `unknown` onl
      - inspect generated CMake content
      - run dry-run paths if supported
      - run CMake configure/build only if dependencies are available
-6. Package the changed project or changed files if requested.
-7. In the response, list:
+6. If any `*.hpp` / `*.h` / `*.cpp` under `include/`, `src/`, or `tests/`
+   was touched, run `./scripts/format_code.sh` and re-stage anything the
+   formatter modified, BEFORE creating the commit message. Commit and CI
+   both expect formatted output.
+7. Package the changed project or changed files if requested.
+8. In the response, list:
    - changed files
    - deletions/removals
    - validation performed
    - known risks
    - suggested commit message
-8. Append a handoff entry to `AGENT_HANDOFF_LOG.md` for substantive changes.
+9. Append a handoff entry to `AGENT_HANDOFF_LOG.md` for substantive changes.
 
 ## Handoff entry template
 

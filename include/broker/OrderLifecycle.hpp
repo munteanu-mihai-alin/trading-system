@@ -70,6 +70,14 @@ class OrderLifecycleBook {
       return nullptr;
     return &it->second;
   }
+
+  // Read-only access to the full state map. Lets the end-of-run report
+  // walk every order to compute realised PnL and fill rates without
+  // duplicating bookkeeping on the engine side.
+  [[nodiscard]] const std::unordered_map<int, OrderLifecycleState>& all()
+      const {
+    return states_;
+  }
 };
 
 }  // namespace hft

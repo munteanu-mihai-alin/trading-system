@@ -117,7 +117,31 @@ int main() {
                     : "OFF")
             << std::endl;
   std::cout << "Mode: " << live_cfg.mode_name() << std::endl;
+
+  // End-of-run trading summary. We don't expose the broker pointer back
+  // through the engine (would leak ownership across the seam), so the
+  // lifecycle-level fill/PnL breakdown is left to a follow-up. For now we
+  // dump what the engine already exposes: order count, open positions,
+  // and the per-position state. That's enough to answer "did anything
+  // actually trade?" on a backtest run.
+  std::cout << "Orders placed (engine): " << engine.orders_placed()
+            << std::endl;
+  std::cout << "Open positions at end: " << engine.open_positions().size()
+            << std::endl;
+  double open_notional = 0.0;
+  for (const auto& kv : engine.open_positions()) {
+    const auto& p = kv.second;
+    open_notional += p.qty * p.entry_price;
+    std::cout << "  " << p.symbol << " qty=" << p.qty
+              << " entry=" << p.entry_price << " sell_limit=" << p.sell_limit
+              << " sell_score=" << p.sell_score << std::endl;
+  }
+  std::cout << "Open notional at end: " << open_notional << std::endl;
+
   std::cout << "Done. Results in shadow_results.csv" << std::endl;
+  if (!cfg.decision_log_path.empty()) {
+    std::cout << "Decision trace: " << cfg.decision_log_path << std::endl;
+  }
   hl::set_app_state(hl::AppState::ShuttingDown);
   hl::shutdown_logging();
   return 0;

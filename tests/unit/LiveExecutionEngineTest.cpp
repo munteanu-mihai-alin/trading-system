@@ -8,7 +8,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <cstdio>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <vector>
 
 #include "common/MockIBroker.hpp"
@@ -562,6 +565,67 @@ TEST(LiveExecutionEngine, OUGateDisabledWhenWindowSizeZero) {
     s.ou_initialized = true;
   }
   engine.step(0);
+}
+
+TEST(LiveExecutionEngine, DecisionLogWritesRowsOnBuy) {
+  // When decision_log_path is set, the engine should open the file, write a
+  // CSV header, and emit one row per ranked symbol whenever a buy event
+  // fires. Default top_k=3 universe of 5 -> 3 buys -> 3 * 5 = 15 data rows
+  // plus a header row.
+  const std::string path = "tmp_decision_log_test.csv";
+  std::remove(path.c_str());
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.steps = 1;
+  app.decision_log_path = path;
+  {
+    auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+    EXPECT_CALL(*broker, place_limit_order(_)).Times(AtLeast(1));
+    hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                    std::move(broker));
+    engine.initialize_universe(5);
+    engine.step(0);
+  }
+  std::ifstream f(path);
+  ASSERT_TRUE(f.is_open()) << "decision log file should exist";
+  std::stringstream ss;
+  ss << f.rdbuf();
+  const std::string content = ss.str();
+  std::remove(path.c_str());
+
+  // Header must be the first line.
+  EXPECT_NE(content.find("step,decision_id,rank,symbol"), std::string::npos);
+  // At least one buy decision was made (top_k=3, none gated), so at least
+  // 5 data rows (one per universe symbol) per decision event.
+  std::size_t newlines = 0;
+  for (char c : content) {
+    if (c == '\n') ++newlines;
+  }
+  EXPECT_GE(newlines, 6u) << "expected header + >=5 data rows, got "
+                          << newlines;
+}
+
+TEST(LiveExecutionEngine, NoDecisionLogWhenPathEmpty) {
+  // Default (empty path) -> no file written.
+  const std::string path = "tmp_decision_log_should_not_exist.csv";
+  std::remove(path.c_str());
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.steps = 1;
+  // decision_log_path left empty
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  engine.step(0);
+
+  std::ifstream f(path);
+  EXPECT_FALSE(f.is_open()) << "engine must not create a decision log when "
+                               "decision_log_path is empty";
 }
 
 TEST(LiveExecutionEngine, StepHeartbeatBoundary) {

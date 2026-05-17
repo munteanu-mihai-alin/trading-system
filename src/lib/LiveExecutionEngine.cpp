@@ -70,7 +70,39 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
                                          std::unique_ptr<IBroker> broker)
     : cfg_(std::move(cfg)),
       broker_(std::move(broker)),
-      ranking(cfg_.app.top_k, "shadow_results.csv") {}
+      ranking(cfg_.app.top_k, "shadow_results.csv") {
+  if (!cfg_.app.decision_log_path.empty()) {
+    decision_log_ = std::make_unique<std::ofstream>(cfg_.app.decision_log_path);
+    if (decision_log_->is_open()) {
+      *decision_log_
+          << "step,decision_id,rank,symbol,score,score_tilt,hawkes_buy,"
+             "hawkes_sell,hit_count,ou_mu,ou_initialized,mid,best_limit,"
+             "active,chosen,gate\n";
+    } else {
+      decision_log_.reset();
+    }
+  }
+}
+
+void LiveExecutionEngine::emit_decision_snapshot(
+    int t, const std::string& chosen_symbol, const std::string& gate) {
+  if (!decision_log_ || !decision_log_->is_open())
+    return;
+  const int decision_id = next_decision_id_++;
+  for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
+    const auto& s = ranking.portfolio.items[i];
+    const bool is_chosen = (s.symbol == chosen_symbol);
+    *decision_log_ << t << ',' << decision_id << ',' << i << ',' << s.symbol
+                   << ',' << s.score << ',' << s.score_tilt << ','
+                   << s.hawkes.lambda << ',' << s.hawkes_sell.lambda << ','
+                   << s.hit_count << ',' << s.ou.mu << ','
+                   << (s.ou_initialized ? 1 : 0) << ',' << s.mid << ','
+                   << s.best_limit << ',' << (s.active ? 1 : 0) << ','
+                   << (is_chosen ? 1 : 0) << ',' << (is_chosen ? "" : gate)
+                   << '\n';
+  }
+  decision_log_->flush();
+}
 
 bool LiveExecutionEngine::start() {
   hl::set_component_state(hl::ComponentId::Engine,
@@ -182,6 +214,7 @@ void LiveExecutionEngine::step(int t) {
       --next_order_id_;
       break;  // budget exhausted - no point checking the rest this step
     }
+    emit_decision_snapshot(t, s.symbol, /*gate=*/"");
     broker_->place_limit_order(req);
     entry_orders_[req.id] = EntryOrderState{s.symbol, req.qty, req.limit};
     ++orders_placed_;

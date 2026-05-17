@@ -56,6 +56,7 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.ou_halflife_seconds, 0.0);
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, 0.0);
   EXPECT_FALSE(cfg.hawkes_use_real_trades);
+  EXPECT_TRUE(cfg.decision_log_path.empty());
   EXPECT_FALSE(cfg.hit_count_enabled);
   EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.008);
   EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 60.0);
@@ -130,6 +131,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "ou_halflife_seconds=900\n"
       "ou_buy_threshold_pct=-0.005\n"
       "hawkes_use_real_trades=true\n"
+      "decision_log_path=tmp/decisions.csv\n"
       "hit_count_enabled=true\n"
       "hit_count_target_pct=0.012\n"
       "hit_count_horizon_seconds=300\n"
@@ -179,6 +181,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.ou_halflife_seconds, 900.0);
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, -0.005);
   EXPECT_TRUE(cfg.hawkes_use_real_trades);
+  EXPECT_EQ(cfg.decision_log_path, "tmp/decisions.csv");
   EXPECT_TRUE(cfg.hit_count_enabled);
   EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.012);
   EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 300.0);

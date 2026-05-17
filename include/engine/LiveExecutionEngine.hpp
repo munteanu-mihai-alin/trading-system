@@ -1,4 +1,5 @@
 #pragma once
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -14,12 +15,7 @@ namespace hft {
 // Thin live layer that consumes ranked stocks and routes top-K orders to a broker.
 // Shadow portfolio, validation, benchmarking, and simulator stay in RankingEngine.
 class LiveExecutionEngine {
-  LiveTradingConfig cfg_;
-  std::unique_ptr<IBroker> broker_;
-  int next_order_id_ = 1;
-  int orders_placed_ = 0;
-  std::unordered_map<std::string, int> symbol_order_counts_;
-
+ public:
   struct EntryOrderState {
     std::string symbol;
     double qty = 0.0;
@@ -36,10 +32,22 @@ class LiveExecutionEngine {
     double sell_score = 0.0;
   };
 
+ private:
+  LiveTradingConfig cfg_;
+  std::unique_ptr<IBroker> broker_;
+  int next_order_id_ = 1;
+  int orders_placed_ = 0;
+  std::unordered_map<std::string, int> symbol_order_counts_;
+
   std::unordered_map<int, EntryOrderState> entry_orders_;
   std::unordered_map<std::string, OpenPositionState> open_positions_;
   std::unordered_map<int, std::string> exit_order_symbols_;
   std::unordered_set<std::string> depth_subscribed_symbols_;
+  // Backtest-only decision-trace writer. Opened in the constructor when
+  // cfg_.app.decision_log_path is non-empty; nullptr otherwise. Each buy
+  // event emits one CSV row per ranked symbol.
+  std::unique_ptr<std::ofstream> decision_log_;
+  int next_decision_id_ = 0;
 
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
@@ -71,6 +79,11 @@ class LiveExecutionEngine {
   // Counts windows of `horizon` seconds where mid moved up by at least
   // `target_pct`, then sets s.score_tilt from the running count.
   void update_hit_count_tilt();
+  // Writes one CSV row per ranked symbol on each buy event; no-op when
+  // decision_log_ is null. The chosen_symbol arg tags which row is the
+  // one that triggered this snapshot.
+  void emit_decision_snapshot(int t, const std::string& chosen_symbol,
+                              const std::string& gate);
 
  public:
   RankingEngine ranking;
@@ -92,6 +105,15 @@ class LiveExecutionEngine {
   // positive score.
   [[nodiscard]] std::unordered_map<std::string, double>
   compute_per_symbol_notional() const;
+
+  // Read-only access to the engine's view of currently open positions.
+  // Used by main.cpp's end-of-run summary to compute realised vs unrealised
+  // PnL.
+  [[nodiscard]] const std::unordered_map<std::string, OpenPositionState>&
+  open_positions() const {
+    return open_positions_;
+  }
+  [[nodiscard]] int orders_placed() const { return orders_placed_; }
 };
 
 }  // namespace hft

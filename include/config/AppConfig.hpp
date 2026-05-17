@@ -49,6 +49,13 @@ struct AppConfig {
   // Hawkes stays on RankingEngine's synthetic event clock. Default false
   // so existing tests and configs are unaffected.
   bool hawkes_use_real_trades = false;
+  // Backtest-only "decision trace" log: when non-empty, the engine writes a
+  // CSV row per ranked symbol on every buy decision, capturing the score,
+  // score_tilt, Hawkes lambdas, hit_count, OU mu, mid, best_limit, and
+  // whether the symbol was the one chosen. Default empty -> disabled, so
+  // live trading and existing tests see no behavior change. Intended only
+  // for backtest analysis; do not set in live configs.
+  std::string decision_log_path;
   // Empirical "+target_pct hit-count" buy-side ranking tilt. Per-symbol
   // counter of historical price-increase windows that hit the target
   // return, multiplicatively tilting the ranking score. Disabled by

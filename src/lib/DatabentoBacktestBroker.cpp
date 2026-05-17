@@ -163,9 +163,22 @@ void DatabentoBacktestBroker::on_step(int t) {
 
 TopOfBook DatabentoBacktestBroker::snapshot_top_of_book(int ticker_id) const {
   const auto it = top_replay_by_ticker_.find(ticker_id);
-  if (it == top_replay_by_ticker_.end())
-    return {};
-  return it->second.current;
+  if (it != top_replay_by_ticker_.end() && it->second.current.valid()) {
+    return it->second.current;
+  }
+  // Fallback: derive top-of-book from the L2 series if it is loaded. Lets
+  // the backtest run with L2-only data for held symbols, without needing
+  // an L1 CSV for every universe member.
+  const auto l2_it = replay_by_ticker_.find(ticker_id);
+  if (l2_it != replay_by_ticker_.end()) {
+    const auto& book = l2_it->second.current;
+    if (book.best_bid() > 0.0 && book.best_ask() > 0.0 &&
+        book.best_bid() <= book.best_ask()) {
+      return TopOfBook{book.best_bid(), book.bids[0].size, book.best_ask(),
+                       book.asks[0].size};
+    }
+  }
+  return {};
 }
 
 L2Book DatabentoBacktestBroker::snapshot_book(int ticker_id) const {

@@ -782,6 +782,12 @@ HFT_TEST(
   AppConfig cfg;
   cfg.mode = BrokerMode::Paper;
   cfg.top_k = 3;
+  // This test specifically checks the shadow_active marking; with the
+  // shadow_enabled config defaulting to false (added in 0c9b7ad), the
+  // RankingEngine no longer sets shadow_active unless the flag is opted-
+  // in. Flip it on here so the assertion shadow_marked == 10 stays
+  // meaningful for the case this test was written to cover.
+  cfg.shadow_enabled = true;
 
   auto broker = std::make_unique<LocalSimBroker>();
   auto* raw = broker.get();

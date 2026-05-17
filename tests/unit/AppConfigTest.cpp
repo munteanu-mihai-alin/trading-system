@@ -58,6 +58,7 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_FALSE(cfg.hawkes_use_real_trades);
   EXPECT_TRUE(cfg.decision_log_path.empty());
   EXPECT_FALSE(cfg.shadow_enabled);
+  EXPECT_TRUE(cfg.synthetic_fill_model);
   EXPECT_FALSE(cfg.hit_count_enabled);
   EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.008);
   EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 60.0);
@@ -134,6 +135,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "hawkes_use_real_trades=true\n"
       "decision_log_path=tmp/decisions.csv\n"
       "shadow_enabled=true\n"
+      "synthetic_fill_model=false\n"
       "hit_count_enabled=true\n"
       "hit_count_target_pct=0.012\n"
       "hit_count_horizon_seconds=300\n"
@@ -185,6 +187,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_TRUE(cfg.hawkes_use_real_trades);
   EXPECT_EQ(cfg.decision_log_path, "tmp/decisions.csv");
   EXPECT_TRUE(cfg.shadow_enabled);
+  EXPECT_FALSE(cfg.synthetic_fill_model);
   EXPECT_TRUE(cfg.hit_count_enabled);
   EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.012);
   EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 300.0);

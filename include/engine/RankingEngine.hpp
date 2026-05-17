@@ -28,6 +28,13 @@ class RankingEngine {
   // construct RankingEngine directly (default ctor arg true) keep
   // their existing behaviour.
   bool shadow_enabled_;
+  // When false, step() skips the 8-candidate FillModel sweep against
+  // the internal Simulator order_book_. best_limit defaults to s.mid
+  // (broker decides fill against real L1/L2), score = hawkes.lambda
+  // only. Bypassing the synthetic book avoids the O(N log N) sort cost
+  // in match_at_price that wedges long-running backtests as the book
+  // grows. Default true preserves legacy behaviour.
+  bool synthetic_fill_model_;
 
   int my_id_counter_ = 100000;
 
@@ -37,10 +44,14 @@ class RankingEngine {
   std::vector<std::uint64_t> cycle_samples;
 
   explicit RankingEngine(int top_k, const std::string& csv_path,
-                         bool shadow_enabled = true);
+                         bool shadow_enabled = true,
+                         bool synthetic_fill_model = true);
   [[nodiscard]] int live_top_k() const { return live_top_k_; }
   [[nodiscard]] int shadow_top_k() const { return shadow_top_k_; }
   [[nodiscard]] bool shadow_enabled() const { return shadow_enabled_; }
+  [[nodiscard]] bool synthetic_fill_model() const {
+    return synthetic_fill_model_;
+  }
 
   void initialize(int n_stocks);
   void step(int t);

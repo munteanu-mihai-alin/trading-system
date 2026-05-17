@@ -66,6 +66,17 @@ struct AppConfig {
   // skip the synthetic block entirely. Code remains in place; only the
   // call sites are gated.
   bool shadow_enabled = false;
+  // Synthetic FillModel inside RankingEngine. When true, ranking.step
+  // runs the 8-candidate sweep against an internal Simulator order book
+  // to estimate p_fill per candidate price; the score becomes
+  // p_fill * hawkes.lambda. When false, the synthetic order book is
+  // bypassed entirely: best_limit is set to s.mid (the broker decides
+  // fill against real L1/L2), and score is just hawkes.lambda. Backtest
+  // mode should disable this to avoid the O(N log N) sort_sides() cost
+  // per match_at_price that wedges long runs - the real L2 inside the
+  // broker is the actual source of fill probability. Default true keeps
+  // legacy HFT_TEST cases and the paper-broker path unchanged.
+  bool synthetic_fill_model = true;
   // Empirical "+target_pct hit-count" buy-side ranking tilt. Per-symbol
   // counter of historical price-increase windows that hit the target
   // return, multiplicatively tilting the ranking score. Disabled by

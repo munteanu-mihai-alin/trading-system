@@ -11,11 +11,12 @@
 namespace hft {
 
 RankingEngine::RankingEngine(int top_k, const std::string& csv_path,
-                             bool shadow_enabled)
+                             bool shadow_enabled, bool synthetic_fill_model)
     : live_top_k_(top_k),
       top_k_(top_k),
       logger_(csv_path),
-      shadow_enabled_(shadow_enabled) {
+      shadow_enabled_(shadow_enabled),
+      synthetic_fill_model_(synthetic_fill_model) {
   simulator_.seed_book(order_book_, simulator_.mid);
 }
 
@@ -35,9 +36,14 @@ void RankingEngine::initialize(int n_stocks) {
 void RankingEngine::step(int t) {
   const auto start = rdtsc_start();
 
-  // Update simulator with exogenous flow.
-  for (int i = 0; i < 4; ++i)
-    simulator_.external_flow(order_book_);
+  // Update simulator with exogenous flow. Only meaningful when the
+  // synthetic FillModel is active; skipped otherwise to avoid feeding
+  // an order book nothing consumes (and also to stop the noise from
+  // accumulating into ever-larger sort costs on long backtest runs).
+  if (synthetic_fill_model_) {
+    for (int i = 0; i < 4; ++i)
+      simulator_.external_flow(order_book_);
+  }
 
   for (auto& s : portfolio.items) {
     const int event = ((t + static_cast<int>(s.symbol.back())) % 2);
@@ -49,37 +55,46 @@ void RankingEngine::step(int t) {
     double best_score = -1e18;
     double best_limit = s.mid;
 
-    for (int i = 0; i < 8; ++i) {
-      const double L = s.mid - 0.10 + 0.025 * static_cast<double>(i);
-      const double dist = std::abs(s.mid - L);
+    if (synthetic_fill_model_) {
+      // 8-candidate sweep against the internal Simulator order book.
+      // Used in legacy HFT_TEST coverage and the paper-broker path.
+      for (int i = 0; i < 8; ++i) {
+        const double L = s.mid - 0.10 + 0.025 * static_cast<double>(i);
+        const double dist = std::abs(s.mid - L);
 
-      // Place our synthetic order and track exact queue ahead.
-      const int my_id = my_id_counter_++;
-      order_book_.add(OBOrder{my_id, L, 50.0, true, true});
-      const double queue_ahead =
-          order_book_.queue_ahead_at_level(L, my_id, true);
+        // Place our synthetic order and track exact queue ahead.
+        const int my_id = my_id_counter_++;
+        order_book_.add(OBOrder{my_id, L, 50.0, true, true});
+        const double queue_ahead =
+            order_book_.queue_ahead_at_level(L, my_id, true);
 
-      auto match = order_book_.match_at_price(L, my_id);
-      const double p_pred =
-          fill_model_.compute(match.traded_at_price, queue_ahead, dist);
-      const double realized = (match.my_filled_qty > 0.0) ? 1.0 : 0.0;
-      validation.add(p_pred, realized);
+        auto match = order_book_.match_at_price(L, my_id);
+        const double p_pred =
+            fill_model_.compute(match.traded_at_price, queue_ahead, dist);
+        const double realized = (match.my_filled_qty > 0.0) ? 1.0 : 0.0;
+        validation.add(p_pred, realized);
 
-      const double sc = p_pred * s.hawkes.lambda;
-      if (sc > best_score) {
-        best_score = sc;
-        best_limit = L;
-        s.my_order.reset(my_id, L, queue_ahead);
-        s.my_order.on_traded(match.traded_at_price, match.my_filled_qty);
+        const double sc = p_pred * s.hawkes.lambda;
+        if (sc > best_score) {
+          best_score = sc;
+          best_limit = L;
+          s.my_order.reset(my_id, L, queue_ahead);
+          s.my_order.on_traded(match.traded_at_price, match.my_filled_qty);
+        }
+
+        // Cancel the probe so it doesn't pile up across candidates /
+        // stocks / steps. See the cancel-fix commit for the O(N^2)
+        // background; required even when the synthetic path is on.
+        order_book_.cancel(my_id);
       }
-
-      // Cancel the probe so it doesn't pile up across candidates / stocks
-      // / steps. Without this, the synthetic order_book_ grows by 400
-      // orders per engine step (50 stocks * 8 candidates), match_at_price
-      // becomes O(N) over an ever-growing pile, and the engine slows to
-      // O(N^2) overall - this is what wedged the prior 100k-step backtest.
-      // The FillModel signal is still derived from match before cancel.
-      order_book_.cancel(my_id);
+    } else {
+      // No synthetic FillModel. The broker (DatabentoBacktestBroker or
+      // IBKRClient in live) decides fills against real L1/L2 at
+      // place_limit_order time. Score is just hawkes intensity (after
+      // cooldown + tilt below); best_limit is the current mid so the
+      // buy crosses when L1 ask catches up.
+      best_score = s.hawkes.lambda;
+      best_limit = s.mid;
     }
 
     s.best_limit = best_limit;

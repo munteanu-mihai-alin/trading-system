@@ -179,8 +179,22 @@ class IBKRHistoricalClient(EWrapper, EClient):
         if q is not None:
             q.put(HistoricalResult(bars=bars))
 
-    def error(self, reqId: int, errorTime: int, errorCode: int,  # noqa: N802
-              errorString: str, advancedOrderRejectJson: str = "") -> None:
+    # The ibapi error() callback has two signatures across versions:
+    #   ibapi 9.81 (PyPI):    error(reqId, errorCode, errorString, advancedOrderRejectJson="")
+    #   ibapi 10.x  (TWS API): error(reqId, errorTime, errorCode, errorString, advancedOrderRejectJson="")
+    # Accept *args and split based on the type of the 2nd positional arg so
+    # the script works with either library version.
+    def error(self, reqId: int, *args, **kwargs) -> None:  # noqa: N802
+        # Resolve overload: int second arg is the errorTime path (10.x);
+        # str second arg is the errorString path (9.81).
+        if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], int):
+            # 10.x: (errorTime, errorCode, errorString, advancedOrderRejectJson)
+            errorCode = args[1]
+            errorString = args[2] if len(args) >= 3 else ""
+        else:
+            # 9.81: (errorCode, errorString, advancedOrderRejectJson)
+            errorCode = args[0] if args else 0
+            errorString = args[1] if len(args) >= 2 else ""
         # Many "errors" from IBKR are informational (codes 2104, 2106, 2158 etc).
         # Only fail the request on real error codes (>=10000 or known pacing 162).
         is_info = errorCode in (2104, 2106, 2107, 2108, 2158, 2169, 2174)

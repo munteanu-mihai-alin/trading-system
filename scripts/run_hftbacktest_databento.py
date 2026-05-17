@@ -242,61 +242,117 @@ def legacy_event_rows(path: Path, feed_latency_ns: int) -> np.ndarray:
 
 
 def structured_event_rows(path: Path, hft, feed_latency_ns: int) -> np.ndarray:
-    grouped: dict[int, dict[str, list[tuple[float, float]]]] = {}
-    for step, side, _level, price, size in read_l2_rows(path):
-        if price <= 0 or size <= 0:
-            continue
-        side_key = "bid" if side.lower() in {"bid", "b", "0"} else "ask"
-        grouped.setdefault(step, {"bid": [], "ask": []})[side_key].append((price, size))
+    # Streaming variant: the CSV is sorted by step (consecutive rows share the
+    # same step), so we can emit each step's events as we finish reading it,
+    # without holding the entire file in memory. For a 5-day MBP-10 file with
+    # ~8M steps the prior dict-of-tuples implementation peaked at ~6-10 GB
+    # of Python objects and OOM-killed on a 7.6 GB VPS. This version peaks
+    # at the per-step working set (a handful of (price, size) tuples) plus
+    # the growing output buffer.
+    #
+    # Output is built into a per-step list of structured-array chunks; we
+    # concatenate once at the end. Each chunk is already in `hft.event_dtype`
+    # so there is no Python-list → numpy-array materialisation peak.
 
-    rows = []
-    for step in sorted(grouped):
+    def flush_step(step: int,
+                   bids_acc: list,
+                   asks_acc: list) -> "np.ndarray | None":
         exch_ts = int(step * feed_latency_ns)
         local_ts = int(exch_ts + feed_latency_ns)
-        bids = sorted(grouped[step]["bid"], reverse=True)
-        asks = sorted(grouped[step]["ask"])
+        out: list = []
         for levels, side_event in (
-            (bids, hft.BUY_EVENT),
-            (asks, hft.SELL_EVENT),
+            (sorted(bids_acc, reverse=True), hft.BUY_EVENT),
+            (sorted(asks_acc), hft.SELL_EVENT),
         ):
             if not levels:
                 continue
             clear_px = levels[-1][0]
-            rows.append(
-                (
-                    hft.DEPTH_CLEAR_EVENT
-                    | side_event
-                    | hft.EXCH_EVENT
-                    | hft.LOCAL_EVENT,
-                    exch_ts,
-                    local_ts,
-                    clear_px,
-                    0.0,
-                    0,
-                    0,
-                    0.0,
-                )
-            )
+            out.append((
+                hft.DEPTH_CLEAR_EVENT | side_event |
+                hft.EXCH_EVENT | hft.LOCAL_EVENT,
+                exch_ts, local_ts, clear_px, 0.0, 0, 0, 0.0,
+            ))
             for price, size in levels:
-                rows.append(
-                    (
-                        hft.DEPTH_SNAPSHOT_EVENT
-                        | side_event
-                        | hft.EXCH_EVENT
-                        | hft.LOCAL_EVENT,
-                        exch_ts,
-                        local_ts,
-                        price,
-                        size,
-                        0,
-                        0,
-                        0.0,
-                    )
-                )
+                out.append((
+                    hft.DEPTH_SNAPSHOT_EVENT | side_event |
+                    hft.EXCH_EVENT | hft.LOCAL_EVENT,
+                    exch_ts, local_ts, price, size, 0, 0, 0.0,
+                ))
+        if not out:
+            return None
+        return np.asarray(out, dtype=hft.event_dtype)
 
-    if not rows:
+    # Batch steps in groups to keep the chunks list short. One chunk per step
+    # produces millions of tiny numpy arrays whose Python-object overhead
+    # alone is multi-GB on a 5-day file. Coalescing every BATCH_STEPS into
+    # one chunk drops list overhead by ~1000x without changing peak event-
+    # array memory.
+    BATCH_STEPS = 1000
+    chunks: list = []
+    pending: list = []  # tuples for the current batch
+    pending_step_count = 0
+
+    def emit_batch() -> None:
+        nonlocal pending, pending_step_count
+        if not pending:
+            return
+        chunks.append(np.asarray(pending, dtype=hft.event_dtype))
+        pending = []
+        pending_step_count = 0
+
+    def add_step_to_batch(step: int,
+                          bids_acc: list,
+                          asks_acc: list) -> None:
+        nonlocal pending_step_count
+        exch_ts = int(step * feed_latency_ns)
+        local_ts = int(exch_ts + feed_latency_ns)
+        for levels, side_event in (
+            (sorted(bids_acc, reverse=True), hft.BUY_EVENT),
+            (sorted(asks_acc), hft.SELL_EVENT),
+        ):
+            if not levels:
+                continue
+            clear_px = levels[-1][0]
+            pending.append((
+                hft.DEPTH_CLEAR_EVENT | side_event |
+                hft.EXCH_EVENT | hft.LOCAL_EVENT,
+                exch_ts, local_ts, clear_px, 0.0, 0, 0, 0.0,
+            ))
+            for price, size in levels:
+                pending.append((
+                    hft.DEPTH_SNAPSHOT_EVENT | side_event |
+                    hft.EXCH_EVENT | hft.LOCAL_EVENT,
+                    exch_ts, local_ts, price, size, 0, 0, 0.0,
+                ))
+        pending_step_count += 1
+        if pending_step_count >= BATCH_STEPS:
+            emit_batch()
+
+    cur_step: int | None = None
+    cur_bids: list[tuple[float, float]] = []
+    cur_asks: list[tuple[float, float]] = []
+    for step, side, _level, price, size in read_l2_rows(path):
+        if price <= 0 or size <= 0:
+            continue
+        if cur_step is None:
+            cur_step = step
+        if step != cur_step:
+            add_step_to_batch(cur_step, cur_bids, cur_asks)
+            cur_step = step
+            cur_bids = []
+            cur_asks = []
+        if side.lower() in {"bid", "b", "0"}:
+            cur_bids.append((price, size))
+        else:
+            cur_asks.append((price, size))
+
+    if cur_step is not None:
+        add_step_to_batch(cur_step, cur_bids, cur_asks)
+    emit_batch()
+
+    if not chunks:
         raise SystemExit(f"no valid L2 rows in {path}")
-    return np.asarray(rows, dtype=hft.event_dtype)
+    return np.concatenate(chunks)
 
 
 def convert_l2_to_hftbacktest(path: Path, feed_latency_ns: int) -> np.ndarray:

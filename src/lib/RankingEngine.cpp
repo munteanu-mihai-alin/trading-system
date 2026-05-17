@@ -72,6 +72,14 @@ void RankingEngine::step(int t) {
         s.my_order.reset(my_id, L, queue_ahead);
         s.my_order.on_traded(match.traded_at_price, match.my_filled_qty);
       }
+
+      // Cancel the probe so it doesn't pile up across candidates / stocks
+      // / steps. Without this, the synthetic order_book_ grows by 400
+      // orders per engine step (50 stocks * 8 candidates), match_at_price
+      // becomes O(N) over an ever-growing pile, and the engine slows to
+      // O(N^2) overall - this is what wedged the prior 100k-step backtest.
+      // The FillModel signal is still derived from match before cancel.
+      order_book_.cancel(my_id);
     }
 
     s.best_limit = best_limit;

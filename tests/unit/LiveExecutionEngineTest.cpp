@@ -601,7 +601,8 @@ TEST(LiveExecutionEngine, DecisionLogWritesRowsOnBuy) {
   // 5 data rows (one per universe symbol) per decision event.
   std::size_t newlines = 0;
   for (char c : content) {
-    if (c == '\n') ++newlines;
+    if (c == '\n')
+      ++newlines;
   }
   EXPECT_GE(newlines, 6u) << "expected header + >=5 data rows, got "
                           << newlines;

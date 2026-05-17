@@ -1,0 +1,21 @@
+{
+  "artifacts": [
+    "config.ini",
+    "decisions.csv",
+    "stdout.log",
+    "manifest.json"
+  ],
+  "ended_at": "2026-05-18T02:37:28.165Z",
+  "harness": "cpp_hft_app",
+  "label": "C++ Databento backtest",
+  "latency_line": "Latency (cycles): p50=5962 p99=9174 p999=18656 max=1.1011e+06 avg=6131.15",
+  "mode_line": "Mode: databento_backtest",
+  "notes": "Auto-generated from stdout. Inspect stdout.log for the full end-of-run summary block.",
+  "open_notional": 465.3,
+  "open_positions": 1,
+  "orders_placed": 4,
+  "outcome": "completed",
+  "run_id": "2026-05-18T0221_cpp_backtest",
+  "started_at": "2026-05-18T02:21:09.981Z",
+  "validation_line": "Validation: calibration=0 rolling=0 ks=0 alarm=OFF"
+}

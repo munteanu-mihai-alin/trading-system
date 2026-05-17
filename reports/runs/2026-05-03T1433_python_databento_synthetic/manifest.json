@@ -1,0 +1,39 @@
+{
+  "artifacts": [
+    "report.md",
+    "summary.json",
+    "manifest.json"
+  ],
+  "ended_at": "2026-05-03T14:33:12+00:00",
+  "harness": "python_run_hftbacktest_databento",
+  "label": "Synthetic Databento smoke (Python)",
+  "notes": "Auto-generated from file mtimes; check summary.json for exact run scope.",
+  "outcome": "completed",
+  "run_id": "2026-05-03T1433_python_databento_synthetic",
+  "started_at": "2026-05-03T14:33:12+00:00",
+  "summary_excerpt": {
+    "ask_rows": 1000,
+    "avg_ask_depth_size_per_step": 4750.0,
+    "avg_bid_depth_size_per_step": 4750.0,
+    "avg_spread": 0.02,
+    "avg_spread_bps": 1.9803607720695924,
+    "avg_top_ask_size": 1000.0,
+    "avg_top_bid_size": 1000.0,
+    "bid_rows": 1000,
+    "entry_price": 100.01,
+    "entry_step": 0,
+    "first_target_touch_step": 83,
+    "hftbacktest_data": "/mnt/HC_Volume_105581071/trading-system/data/databento/synthetic/AAPL.hftbacktest.npy",
+    "hftbacktest_error": "LinearAsset",
+    "l1_csv": "/mnt/HC_Volume_105581071/trading-system/data/databento/synthetic/AAPL.mbp1.csv",
+    "l2_csv": "/mnt/HC_Volume_105581071/trading-system/data/databento/synthetic/AAPL.mbp10.csv",
+    "l2_rows": 2000,
+    "l2_steps": 200,
+    "sell_limit": 100.81008,
+    "symbol": "AAPL",
+    "target_fill_possible_from_best_bid": true,
+    "target_profit_per_share": 0.8000799999999941,
+    "target_sell_limit": 100.81008,
+    "target_touch_count": 117
+  }
+}

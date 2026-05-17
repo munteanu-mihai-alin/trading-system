@@ -70,8 +70,7 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
                                          std::unique_ptr<IBroker> broker)
     : cfg_(std::move(cfg)),
       broker_(std::move(broker)),
-      ranking(cfg_.app.top_k, "shadow_results.csv",
-              cfg_.app.shadow_enabled) {
+      ranking(cfg_.app.top_k, "shadow_results.csv", cfg_.app.shadow_enabled) {
   if (!cfg_.app.decision_log_path.empty()) {
     decision_log_ = std::make_unique<std::ofstream>(cfg_.app.decision_log_path);
     if (decision_log_->is_open()) {

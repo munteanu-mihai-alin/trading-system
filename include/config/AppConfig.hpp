@@ -56,6 +56,16 @@ struct AppConfig {
   // live trading and existing tests see no behavior change. Intended only
   // for backtest analysis; do not set in live configs.
   std::string decision_log_path;
+  // Shadow-portfolio simulation in RankingEngine. When true, the engine
+  // marks the next `shadow_top_k` symbols as `shadow_active` after the
+  // top-k active ones, records synthetic per-step PnL for both real and
+  // shadow slots into shadow_results.csv, and applies a cooldown when the
+  // synthetic PnL is positive. The synthetic PnL has nothing to do with
+  // real broker fills - it's a placeholder sine-wave for cooldown timing.
+  // Default false: live trading, IBKR paper, and Databento backtest all
+  // skip the synthetic block entirely. Code remains in place; only the
+  // call sites are gated.
+  bool shadow_enabled = false;
   // Empirical "+target_pct hit-count" buy-side ranking tilt. Per-symbol
   // counter of historical price-increase windows that hit the target
   // return, multiplicatively tilting the ranking score. Disabled by

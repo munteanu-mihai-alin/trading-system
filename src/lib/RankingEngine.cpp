@@ -10,8 +10,12 @@
 
 namespace hft {
 
-RankingEngine::RankingEngine(int top_k, const std::string& csv_path)
-    : live_top_k_(top_k), top_k_(top_k), logger_(csv_path) {
+RankingEngine::RankingEngine(int top_k, const std::string& csv_path,
+                             bool shadow_enabled)
+    : live_top_k_(top_k),
+      top_k_(top_k),
+      logger_(csv_path),
+      shadow_enabled_(shadow_enabled) {
   simulator_.seed_book(order_book_, simulator_.mid);
 }
 
@@ -84,28 +88,42 @@ void RankingEngine::step(int t) {
 
   for (std::size_t i = 0; i < portfolio.items.size(); ++i) {
     portfolio.items[i].active = static_cast<int>(i) < live_top_k_;
-    portfolio.items[i].shadow_active =
-        static_cast<int>(i) >= live_top_k_ &&
-        static_cast<int>(i) < (live_top_k_ + shadow_top_k_);
+    if (shadow_enabled_) {
+      portfolio.items[i].shadow_active =
+          static_cast<int>(i) >= live_top_k_ &&
+          static_cast<int>(i) < (live_top_k_ + shadow_top_k_);
+    } else {
+      portfolio.items[i].shadow_active = false;
+    }
   }
 
   // Live/paper slots are real routed names; shadow slots are always local-only names.
   // Entry condition in this simplified engine is the same ranking-driven signal used before.
-  for (auto& s : portfolio.items) {
-    const bool signal = ((t + static_cast<int>(s.symbol.size())) % 5 == 0);
-    if (!signal)
-      continue;
+  //
+  // Block gated on shadow_enabled_: the per-step sine-wave PnL, the CSV logger
+  // writes, and the cooldown trigger are all part of the synthetic shadow-
+  // portfolio simulation. Disabled in live, IBKR paper, and Databento backtest
+  // by default (see AppConfig.shadow_enabled). The code is preserved behind
+  // the gate so legacy HFT_TEST coverage and the shadow-only research path
+  // can still exercise it when explicitly enabled.
+  if (shadow_enabled_) {
+    for (auto& s : portfolio.items) {
+      const bool signal = ((t + static_cast<int>(s.symbol.size())) % 5 == 0);
+      if (!signal)
+        continue;
 
-    const double pnl = std::sin(0.01 * static_cast<double>(t) + s.score) * 0.01;
+      const double pnl =
+          std::sin(0.01 * static_cast<double>(t) + s.score) * 0.01;
 
-    if (s.active) {
-      s.real.update(pnl);
-      logger_.log(t, s.symbol, "real", pnl, s.real.pnl, s.real.trades);
-      if (pnl > 0.0)
-        s.cooldown = 50;
-    } else if (s.shadow_active) {
-      s.shadow.update(pnl);
-      logger_.log(t, s.symbol, "shadow", pnl, s.shadow.pnl, s.shadow.trades);
+      if (s.active) {
+        s.real.update(pnl);
+        logger_.log(t, s.symbol, "real", pnl, s.real.pnl, s.real.trades);
+        if (pnl > 0.0)
+          s.cooldown = 50;
+      } else if (s.shadow_active) {
+        s.shadow.update(pnl);
+        logger_.log(t, s.symbol, "shadow", pnl, s.shadow.pnl, s.shadow.trades);
+      }
     }
   }
 

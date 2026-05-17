@@ -21,6 +21,13 @@ class RankingEngine {
   Simulator simulator_;
   OrderBook order_book_;
   Logger logger_;
+  // When false, step() skips the synthetic shadow-portfolio block:
+  // shadow_active stays unset, the per-step sine-wave PnL is not
+  // computed or logged, and cooldown is not triggered. The code path
+  // is left intact behind the gate so legacy HFT_TEST cases that
+  // construct RankingEngine directly (default ctor arg true) keep
+  // their existing behaviour.
+  bool shadow_enabled_;
 
   int my_id_counter_ = 100000;
 
@@ -29,9 +36,11 @@ class RankingEngine {
   ValidationMetrics validation;
   std::vector<std::uint64_t> cycle_samples;
 
-  explicit RankingEngine(int top_k, const std::string& csv_path);
+  explicit RankingEngine(int top_k, const std::string& csv_path,
+                         bool shadow_enabled = true);
   [[nodiscard]] int live_top_k() const { return live_top_k_; }
   [[nodiscard]] int shadow_top_k() const { return shadow_top_k_; }
+  [[nodiscard]] bool shadow_enabled() const { return shadow_enabled_; }
 
   void initialize(int n_stocks);
   void step(int t);

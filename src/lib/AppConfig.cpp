@@ -92,6 +92,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.hawkes_use_real_trades = parse_bool(val);
       } else if (key == "decision_log_path") {
         cfg.decision_log_path = val;
+      } else if (key == "shadow_enabled") {
+        cfg.shadow_enabled = parse_bool(val);
       } else if (key == "hit_count_enabled") {
         cfg.hit_count_enabled = parse_bool(val);
       } else if (key == "hit_count_target_pct") {

@@ -101,6 +101,14 @@ class IBroker {
   [[nodiscard]] virtual double ack_latency_ms(int /*order_id*/) const {
     return 0.0;
   }
+
+  // Backtest brokers that load finite replay data can report the maximum
+  // step index they have data for. main.cpp uses this to cap cfg.steps
+  // when AppConfig::steps_auto_from_broker is set, avoiding the common
+  // pitfall of running far past the data window's end (where L1/L2
+  // freeze and the strategy is making decisions on stale prices).
+  // Default 0 means "no limit reported"; live brokers should keep this.
+  [[nodiscard]] virtual int max_replay_steps() const { return 0; }
 };
 
 }  // namespace hft

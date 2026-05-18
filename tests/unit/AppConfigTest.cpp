@@ -59,6 +59,9 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_TRUE(cfg.decision_log_path.empty());
   EXPECT_FALSE(cfg.shadow_enabled);
   EXPECT_TRUE(cfg.synthetic_fill_model);
+  EXPECT_EQ(cfg.entry_limit_mode, "mid");
+  EXPECT_FALSE(cfg.steps_auto_from_broker);
+  EXPECT_DOUBLE_EQ(cfg.hawkes_mid_change_threshold_bps, 0.0);
   EXPECT_FALSE(cfg.hit_count_enabled);
   EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.008);
   EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 60.0);
@@ -136,6 +139,9 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "decision_log_path=tmp/decisions.csv\n"
       "shadow_enabled=true\n"
       "synthetic_fill_model=false\n"
+      "entry_limit_mode=ask\n"
+      "steps_auto_from_broker=true\n"
+      "hawkes_mid_change_threshold_bps=2.5\n"
       "hit_count_enabled=true\n"
       "hit_count_target_pct=0.012\n"
       "hit_count_horizon_seconds=300\n"
@@ -188,6 +194,9 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_EQ(cfg.decision_log_path, "tmp/decisions.csv");
   EXPECT_TRUE(cfg.shadow_enabled);
   EXPECT_FALSE(cfg.synthetic_fill_model);
+  EXPECT_EQ(cfg.entry_limit_mode, "ask");
+  EXPECT_TRUE(cfg.steps_auto_from_broker);
+  EXPECT_DOUBLE_EQ(cfg.hawkes_mid_change_threshold_bps, 2.5);
   EXPECT_TRUE(cfg.hit_count_enabled);
   EXPECT_DOUBLE_EQ(cfg.hit_count_target_pct, 0.012);
   EXPECT_DOUBLE_EQ(cfg.hit_count_horizon_seconds, 300.0);

@@ -96,6 +96,12 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.shadow_enabled = parse_bool(val);
       } else if (key == "synthetic_fill_model") {
         cfg.synthetic_fill_model = parse_bool(val);
+      } else if (key == "entry_limit_mode") {
+        cfg.entry_limit_mode = val;
+      } else if (key == "steps_auto_from_broker") {
+        cfg.steps_auto_from_broker = parse_bool(val);
+      } else if (key == "hawkes_mid_change_threshold_bps") {
+        cfg.hawkes_mid_change_threshold_bps = std::stod(val);
       } else if (key == "hit_count_enabled") {
         cfg.hit_count_enabled = parse_bool(val);
       } else if (key == "hit_count_target_pct") {

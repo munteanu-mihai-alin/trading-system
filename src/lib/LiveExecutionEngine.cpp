@@ -71,7 +71,7 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
     : cfg_(std::move(cfg)),
       broker_(std::move(broker)),
       ranking(cfg_.app.top_k, "shadow_results.csv", cfg_.app.shadow_enabled,
-              cfg_.app.synthetic_fill_model) {
+              cfg_.app.synthetic_fill_model, cfg_.app.entry_limit_mode) {
   if (!cfg_.app.decision_log_path.empty()) {
     decision_log_ = std::make_unique<std::ofstream>(cfg_.app.decision_log_path);
     if (decision_log_->is_open()) {
@@ -637,8 +637,34 @@ void LiveExecutionEngine::reconcile_broker_state() {
     const auto top = broker_->snapshot_top_of_book(static_cast<int>(i + 1));
     if (top.valid()) {
       s.mid = top.mid();
+      // Plumb the raw L1 bid/ask through so RankingEngine can set
+      // best_limit realistically (marketable at ask vs passive at mid)
+      // under AppConfig::entry_limit_mode.
+      s.bid_price = top.bid_price;
+      s.ask_price = top.ask_price;
       if (top.bid_size > 0.0) {
         s.queue = top.bid_size;
+      }
+      // Hawkes mid-change proxy: when configured, fire a Hawkes event
+      // each time the mid moves by at least the threshold (bps,
+      // relative to the last firing). Provides a real-data-driven
+      // intensity signal without paying Databento for the trades
+      // schema. Off by default.
+      if (cfg_.app.hawkes_mid_change_threshold_bps > 0.0 && s.mid > 0.0) {
+        if (s.last_mid_for_hawkes <= 0.0) {
+          s.last_mid_for_hawkes = s.mid;
+        } else {
+          const double change_bps = 10000.0 *
+                                    std::abs(s.mid - s.last_mid_for_hawkes) /
+                                    s.last_mid_for_hawkes;
+          if (change_bps >= cfg_.app.hawkes_mid_change_threshold_bps) {
+            // dt approximated as 1ms; mid updates in backtest are
+            // step-driven and bursts of changes within a step still
+            // get distinct events.
+            s.hawkes.update(0.001, /*event=*/1);
+            s.last_mid_for_hawkes = s.mid;
+          }
+        }
       }
       // EWMA toward the observed mid so ou.mu tracks the trailing mean.
       // Two parameterisations:

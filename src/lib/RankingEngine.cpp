@@ -11,12 +11,14 @@
 namespace hft {
 
 RankingEngine::RankingEngine(int top_k, const std::string& csv_path,
-                             bool shadow_enabled, bool synthetic_fill_model)
+                             bool shadow_enabled, bool synthetic_fill_model,
+                             std::string entry_limit_mode)
     : live_top_k_(top_k),
       top_k_(top_k),
       logger_(csv_path),
       shadow_enabled_(shadow_enabled),
-      synthetic_fill_model_(synthetic_fill_model) {
+      synthetic_fill_model_(synthetic_fill_model),
+      entry_limit_mode_(std::move(entry_limit_mode)) {
   simulator_.seed_book(order_book_, simulator_.mid);
 }
 
@@ -91,10 +93,17 @@ void RankingEngine::step(int t) {
       // No synthetic FillModel. The broker (DatabentoBacktestBroker or
       // IBKRClient in live) decides fills against real L1/L2 at
       // place_limit_order time. Score is just hawkes intensity (after
-      // cooldown + tilt below); best_limit is the current mid so the
-      // buy crosses when L1 ask catches up.
+      // cooldown + tilt below); best_limit comes from the configured
+      // entry_limit_mode.
       best_score = s.hawkes.lambda;
-      best_limit = s.mid;
+      if (entry_limit_mode_ == "ask" && s.ask_price > 0.0) {
+        // Marketable limit: cross immediately at the L1 ask.
+        best_limit = s.ask_price;
+      } else {
+        // "mid" (default) or any unrecognised value: passive at mid,
+        // cross only when L1 ask drops to mid.
+        best_limit = s.mid;
+      }
     }
 
     s.best_limit = best_limit;

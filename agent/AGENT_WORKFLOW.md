@@ -6,6 +6,60 @@ This file defines the shared workflow for agents working on this repository. It 
 
 The goal is to let multiple models or agents work on the same project without losing context or repeating mistakes. Agents should use this workflow to understand how to inspect the project, make changes, validate them, and hand off useful state to the next agent.
 
+## Backtest run reporting
+
+Every backtest run produces a per-run folder at
+`reports/runs/<YYYY-MM-DDTHHMM>_<label>/` with this layout:
+
+```text
+manifest.json   - structured metadata (started_at, ended_at, harness,
+                  outcome, end-of-run stat lines, artifact list, notes)
+stdout.log      - full engine output (when available)
+decisions.csv   - per-buy snapshot of all ranked symbols (C++ backtest)
+report.md       - markdown summary (Python harness output)
+summary.json    - JSON summary (Python harness output)
+config.ini      - exact config used (C++ backtest)
+```
+
+After a backtest finishes, run:
+
+```bash
+python3 scripts/organize_runs.py
+```
+
+It groups loose files under `reports/` (e.g. `cpp_backtest_stdout.log`,
+`decisions.csv`, `oneday_aapl_*`, `databento_*`) into per-run folders,
+infers timestamps from spdlog brackets (or file mtime), writes a
+`manifest.json` with the end-of-run summary parsed out of stdout, and
+regenerates `reports/runs/index.md` as a Markdown table of every known
+run. The script is idempotent - safe to re-run; it skips folders that
+already have a `manifest.json`.
+
+The `manifest.json` schema (minimum fields):
+
+```json
+{
+  "run_id": "<YYYY-MM-DDTHHMM>_<label>",
+  "harness": "cpp_hft_app" | "python_run_hftbacktest_databento",
+  "label": "<short description>",
+  "started_at": "<ISO-8601 with Z>",
+  "ended_at":   "<ISO-8601 with Z>",
+  "outcome":    "completed" | "killed" | "crashed" | "unknown",
+  "orders_placed": 0,
+  "open_positions": 0,
+  "open_notional": 0.0,
+  "latency_line":     "Latency (cycles): ...",
+  "validation_line":  "Validation: ...",
+  "artifacts": ["stdout.log", "decisions.csv", "config.ini", "manifest.json"],
+  "notes":     "<free text>"
+}
+```
+
+When a run is on the Hetzner VPS, also `scp -r hetzner:/mnt/.../reports/
+runs/. reports/runs/` so the local mirror stays in sync. The heavy L2
+caches stay under `data/databento/` and are deliberately NOT copied into
+per-run folders.
+
 ## Required handoff behavior
 
 After each substantive user interaction, agents must append an entry to:

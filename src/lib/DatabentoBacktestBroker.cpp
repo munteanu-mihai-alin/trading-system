@@ -192,6 +192,22 @@ const OrderLifecycleBook* DatabentoBacktestBroker::order_lifecycle() const {
   return &lifecycle_;
 }
 
+int DatabentoBacktestBroker::max_replay_steps() const {
+  // Maximum step index for which we have any L1 or L2 data loaded. The
+  // engine should run for that many steps and no more; past this the
+  // current-step bounds-check inside on_step() freezes both streams at
+  // their last row, and ranking would be making decisions on stale
+  // prices.
+  std::size_t out = 0;
+  for (const auto& kv : top_replay_by_ticker_) {
+    out = std::max(out, kv.second.books.size());
+  }
+  for (const auto& kv : replay_by_ticker_) {
+    out = std::max(out, kv.second.books.size());
+  }
+  return static_cast<int>(out);
+}
+
 std::filesystem::path DatabentoBacktestBroker::l1_cache_path_for_symbol(
     const std::string& symbol) const {
   return std::filesystem::path(cfg_.databento_cache_dir) /

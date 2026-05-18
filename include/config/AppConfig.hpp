@@ -70,13 +70,37 @@ struct AppConfig {
   // runs the 8-candidate sweep against an internal Simulator order book
   // to estimate p_fill per candidate price; the score becomes
   // p_fill * hawkes.lambda. When false, the synthetic order book is
-  // bypassed entirely: best_limit is set to s.mid (the broker decides
-  // fill against real L1/L2), and score is just hawkes.lambda. Backtest
-  // mode should disable this to avoid the O(N log N) sort_sides() cost
-  // per match_at_price that wedges long runs - the real L2 inside the
-  // broker is the actual source of fill probability. Default true keeps
-  // legacy HFT_TEST cases and the paper-broker path unchanged.
+  // bypassed entirely: best_limit is set per `entry_limit_mode` below
+  // (the broker decides fill against real L1/L2), and score is just
+  // hawkes.lambda. Backtest mode should disable this to avoid the
+  // O(N log N) sort_sides() cost per match_at_price that wedges long
+  // runs - the real L2 inside the broker is the actual source of fill
+  // probability. Default true keeps legacy HFT_TEST cases and the
+  // paper-broker path unchanged.
   bool synthetic_fill_model = true;
+  // Where RankingEngine sets `best_limit` when synthetic_fill_model is
+  // off. Options:
+  //   "mid"  - best_limit = s.mid. The buy crosses only if L1 ask drops
+  //            to mid (passive entry). Stocks with non-trivial spread
+  //            often never fill. Default for back-compat.
+  //   "ask"  - best_limit = s.ask_price. Marketable - fills at the
+  //            current ask whenever a TopOfBook is available. Use this
+  //            for backtests where you want the buy decision to
+  //            actually execute and exercise the sell-side path.
+  std::string entry_limit_mode = "mid";
+  // Bound the engine.step loop to broker's max replay-step count. When
+  // true and the broker reports a positive max_replay_steps(), main.cpp
+  // overrides cfg.steps to that value at startup. Prevents wasting CPU
+  // on 98% of steps where L1/L2 are frozen past the data window's end.
+  bool steps_auto_from_broker = false;
+  // Hawkes intensity proxy driven by L1 mid changes (a tactical proxy
+  // for trade-event arrivals in backtest, where no real trade prints
+  // are available). When > 0, reconcile_broker_state fires a Hawkes
+  // event each time s.mid moves by at least this many bps relative to
+  // the last firing. Default 0 = disabled. The original
+  // synthetic-event clock in RankingEngine continues to drive Hawkes
+  // unless hawkes_use_real_trades=true (live IBKR) or this is > 0.
+  double hawkes_mid_change_threshold_bps = 0.0;
   // Empirical "+target_pct hit-count" buy-side ranking tilt. Per-symbol
   // counter of historical price-increase windows that hit the target
   // return, multiplicatively tilting the ranking score. Disabled by

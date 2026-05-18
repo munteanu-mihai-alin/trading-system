@@ -68,6 +68,7 @@ class DatabentoBacktestBroker : public IBroker {
   [[nodiscard]] TopOfBook snapshot_top_of_book(int ticker_id) const override;
   [[nodiscard]] L2Book snapshot_book(int ticker_id) const override;
   [[nodiscard]] const OrderLifecycleBook* order_lifecycle() const override;
+  [[nodiscard]] int max_replay_steps() const override;
 };
 
 }  // namespace hft

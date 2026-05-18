@@ -99,8 +99,34 @@ int main() {
   std::cout << "Subscriptions requested." << std::endl;
   hl::set_app_state(hl::AppState::Live);
 
-  std::cout << "Running " << cfg.steps << " engine steps..." << std::endl;
-  for (int t = 0; t < cfg.steps; ++t) {
+  // Step-count override: when steps_auto_from_broker is set and the
+  // broker reports a positive max_replay_steps(), cap the engine loop
+  // at that value so we don't run far past the L1/L2 data window. We
+  // peek at the broker via a freshly-constructed throwaway only when
+  // mode=databento_backtest because IBKR brokers always return 0.
+  int effective_steps = cfg.steps;
+  if (cfg.steps_auto_from_broker &&
+      cfg.mode == hft::BrokerMode::DatabentoBacktest) {
+    // The owned broker has moved into the engine; the engine doesn't
+    // expose a generic broker accessor. Reconstruct a parallel broker
+    // to query L1 series length: subscribe_top_of_book for each symbol
+    // (reads the same cached CSVs), then max_replay_steps().
+    hft::DatabentoBacktestBroker probe(cfg);
+    probe.connect("", 0, 0);
+    int t = 1;
+    for (const auto& sym : symbols) {
+      probe.subscribe_top_of_book(hft::TopOfBookRequest{t++, sym});
+    }
+    const int broker_max = probe.max_replay_steps();
+    probe.disconnect();
+    if (broker_max > 0) {
+      effective_steps = broker_max;
+      std::cout << "steps_auto_from_broker=true -> capping at "
+                << effective_steps << " (broker max_replay_steps)" << std::endl;
+    }
+  }
+  std::cout << "Running " << effective_steps << " engine steps..." << std::endl;
+  for (int t = 0; t < effective_steps; ++t) {
     engine.step(t);
   }
   engine.stop();

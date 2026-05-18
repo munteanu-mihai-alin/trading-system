@@ -4,6 +4,171 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-19] - L1 timestamped cache + range-aware reuse
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `6322881 feat(broker): timestamped L2 cache + range-aware reuse`.
+
+User request:
+- After the L2 cache became range-aware, the user asked whether L1 needed
+  the same treatment. They authorized opening a `#todo` capturing the
+  problem and approach, then solving it in the same round and marking
+  it `#Done`.
+
+Context (also captured in the open `#todo` entry below):
+- L1 (`*.mbp1.csv`) is the slow-moving signal feeding `Stock::mid`. Today
+  it's step-indexed only and the broker reuses any existing cache by file
+  existence, so sub-window reruns silently align step 0 to the wrong
+  wall-clock time. The fast-moving L2 path is now ts_event-aware; keeping
+  L1 step-only means the two replay timelines can diverge when the user
+  trims the window.
+
+What shipped:
+1. `scripts/ibkr_historical_l1.py` writes
+   `ts_event,step,bid_price,bid_size,ask_price,ask_size`. `ts_event_ns`
+   is derived from `bar.date` (epoch seconds) * 1e9.
+2. `scripts/local_l1_csv_provider.py` propagates `ts_event` from the
+   source row (accepts `ts_event`, `ts_recv`, `timestamp`, or `time`
+   field; integer ns OR ISO-8601). Synthetic mode emits dated rows
+   spaced 1 minute apart starting 2026-01-01T13:30:00Z.
+3. `src/lib/DatabentoBacktestBroker.cpp`:
+   - Renamed `read_l2_cache_range` -> `read_cache_ts_range` (shared by
+     both L1 and L2; struct is now `CacheTsRange`).
+   - `parse_top_row` accepts legacy (5 fields) and dated (6 fields)
+     schemas. Legacy rows yield `ts_event_ns == 0` and bypass filtering.
+   - `ensure_l1_symbol_loaded` now does the same request-window-vs-cached
+     -range check that `ensure_l2_symbol_loaded` does. Legacy or
+     short-of-window caches are removed before re-invoking
+     `local_l1_csv_provider.py`.
+   - `load_top_books_from_csv` accepts optional `[start_ns, end_ns]`
+     bounds and renumbers `step` to 0..N over the kept rows so the
+     engine's step index stays contiguous and aligned with the L2 path.
+4. `include/broker/DatabentoBacktestBroker.hpp` - updated
+   `load_top_books_from_csv` signature with the two optional bounds.
+
+Files changed:
+- `scripts/ibkr_historical_l1.py` - new `ts_event` column on output.
+- `scripts/local_l1_csv_provider.py` - propagate `ts_event`; synthetic
+  mode emits dated rows.
+- `src/lib/DatabentoBacktestBroker.cpp` - shared range helper, dual-
+  schema `parse_top_row`, range-aware `ensure_l1_symbol_loaded`,
+  filtered `load_top_books_from_csv`.
+- `include/broker/DatabentoBacktestBroker.hpp` - signature update.
+
+Deletions / removals:
+- None. Existing legacy L1 files in `data/l1/` continue to work via the
+  legacy code path. They just don't get the sub-window reuse benefit
+  until they're re-backfilled with the new script.
+
+Steps taken:
+1. Updated both L1 scripts to write `ts_event` as the new leading column.
+2. Renamed the broker's cache-range helper from `read_l2_cache_range` to
+   `read_cache_ts_range` since L1 and L2 share the same header check and
+   first/last-line scan.
+3. Made `parse_top_row` schema-tolerant (5 vs 6 fields).
+4. Rewrote `ensure_l1_symbol_loaded` to mirror `ensure_l2_symbol_loaded`.
+5. Added the same `[start_ns, end_ns]` filter + step renumbering to
+   `load_top_books_from_csv`.
+6. `./scripts/format_code.sh` -> 74 files normalized.
+7. Built `hft_lib`, `hft_app`, `hft_tests` clean under UCRT64.
+
+Validation performed:
+- `cmake --build build-ucrt-ibkr --target hft_lib hft_app hft_tests`:
+  clean.
+- Runtime `./hft_tests.exe` on this developer host still hits the
+  pre-existing `STATUS_ENTRYPOINT_NOT_FOUND` from the previous commit
+  (UCRT/libstdc++ DLL ABI mismatch); unrelated to this change. CI runs
+  in a clean Linux env.
+
+Known risks / follow-up:
+- Same as L2: the "extends cached range" case re-downloads the full
+  requested window rather than stitching head/tail. Cheap-rerun of
+  identical or sub-windows already works.
+- Existing 50 legacy L1 files in `data/l1/<SYM>.mbp1.csv` need a one-
+  time re-backfill via `ibkr_historical_l1.py` to gain `ts_event`. Until
+  then the broker falls back to today's clamp-at-end behavior on those
+  files (still correct, just no sub-window reuse).
+- No unit tests for the broker class still applies; same follow-up as
+  the L2 entry.
+
+Suggested commit:
+```bash
+git commit -m "feat(broker): L1 timestamped cache + range-aware reuse (parity with L2)"
+```
+
+## [2026-05-19] - L1 cache is step-indexed and not range-aware #todo #Done (resolved by [2026-05-19] L1 timestamped cache + range-aware reuse)
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `6322881 feat(broker): timestamped L2 cache + range-aware reuse`.
+
+Context:
+- The L2 cache change at `6322881` made `*.mbp10.csv` carry `ts_event`
+  per row and taught the broker to detect cached coverage and filter on
+  load. The L1 path (`*.mbp1.csv`) was left step-indexed.
+- Concrete failure mode when only L2 is range-aware: the user runs a
+  backtest covering 04-13 to 04-28, then reruns just 04-15 to 04-16 to
+  drill into a subset. The L2 cache trims correctly (renumbered step 0
+  starts at the requested start_ns). The L1 cache continues to play from
+  step 0 = the original start, so the L1 mid stream is shifted by ~2
+  trading days relative to L2 for the entire rerun. The strategy reads
+  the wrong `s.mid` against the right `s.bid`/`s.ask`, silently producing
+  a broken replay.
+- Less-bad case but still bad: the L1 file covers a window the user
+  doesn't actually want for this rerun, and there's no way to detect
+  the mismatch from the file alone.
+
+Approach:
+1. Add `ts_event` as the leading column in the L1 output schema. Two
+   producers need updating:
+   - `scripts/ibkr_historical_l1.py` (master backfill from IBKR
+     BID_ASK historical bars) - it already knows `bar.date` (epoch
+     seconds); the conversion to ns is `bar.date * 1e9`.
+   - `scripts/local_l1_csv_provider.py` (broker-invoked normalizer
+     that copies `data/l1/<SYM>.mbp1.csv` -> cache) - propagate
+     `ts_event` from the source row; accept `ts_event` as either int
+     ns or ISO-8601 string.
+2. In `DatabentoBacktestBroker`:
+   - Generalize the L2-only `read_l2_cache_range` to a shared
+     `read_cache_ts_range` (same first/last-line scan; works for any
+     dated CSV that has ts_event as its first column).
+   - Make `parse_top_row` accept both 5-field (legacy) and 6-field
+     (dated) rows. Legacy rows yield ts_event_ns == 0 so they bypass
+     filtering, preserving today's clamp-at-end semantics for any
+     pre-existing local cache.
+   - Make `ensure_l1_symbol_loaded` mirror `ensure_l2_symbol_loaded`:
+     re-invoke the L1 downloader when the cache is missing, lacks
+     ts_event, or its range doesn't cover the requested window.
+   - Add `[start_ns, end_ns]` to `load_top_books_from_csv`, filter rows
+     by ts_event, and renumber step to 0..N over the kept rows.
+3. No schema change to the broker headers' public surface beyond the
+   new defaulted optional args; existing call sites pass nullopt and
+   keep working.
+
+Migration:
+- Existing legacy `data/l1/<SYM>.mbp1.csv` files are still readable
+  (5-field rows -> ts_event_ns = 0 -> no filter applied). They lose
+  the sub-window-reuse benefit but the backtest still runs.
+- To gain sub-window reuse for the historic universe, re-run
+  `ibkr_historical_l1.py` once across the full desired window. After
+  that, sub-window backtests reuse the L1 cache for free, identical to
+  the L2 path.
+
+Validation performed:
+- None standalone; investigation note that drove the resolution above.
+
+Known risks / follow-up:
+- `#todo #Done`. See the resolving entry for what shipped.
+
+Suggested commit (when resolved): see resolving entry.
+
 ## [2026-05-19] - Timestamped L2 cache + range-aware reuse in DatabentoBacktestBroker
 
 Model / agent:

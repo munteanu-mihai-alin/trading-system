@@ -78,16 +78,54 @@ def row_value(row: dict[str, str], *names: str) -> str:
     return ""
 
 
+import datetime as dt
+
+
+def parse_ts_event(value: str) -> int:
+    """Parse an L1 ts_event field into nanoseconds since the Unix epoch.
+
+    Accepts: empty (returns 0), an integer string already in nanoseconds, or
+    an ISO-8601 timestamp like 2026-04-13T13:30:00Z.
+    """
+    if not value:
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return int(parsed.timestamp() * 1_000_000_000)
+    except ValueError:
+        return 0
+
+
 def write_synthetic(path: Path, max_records: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = max_records if max_records > 0 else 200
+    base_ns = int(
+        dt.datetime(2026, 1, 1, 13, 30, tzinfo=dt.timezone.utc).timestamp()
+        * 1_000_000_000
+    )
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["step", "bid_price", "bid_size", "ask_price", "ask_size"])
+        writer.writerow(
+            ["ts_event", "step", "bid_price", "bid_size", "ask_price", "ask_size"]
+        )
         for step in range(rows):
             mid = 100.0 + 0.01 * step
+            ts_event_ns = base_ns + step * 60 * 1_000_000_000  # +1 minute per step
             writer.writerow(
-                [step, f"{mid - 0.01:.4f}", 1000.0, f"{mid + 0.01:.4f}", 1000.0]
+                [
+                    ts_event_ns,
+                    step,
+                    f"{mid - 0.01:.4f}",
+                    1000.0,
+                    f"{mid + 0.01:.4f}",
+                    1000.0,
+                ]
             )
 
 
@@ -98,12 +136,17 @@ def write_normalized(source: Path, output: Path, max_records: int) -> None:
     ) as dst:
         reader = csv.DictReader(src)
         writer = csv.writer(dst)
-        writer.writerow(["step", "bid_price", "bid_size", "ask_price", "ask_size"])
+        writer.writerow(
+            ["ts_event", "step", "bid_price", "bid_size", "ask_price", "ask_size"]
+        )
 
         for step, row in enumerate(reader):
             if max_records > 0 and step >= max_records:
                 break
 
+            ts_event_ns = parse_ts_event(
+                row_value(row, "ts_event", "ts_recv", "timestamp", "time")
+            )
             bid = row_value(row, "bid_price", "bid", "best_bid", "bid_px_00")
             ask = row_value(row, "ask_price", "ask", "best_ask", "ask_px_00")
             bid_size = row_value(row, "bid_size", "bid_sz", "bid_sz_00")
@@ -112,6 +155,7 @@ def write_normalized(source: Path, output: Path, max_records: int) -> None:
             if finite_positive(bid) and finite_positive(ask):
                 writer.writerow(
                     [
+                        ts_event_ns,
                         step,
                         float(bid),
                         float(bid_size) if finite_positive(bid_size) else 1.0,
@@ -124,7 +168,7 @@ def write_normalized(source: Path, output: Path, max_records: int) -> None:
             close = row_value(row, "close", "Close", "price", "mid", "last")
             if finite_positive(close):
                 mid = float(close)
-                writer.writerow([step, mid, 1.0, mid, 1.0])
+                writer.writerow([ts_event_ns, step, mid, 1.0, mid, 1.0])
 
 
 def main() -> int:

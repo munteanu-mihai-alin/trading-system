@@ -46,7 +46,9 @@ class DatabentoBacktestBroker : public IBroker {
   bool download_if_missing(const std::filesystem::path& out,
                            const std::string& command) const;
   [[nodiscard]] std::vector<TopOfBook> load_top_books_from_csv(
-      const std::filesystem::path& path) const;
+      const std::filesystem::path& path,
+      std::optional<std::int64_t> start_ns = std::nullopt,
+      std::optional<std::int64_t> end_ns = std::nullopt) const;
   [[nodiscard]] std::vector<L2Book> load_books_from_csv(
       const std::filesystem::path& path,
       std::optional<std::int64_t> start_ns = std::nullopt,

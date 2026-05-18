@@ -368,14 +368,18 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["step", "bid_price", "bid_size", "ask_price", "ask_size"])
+        writer.writerow(
+            ["ts_event", "step", "bid_price", "bid_size", "ask_price", "ask_size"]
+        )
         for step, bar in enumerate(unique):
             # whatToShow=BID_ASK schema:
             #   open  = time-average bid
             #   close = time-average ask
             #   low   = min bid, high = max ask  (not used here)
             #   volume = -1 (size not provided)
+            ts_event_ns = bar_ts(bar) * 1_000_000_000
             writer.writerow([
+                ts_event_ns,
                 step,
                 f"{bar.open:.6f}",
                 0,

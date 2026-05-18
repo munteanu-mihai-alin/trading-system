@@ -115,15 +115,15 @@ namespace {
   return static_cast<std::int64_t>(t) * 1'000'000'000LL;
 }
 
-struct L2CacheRange {
+struct CacheTsRange {
   std::int64_t start_ns = 0;
   std::int64_t end_ns = 0;
 };
 
-// Reads the first and last data row of an L2 cache file and returns their
-// ts_event in nanoseconds. Returns std::nullopt if the file is missing, the
-// header doesn't carry ts_event, or no data rows are present.
-[[nodiscard]] std::optional<L2CacheRange> read_l2_cache_range(
+// Reads the first and last data row of a dated cache file (either L1 or L2)
+// and returns their ts_event in nanoseconds. Returns std::nullopt if the file
+// is missing, the header doesn't carry ts_event, or no data rows are present.
+[[nodiscard]] std::optional<CacheTsRange> read_cache_ts_range(
     const std::filesystem::path& path) {
   std::ifstream in(path);
   if (!in.is_open())
@@ -135,7 +135,7 @@ struct L2CacheRange {
   if (header.rfind("ts_event", 0) != 0)
     return std::nullopt;  // legacy schema; treat as no cache for range purposes
 
-  L2CacheRange range{};
+  CacheTsRange range{};
   bool have_start = false;
   std::string line;
   while (std::getline(in, line)) {
@@ -161,7 +161,12 @@ struct L2CacheRange {
   return range;
 }
 
-[[nodiscard]] bool parse_top_row(const std::string& line, int& step,
+// Parses one L1 top-of-book row. Supports two schemas:
+//   - legacy: step,bid_price,bid_size,ask_price,ask_size            (no ts_event)
+//   - dated:  ts_event,step,bid_price,bid_size,ask_price,ask_size   (preferred)
+// In legacy rows, ts_event_ns is set to 0 to signal "unknown".
+[[nodiscard]] bool parse_top_row(const std::string& line,
+                                 std::int64_t& ts_event_ns, int& step,
                                  TopOfBook& top) {
   std::stringstream ss(line);
   std::string field;
@@ -171,15 +176,25 @@ struct L2CacheRange {
   }
   if (fields.size() < 5)
     return false;
-  if (fields[0] == "step")
+  if (fields[0] == "step" || fields[0] == "ts_event")
     return false;
 
   try {
-    step = std::stoi(fields[0]);
-    top.bid_price = std::stod(fields[1]);
-    top.bid_size = std::stod(fields[2]);
-    top.ask_price = std::stod(fields[3]);
-    top.ask_size = std::stod(fields[4]);
+    if (fields.size() >= 6) {
+      ts_event_ns = std::stoll(fields[0]);
+      step = std::stoi(fields[1]);
+      top.bid_price = std::stod(fields[2]);
+      top.bid_size = std::stod(fields[3]);
+      top.ask_price = std::stod(fields[4]);
+      top.ask_size = std::stod(fields[5]);
+    } else {
+      ts_event_ns = 0;
+      step = std::stoi(fields[0]);
+      top.bid_price = std::stod(fields[1]);
+      top.bid_size = std::stod(fields[2]);
+      top.ask_price = std::stod(fields[3]);
+      top.ask_size = std::stod(fields[4]);
+    }
   } catch (...) {
     return false;
   }
@@ -354,10 +369,39 @@ std::string DatabentoBacktestBroker::l2_downloader_command(
 bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
     const TopOfBookRequest& req) {
   const auto out = l1_cache_path_for_symbol(req.symbol);
-  if (!download_if_missing(out, l1_downloader_command(req.symbol, out)))
-    return false;
+  const auto req_start = parse_iso8601_to_ns(cfg_.databento_start);
+  const auto req_end = parse_iso8601_to_ns(cfg_.databento_end);
 
-  auto books = load_top_books_from_csv(out);
+  bool need_download = !std::filesystem::exists(out);
+  if (!need_download) {
+    // Reuse only when the cache carries ts_event AND covers the requested
+    // window. local_l1_csv_provider.py copies from data/l1/<SYM>.mbp1.csv;
+    // if that source is still legacy (no ts_event), re-invoking the script
+    // will just produce another legacy file and the broker falls back to
+    // step-clamped behavior on load.
+    const auto cached = read_cache_ts_range(out);
+    if (!cached) {
+      need_download = true;
+    } else if (req_start && cached->start_ns > *req_start) {
+      need_download = true;
+    } else if (req_end && cached->end_ns < *req_end) {
+      need_download = true;
+    }
+  }
+
+  if (need_download) {
+    std::filesystem::create_directories(out.parent_path());
+    if (std::filesystem::exists(out)) {
+      std::error_code ec;
+      std::filesystem::remove(out, ec);
+    }
+    const auto cmd = l1_downloader_command(req.symbol, out);
+    const int rc = std::system(cmd.c_str());
+    if (rc != 0 || !std::filesystem::exists(out))
+      return false;
+  }
+
+  auto books = load_top_books_from_csv(out, req_start, req_end);
   if (books.empty())
     return false;
 
@@ -381,7 +425,7 @@ bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
     // Only consider the cache reusable when both the cached file carries a
     // ts_event range AND the requested window fits inside it. Either side
     // missing -> re-download to guarantee the replay covers the request.
-    const auto cached = read_l2_cache_range(out);
+    const auto cached = read_cache_ts_range(out);
     if (!cached) {
       need_download = true;  // legacy schema or empty
     } else if (req_start && cached->start_ns > *req_start) {
@@ -427,20 +471,39 @@ bool DatabentoBacktestBroker::download_if_missing(
 }
 
 std::vector<TopOfBook> DatabentoBacktestBroker::load_top_books_from_csv(
-    const std::filesystem::path& path) const {
+    const std::filesystem::path& path, std::optional<std::int64_t> start_ns,
+    std::optional<std::int64_t> end_ns) const {
   std::ifstream in(path);
   if (!in.is_open())
     return {};
 
   std::vector<TopOfBook> books;
   std::string line;
+  // Mirrors the L2 loader's renumber-on-filter behavior. Legacy (no ts_event)
+  // rows yield ts_event_ns == 0 and bypass the filter, preserving today's
+  // clamp-at-end semantics for any pre-existing legacy L1 cache.
+  bool have_step_offset = false;
+  int step_offset = 0;
   while (std::getline(in, line)) {
+    std::int64_t ts_event_ns = 0;
     int step = 0;
     TopOfBook top;
-    if (!parse_top_row(line, step, top))
+    if (!parse_top_row(line, ts_event_ns, step, top))
       continue;
     if (step < 0)
       continue;
+
+    if (ts_event_ns > 0) {
+      if (start_ns && ts_event_ns < *start_ns)
+        continue;
+      if (end_ns && ts_event_ns > *end_ns)
+        break;
+      if (!have_step_offset) {
+        step_offset = step;
+        have_step_offset = true;
+      }
+      step -= step_offset;
+    }
 
     const auto idx = static_cast<std::size_t>(step);
     if (idx >= books.size()) {

@@ -78,6 +78,20 @@ struct AppConfig {
   // For 3 held symbols across a 6-day backtest (~2340 steps): ~0.6 MB.
   // Off by default.
   std::string l2_trace_log_path;
+  // Append vs truncate for the CSV logs (decision, order, step_trace,
+  // l2_trace). When false (default), each engine start writes fresh
+  // files - fine for backtest where reports/runs/<run_id>/ already
+  // isolates sessions. When true, the engine appends to existing files
+  // - intended for live trading where restarts within a day should
+  // produce one continuous log with session boundary markers visible
+  // (see session_start / session_end comment lines that the engine
+  // writes at startup and shutdown).
+  bool log_append_mode = false;
+  // Optional human-readable label injected into the session_start /
+  // session_end comment lines. Empty (default) just uses the mode
+  // name. Useful when running multiple sessions per day and you want
+  // to tag them ("morning_paper_smoke", "second_attempt_after_fix", ...).
+  std::string run_label;
   // Shadow-portfolio simulation in RankingEngine. When true, the engine
   // marks the next `shadow_top_k` symbols as `shadow_active` after the
   // top-k active ones, records synthetic per-step PnL for both real and

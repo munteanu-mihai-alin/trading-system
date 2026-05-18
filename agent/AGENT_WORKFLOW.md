@@ -35,7 +35,37 @@ regenerates `reports/runs/index.md` as a Markdown table of every known
 run. The script is idempotent - safe to re-run; it skips folders that
 already have a `manifest.json`.
 
-The `manifest.json` schema (minimum fields):
+### Per-row `ts_ns` and session markers
+
+Every row in `decisions.csv`, `orders.csv`, `step_trace.csv`, and
+`l2_trace.csv` starts with a `ts_ns` column - wall-clock nanoseconds
+since the Unix epoch (`std::chrono::system_clock`). This lets you query
+"events on day X" or "orders between 14:00 and 15:00" without inferring
+time from the engine `step` index.
+
+Each log file is delimited by **session markers** that the engine
+writes as `#`-prefixed comment lines (pandas `read_csv(comment='#')`
+skips them):
+
+```
+# session_start ts=2026-05-18T02:21:09.981Z ts_ns=... kind=order mode=databento_backtest label=cpp_backtest universe_size=50
+ts_ns,step,order_id,symbol,...
+... data rows ...
+# session_end ts=2026-05-18T02:37:28.165Z ts_ns=... kind=order orders_placed=4 open_positions=1
+```
+
+`AppConfig::log_append_mode` controls how restarts are handled:
+
+- `false` (default, recommended for backtest): each engine start
+  truncates the file. Since backtests already isolate sessions via
+  `reports/runs/<run_id>/`, fresh files inside each run folder is the
+  right choice.
+- `true` (recommended for live): each engine start appends to the
+  existing file. Restarts within the same day produce one continuous
+  file with two `session_start` lines; the gap between the prior
+  `session_end` and the next `session_start` is the system's downtime.
+
+### Manifest schema
 
 ```json
 {

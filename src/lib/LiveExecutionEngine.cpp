@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <ios>
 #include <utility>
 
 namespace hft {
@@ -46,6 +50,36 @@ constexpr int kDepthTickerIdOffset = 100000;
   return std::max(queue, 1.0);
 }
 
+// Wall-clock ns since Unix epoch, for the ts_ns column in every CSV row
+// and for the session_start / session_end markers. system_clock is the
+// right pick here: we want comparable timestamps across restarts and
+// for "events on day X" queries; steady_clock isn't wall-clock.
+[[nodiscard]] std::int64_t wall_ns_now() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+[[nodiscard]] std::string wall_iso_now() {
+  using namespace std::chrono;
+  const auto now = system_clock::now();
+  const auto t = system_clock::to_time_t(now);
+  std::tm gmt{};
+#if defined(_WIN32)
+  gmtime_s(&gmt, &t);
+#else
+  gmtime_r(&t, &gmt);
+#endif
+  const auto ms =
+      duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
+  char buf[40];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &gmt);
+  char out[64];
+  std::snprintf(out, sizeof(out), "%s.%03lldZ", buf,
+                static_cast<long long>(ms));
+  return out;
+}
+
 [[nodiscard]] double sell_directional_mu(const L2Book& book) {
   double bid_volume = 0.0;
   double ask_volume = 0.0;
@@ -72,61 +106,91 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
       broker_(std::move(broker)),
       ranking(cfg_.app.top_k, "shadow_results.csv", cfg_.app.shadow_enabled,
               cfg_.app.synthetic_fill_model, cfg_.app.entry_limit_mode) {
-  const char* kRankingHeader =
-      "step,decision_id,rank,symbol,score,score_tilt,hawkes_buy,"
-      "hawkes_sell,hit_count,ou_mu,ou_initialized,mid,best_limit,"
-      "active,chosen,gate\n";
-  if (!cfg_.app.decision_log_path.empty()) {
-    decision_log_ = std::make_unique<std::ofstream>(cfg_.app.decision_log_path);
-    if (decision_log_->is_open()) {
-      *decision_log_ << kRankingHeader;
-    } else {
-      decision_log_.reset();
-    }
+  // All four log schemas include a leading ts_ns column (wall-clock
+  // ns) so events are queryable by day across restarts. open_log_ also
+  // writes a session_start comment line so a second restart appended
+  // to the same file shows the boundary.
+  decision_log_ = open_log_(
+      cfg_.app.decision_log_path,
+      "ts_ns,step,decision_id,rank,symbol,score,score_tilt,hawkes_buy,"
+      "hawkes_sell,hit_count,ou_mu,ou_initialized,mid,best_limit,active,"
+      "chosen,gate\n",
+      "decision");
+  step_trace_log_ = open_log_(
+      cfg_.app.step_trace_log_path,
+      "ts_ns,step,decision_id,rank,symbol,score,score_tilt,hawkes_buy,"
+      "hawkes_sell,hit_count,ou_mu,ou_initialized,mid,best_limit,active,"
+      "chosen,gate\n",
+      "step_trace");
+  order_log_ =
+      open_log_(cfg_.app.order_log_path,
+                "ts_ns,step,order_id,symbol,side,qty,limit,event,filled_qty,"
+                "remaining_qty,avg_fill_price\n",
+                "order");
+  l2_trace_log_ =
+      open_log_(cfg_.app.l2_trace_log_path,
+                "ts_ns,step,symbol,best_bid,bid_size,best_ask,ask_size,"
+                "microprice,bid_vol_top10,ask_vol_top10,sell_limit,"
+                "sell_score\n",
+                "l2_trace");
+}
+
+std::unique_ptr<std::ofstream> LiveExecutionEngine::open_log_(
+    const std::string& path, const char* header, const char* log_kind) {
+  if (path.empty())
+    return nullptr;
+  const bool append = cfg_.app.log_append_mode;
+  const bool exists = std::filesystem::exists(path);
+  const auto sz = exists ? std::filesystem::file_size(path) : 0;
+  const auto mode = std::ios::out | (append ? std::ios::app : std::ios::trunc);
+  auto out = std::make_unique<std::ofstream>(path, mode);
+  if (!out->is_open()) {
+    return nullptr;
   }
-  if (!cfg_.app.step_trace_log_path.empty()) {
-    step_trace_log_ =
-        std::make_unique<std::ofstream>(cfg_.app.step_trace_log_path);
-    if (step_trace_log_->is_open()) {
-      *step_trace_log_ << kRankingHeader;
-    } else {
-      step_trace_log_.reset();
-    }
+  // Header only when the file is brand new (truncate, or append-but-empty).
+  if (!append || sz == 0) {
+    *out << header;
   }
-  if (!cfg_.app.order_log_path.empty()) {
-    order_log_ = std::make_unique<std::ofstream>(cfg_.app.order_log_path);
-    if (order_log_->is_open()) {
-      *order_log_ << "step,order_id,symbol,side,qty,limit,event,"
-                     "filled_qty,remaining_qty,avg_fill_price\n";
-    } else {
-      order_log_.reset();
-    }
-  }
-  if (!cfg_.app.l2_trace_log_path.empty()) {
-    l2_trace_log_ = std::make_unique<std::ofstream>(cfg_.app.l2_trace_log_path);
-    if (l2_trace_log_->is_open()) {
-      *l2_trace_log_ << "step,symbol,best_bid,bid_size,best_ask,ask_size,"
-                        "microprice,bid_vol_top10,ask_vol_top10,"
-                        "sell_limit,sell_score\n";
-    } else {
-      l2_trace_log_.reset();
-    }
-  }
+  // Session boundary marker so multiple sessions in one file (append
+  // mode) are visible. Pandas / CSV parsers can ignore '#' lines with
+  // comment='#'.
+  *out << "# session_start ts=" << wall_iso_now() << " ts_ns=" << wall_ns_now()
+       << " kind=" << log_kind << " mode=" << cfg_.mode_name()
+       << " label=" << (cfg_.app.run_label.empty() ? "-" : cfg_.app.run_label)
+       << " universe_size=" << cfg_.app.universe_size << "\n";
+  out->flush();
+  return out;
+}
+
+void LiveExecutionEngine::close_logs_with_session_end_() {
+  auto write_end = [&](std::ofstream* out, const char* kind) {
+    if (out == nullptr || !out->is_open())
+      return;
+    *out << "# session_end ts=" << wall_iso_now() << " ts_ns=" << wall_ns_now()
+         << " kind=" << kind << " orders_placed=" << orders_placed_
+         << " open_positions=" << open_positions_.size() << "\n";
+    out->flush();
+  };
+  write_end(decision_log_.get(), "decision");
+  write_end(step_trace_log_.get(), "step_trace");
+  write_end(order_log_.get(), "order");
+  write_end(l2_trace_log_.get(), "l2_trace");
 }
 
 void LiveExecutionEngine::write_ranking_snapshot_to(
     std::ofstream& out, int decision_id, int t,
     const std::string& chosen_symbol, const std::string& gate) {
+  const auto ts = wall_ns_now();
   for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
     const auto& s = ranking.portfolio.items[i];
     const bool is_chosen =
         !chosen_symbol.empty() && (s.symbol == chosen_symbol);
-    out << t << ',' << decision_id << ',' << i << ',' << s.symbol << ','
-        << s.score << ',' << s.score_tilt << ',' << s.hawkes.lambda << ','
-        << s.hawkes_sell.lambda << ',' << s.hit_count << ',' << s.ou.mu << ','
-        << (s.ou_initialized ? 1 : 0) << ',' << s.mid << ',' << s.best_limit
-        << ',' << (s.active ? 1 : 0) << ',' << (is_chosen ? 1 : 0) << ','
-        << (is_chosen ? "" : gate) << '\n';
+    out << ts << ',' << t << ',' << decision_id << ',' << i << ',' << s.symbol
+        << ',' << s.score << ',' << s.score_tilt << ',' << s.hawkes.lambda
+        << ',' << s.hawkes_sell.lambda << ',' << s.hit_count << ',' << s.ou.mu
+        << ',' << (s.ou_initialized ? 1 : 0) << ',' << s.mid << ','
+        << s.best_limit << ',' << (s.active ? 1 : 0) << ','
+        << (is_chosen ? 1 : 0) << ',' << (is_chosen ? "" : gate) << '\n';
   }
 }
 
@@ -145,10 +209,10 @@ void LiveExecutionEngine::emit_order_event(
     double remaining_qty, double avg_fill_price) {
   if (!order_log_ || !order_log_->is_open())
     return;
-  *order_log_ << current_step_t_ << ',' << order_id << ',' << symbol << ','
-              << side << ',' << qty << ',' << limit << ',' << event << ','
-              << filled_qty << ',' << remaining_qty << ',' << avg_fill_price
-              << '\n';
+  *order_log_ << wall_ns_now() << ',' << current_step_t_ << ',' << order_id
+              << ',' << symbol << ',' << side << ',' << qty << ',' << limit
+              << ',' << event << ',' << filled_qty << ',' << remaining_qty
+              << ',' << avg_fill_price << '\n';
   order_log_->flush();
 }
 
@@ -172,10 +236,10 @@ void LiveExecutionEngine::emit_l2_trace(const std::string& symbol,
     bid_vol += std::max(level.size, 0.0);
   for (const auto& level : book.asks)
     ask_vol += std::max(level.size, 0.0);
-  *l2_trace_log_ << current_step_t_ << ',' << symbol << ',' << best_bid << ','
-                 << bid_sz0 << ',' << best_ask << ',' << ask_sz0 << ','
-                 << microprice_value << ',' << bid_vol << ',' << ask_vol << ','
-                 << sell_limit << ',' << sell_score << '\n';
+  *l2_trace_log_ << wall_ns_now() << ',' << current_step_t_ << ',' << symbol
+                 << ',' << best_bid << ',' << bid_sz0 << ',' << best_ask << ','
+                 << ask_sz0 << ',' << microprice_value << ',' << bid_vol << ','
+                 << ask_vol << ',' << sell_limit << ',' << sell_score << '\n';
   l2_trace_log_->flush();
 }
 
@@ -198,6 +262,11 @@ bool LiveExecutionEngine::start() {
 void LiveExecutionEngine::stop() {
   broker_->disconnect();
   hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Down);
+  // Mark every open log with a session_end row so subsequent reads can
+  // see exactly when this session finished. In append mode the next
+  // session will write its own session_start; the gap between the two
+  // timestamps is the system's downtime.
+  close_logs_with_session_end_();
 }
 
 void LiveExecutionEngine::initialize_universe(int n_stocks) {

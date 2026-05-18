@@ -60,6 +60,8 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_TRUE(cfg.order_log_path.empty());
   EXPECT_TRUE(cfg.step_trace_log_path.empty());
   EXPECT_TRUE(cfg.l2_trace_log_path.empty());
+  EXPECT_FALSE(cfg.log_append_mode);
+  EXPECT_TRUE(cfg.run_label.empty());
   EXPECT_FALSE(cfg.shadow_enabled);
   EXPECT_TRUE(cfg.synthetic_fill_model);
   EXPECT_EQ(cfg.entry_limit_mode, "mid");
@@ -143,6 +145,8 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "order_log_path=tmp/orders.csv\n"
       "step_trace_log_path=tmp/step_trace.csv\n"
       "l2_trace_log_path=tmp/l2_trace.csv\n"
+      "log_append_mode=true\n"
+      "run_label=morning_smoke\n"
       "shadow_enabled=true\n"
       "synthetic_fill_model=false\n"
       "entry_limit_mode=ask\n"
@@ -201,6 +205,8 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_EQ(cfg.order_log_path, "tmp/orders.csv");
   EXPECT_EQ(cfg.step_trace_log_path, "tmp/step_trace.csv");
   EXPECT_EQ(cfg.l2_trace_log_path, "tmp/l2_trace.csv");
+  EXPECT_TRUE(cfg.log_append_mode);
+  EXPECT_EQ(cfg.run_label, "morning_smoke");
   EXPECT_TRUE(cfg.shadow_enabled);
   EXPECT_FALSE(cfg.synthetic_fill_model);
   EXPECT_EQ(cfg.entry_limit_mode, "ask");

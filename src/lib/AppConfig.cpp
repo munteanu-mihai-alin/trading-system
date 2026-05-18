@@ -98,6 +98,10 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.step_trace_log_path = val;
       } else if (key == "l2_trace_log_path") {
         cfg.l2_trace_log_path = val;
+      } else if (key == "log_append_mode") {
+        cfg.log_append_mode = parse_bool(val);
+      } else if (key == "run_label") {
+        cfg.run_label = val;
       } else if (key == "shadow_enabled") {
         cfg.shadow_enabled = parse_bool(val);
       } else if (key == "synthetic_fill_model") {

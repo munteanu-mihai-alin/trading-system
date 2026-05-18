@@ -101,13 +101,23 @@ class LiveExecutionEngine {
   void emit_decision_snapshot(int t, const std::string& chosen_symbol,
                               const std::string& gate);
   // Underlying writer used by both emit_decision_snapshot and the
-  // per-step trace; factored so both files share the same 16-column
-  // schema. decision_id is meaningful within a single output file
-  // (each call increments). When chosen is empty, no row is marked
-  // chosen=1.
+  // per-step trace; factored so both files share the same 17-column
+  // schema (16 ranking cols + ts_ns). decision_id is meaningful within
+  // a single output file (each call increments). When chosen is empty,
+  // no row is marked chosen=1.
   void write_ranking_snapshot_to(std::ofstream& out, int decision_id, int t,
                                  const std::string& chosen_symbol,
                                  const std::string& gate);
+  // Open one of the CSV log files honouring cfg_.app.log_append_mode.
+  // Writes the schema header when the file is fresh (truncate mode or
+  // first-time append). Writes a session_start comment line in both
+  // cases so restarts within the same file are clearly delimited.
+  // Returns nullptr on open failure.
+  std::unique_ptr<std::ofstream> open_log_(const std::string& path,
+                                           const char* header,
+                                           const char* log_kind);
+  // Writes a session_end comment to each open log and flushes.
+  void close_logs_with_session_end_();
   // Order-lifecycle event (placed/filled/cancelled/rejected). No-op
   // when order_log_ is null. Uses current_step_t_ for the step column.
   void emit_order_event(int order_id, const std::string& symbol,

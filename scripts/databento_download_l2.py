@@ -115,17 +115,22 @@ def configure_databento_key(path_text: str) -> None:
 
 def write_synthetic(path: Path, depth: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Synthetic ts_event: start at 2026-01-01T13:30:00Z, +1 second per step.
+    base_ns = int(
+        dt.datetime(2026, 1, 1, 13, 30, tzinfo=dt.timezone.utc).timestamp() * 1_000_000_000
+    )
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["step", "side", "level", "price", "size"])
+        writer.writerow(["ts_event", "step", "side", "level", "price", "size"])
         for step in range(200):
+            ts_event = base_ns + step * 1_000_000_000
             mid = 100.0 + 0.01 * step
             for level in range(depth):
                 writer.writerow(
-                    [step, "bid", level, f"{mid - 0.01 * (level + 1):.4f}", 1000 - 25 * level]
+                    [ts_event, step, "bid", level, f"{mid - 0.01 * (level + 1):.4f}", 1000 - 25 * level]
                 )
                 writer.writerow(
-                    [step, "ask", level, f"{mid + 0.01 * (level + 1):.4f}", 1000 - 25 * level]
+                    [ts_event, step, "ask", level, f"{mid + 0.01 * (level + 1):.4f}", 1000 - 25 * level]
                 )
 
 
@@ -148,7 +153,7 @@ def write_databento(args: argparse.Namespace, path: Path) -> None:
     step = 0
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["step", "side", "level", "price", "size"])
+        writer.writerow(["ts_event", "step", "side", "level", "price", "size"])
         for start, end in iter_windows(
             args.start,
             args.end,
@@ -170,7 +175,17 @@ def write_databento(args: argparse.Namespace, path: Path) -> None:
 
             data = client.timeseries.get_range(**request)
             df = data.to_df(price_type="float", map_symbols=True)
-            for _, row in df.iterrows():
+            for idx, row in df.iterrows():
+                # ts_event is a column in MBP-10 frames; ts_recv is the index.
+                # Fall back to the index if ts_event is not surfaced.
+                ts_event_val = row.get("ts_event", None)
+                if ts_event_val is None:
+                    ts_event_val = idx
+                try:
+                    ts_event_ns = int(ts_event_val.value)
+                except AttributeError:
+                    # Plain int / numpy int64 already in nanoseconds.
+                    ts_event_ns = int(ts_event_val)
                 wrote_level = False
                 for level in range(args.depth):
                     suffix = f"{level:02d}"
@@ -180,12 +195,12 @@ def write_databento(args: argparse.Namespace, path: Path) -> None:
                     ask_sz = row.get(f"ask_sz_{suffix}", 0)
                     if finite_positive(bid_px) and finite_positive(bid_sz):
                         writer.writerow(
-                            [step, "bid", level, float(bid_px), float(bid_sz)]
+                            [ts_event_ns, step, "bid", level, float(bid_px), float(bid_sz)]
                         )
                         wrote_level = True
                     if finite_positive(ask_px) and finite_positive(ask_sz):
                         writer.writerow(
-                            [step, "ask", level, float(ask_px), float(ask_sz)]
+                            [ts_event_ns, step, "ask", level, float(ask_px), float(ask_sz)]
                         )
                         wrote_level = True
                 if wrote_level:

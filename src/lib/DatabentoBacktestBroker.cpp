@@ -2,8 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -40,7 +44,12 @@ namespace {
   return out;
 }
 
-[[nodiscard]] bool parse_level_row(const std::string& line, int& step,
+// Parses one L2 ladder row. Supports two schemas:
+//   - legacy:  step,side,level,price,size            (no ts_event)
+//   - dated:   ts_event,step,side,level,price,size   (preferred)
+// In legacy rows, ts_event_ns is set to 0 to signal "unknown".
+[[nodiscard]] bool parse_level_row(const std::string& line,
+                                   std::int64_t& ts_event_ns, int& step,
                                    std::string& side, int& level, double& price,
                                    double& size) {
   std::stringstream ss(line);
@@ -51,19 +60,105 @@ namespace {
   }
   if (fields.size() < 5)
     return false;
-  if (fields[0] == "step")
+  if (fields[0] == "step" || fields[0] == "ts_event")
     return false;
 
   try {
-    step = std::stoi(fields[0]);
-    side = fields[1];
-    level = std::stoi(fields[2]);
-    price = std::stod(fields[3]);
-    size = std::stod(fields[4]);
+    if (fields.size() >= 6) {
+      ts_event_ns = std::stoll(fields[0]);
+      step = std::stoi(fields[1]);
+      side = fields[2];
+      level = std::stoi(fields[3]);
+      price = std::stod(fields[4]);
+      size = std::stod(fields[5]);
+    } else {
+      ts_event_ns = 0;
+      step = std::stoi(fields[0]);
+      side = fields[1];
+      level = std::stoi(fields[2]);
+      price = std::stod(fields[3]);
+      size = std::stod(fields[4]);
+    }
   } catch (...) {
     return false;
   }
   return true;
+}
+
+// Parses an ISO-8601 timestamp like 2026-04-13T13:30:00Z into nanoseconds
+// since the Unix epoch. Returns std::nullopt on malformed input. Empty input
+// also returns nullopt - callers should treat that as "no bound".
+[[nodiscard]] std::optional<std::int64_t> parse_iso8601_to_ns(
+    const std::string& iso) {
+  if (iso.empty())
+    return std::nullopt;
+  std::tm tm{};
+  int year = 0, mon = 0, day = 0, hour = 0, minute = 0, second = 0;
+  // Tolerate trailing "Z" or "+00:00"; we treat all inputs as UTC.
+  const int matched = std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &year, &mon,
+                                  &day, &hour, &minute, &second);
+  if (matched < 6)
+    return std::nullopt;
+  tm.tm_year = year - 1900;
+  tm.tm_mon = mon - 1;
+  tm.tm_mday = day;
+  tm.tm_hour = hour;
+  tm.tm_min = minute;
+  tm.tm_sec = second;
+#if defined(_WIN32)
+  const std::time_t t = _mkgmtime(&tm);
+#else
+  const std::time_t t = timegm(&tm);
+#endif
+  if (t == static_cast<std::time_t>(-1))
+    return std::nullopt;
+  return static_cast<std::int64_t>(t) * 1'000'000'000LL;
+}
+
+struct L2CacheRange {
+  std::int64_t start_ns = 0;
+  std::int64_t end_ns = 0;
+};
+
+// Reads the first and last data row of an L2 cache file and returns their
+// ts_event in nanoseconds. Returns std::nullopt if the file is missing, the
+// header doesn't carry ts_event, or no data rows are present.
+[[nodiscard]] std::optional<L2CacheRange> read_l2_cache_range(
+    const std::filesystem::path& path) {
+  std::ifstream in(path);
+  if (!in.is_open())
+    return std::nullopt;
+
+  std::string header;
+  if (!std::getline(in, header))
+    return std::nullopt;
+  if (header.rfind("ts_event", 0) != 0)
+    return std::nullopt;  // legacy schema; treat as no cache for range purposes
+
+  L2CacheRange range{};
+  bool have_start = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty())
+      continue;
+    const auto comma = line.find(',');
+    if (comma == std::string::npos)
+      continue;
+    std::int64_t ts = 0;
+    try {
+      ts = std::stoll(line.substr(0, comma));
+    } catch (...) {
+      continue;
+    }
+    if (!have_start) {
+      range.start_ns = ts;
+      have_start = true;
+    }
+    range.end_ns = ts;
+  }
+  if (!have_start)
+    return std::nullopt;
+  return range;
 }
 
 [[nodiscard]] bool parse_top_row(const std::string& line, int& step,
@@ -278,11 +373,37 @@ bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
 bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
     const MarketDepthRequest& req) {
   const auto out = l2_cache_path_for_symbol(req.symbol);
-  if (!download_if_missing(out,
-                           l2_downloader_command(req.symbol, out, req.depth)))
-    return false;
+  const auto req_start = parse_iso8601_to_ns(cfg_.databento_start);
+  const auto req_end = parse_iso8601_to_ns(cfg_.databento_end);
 
-  auto books = load_books_from_csv(out);
+  bool need_download = !std::filesystem::exists(out);
+  if (!need_download) {
+    // Only consider the cache reusable when both the cached file carries a
+    // ts_event range AND the requested window fits inside it. Either side
+    // missing -> re-download to guarantee the replay covers the request.
+    const auto cached = read_l2_cache_range(out);
+    if (!cached) {
+      need_download = true;  // legacy schema or empty
+    } else if (req_start && cached->start_ns > *req_start) {
+      need_download = true;
+    } else if (req_end && cached->end_ns < *req_end) {
+      need_download = true;
+    }
+  }
+
+  if (need_download) {
+    std::filesystem::create_directories(out.parent_path());
+    if (std::filesystem::exists(out)) {
+      std::error_code ec;
+      std::filesystem::remove(out, ec);
+    }
+    const auto cmd = l2_downloader_command(req.symbol, out, req.depth);
+    const int rc = std::system(cmd.c_str());
+    if (rc != 0 || !std::filesystem::exists(out))
+      return false;
+  }
+
+  auto books = load_books_from_csv(out, req_start, req_end);
   if (books.empty())
     return false;
 
@@ -331,23 +452,46 @@ std::vector<TopOfBook> DatabentoBacktestBroker::load_top_books_from_csv(
 }
 
 std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csv(
-    const std::filesystem::path& path) const {
+    const std::filesystem::path& path, std::optional<std::int64_t> start_ns,
+    std::optional<std::int64_t> end_ns) const {
   std::ifstream in(path);
   if (!in.is_open())
     return {};
 
   std::vector<L2Book> books;
   std::string line;
+  // For dated caches we renumber step to 0..N over the kept rows by remembering
+  // the first surviving original step and subtracting. Legacy (no ts_event)
+  // files have ts_event_ns == 0 and bypass the filter, preserving today's
+  // behavior for any pre-existing cached file.
+  bool have_step_offset = false;
+  int step_offset = 0;
   while (std::getline(in, line)) {
+    std::int64_t ts_event_ns = 0;
     int step = 0;
     int level = 0;
     double price = 0.0;
     double size = 0.0;
     std::string side;
-    if (!parse_level_row(line, step, side, level, price, size))
+    if (!parse_level_row(line, ts_event_ns, step, side, level, price, size))
       continue;
     if (step < 0 || level < 0 || level >= L2Book::DEPTH)
       continue;
+
+    // Apply ts_event window only when the row carries a timestamp AND the
+    // caller requested a bound. ts_event_ns == 0 means legacy schema; we
+    // keep every row in that case.
+    if (ts_event_ns > 0) {
+      if (start_ns && ts_event_ns < *start_ns)
+        continue;
+      if (end_ns && ts_event_ns > *end_ns)
+        break;  // CSV is monotonic in ts_event
+      if (!have_step_offset) {
+        step_offset = step;
+        have_step_offset = true;
+      }
+      step -= step_offset;
+    }
 
     const auto idx = static_cast<std::size_t>(step);
     if (idx >= books.size()) {

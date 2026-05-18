@@ -4,6 +4,190 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-19] - Timestamped L2 cache + range-aware reuse in DatabentoBacktestBroker
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `8cb9a10 feat(log): ts_ns column + session_start/end markers +
+  append mode` (1 ahead of `origin/main`).
+
+User request:
+- Make the L2 cache reusable across runs. Today `download_if_missing` only
+  checks for file existence; if a previous run cached AAPL 04-13..04-17 and
+  a new run requests 04-13..04-28 (or 04-14..04-16, or 04-20..04-28), the
+  broker would either reuse a stale window or refuse to extend it.
+- The user explicitly wanted the timestamped-row approach (`ts_event` per
+  row) so sub-windows of a cached range also reuse for free. Dated
+  filenames would only match exact windows and were rejected.
+
+Files changed:
+- `scripts/databento_download_l2.py` - downloader now writes
+  `ts_event,step,side,level,price,size`. `ts_event` is nanoseconds since
+  the Unix epoch, read from the Databento `ts_event` column (falls back to
+  the DataFrame index, which is `ts_recv`, if the column is absent). The
+  synthetic mode also emits dated rows starting at 2026-01-01T13:30:00Z
+  with a +1s step so tests can exercise the new schema without network.
+- `src/lib/DatabentoBacktestBroker.cpp`:
+  - `parse_level_row` now accepts both schemas. Legacy 5-field rows yield
+    `ts_event_ns = 0` and bypass the date filter, preserving today's
+    behavior for any pre-existing cached file at runtime.
+  - New `parse_iso8601_to_ns(...)` parses `databento_start` /
+    `databento_end` into nanoseconds (uses `_mkgmtime` on Windows,
+    `timegm` on POSIX).
+  - New `read_l2_cache_range(path)` reads the header + first/last data row
+    to return `{start_ns, end_ns}`. Header without `ts_event` -> nullopt
+    (treated as cache miss so the broker re-downloads with the new
+    schema).
+  - `ensure_l2_symbol_loaded` replaces the simple file-exists check:
+    re-download when the cache file is missing, lacks ts_event, or its
+    range does not cover the requested `[databento_start, databento_end]`.
+    Stale legacy caches are removed before the re-download so the new file
+    lands at the expected path.
+  - `load_books_from_csv` accepts optional `[start_ns, end_ns]` bounds.
+    For dated rows it filters to the window and renumbers `step` to 0..N
+    starting at the first kept row, so the engine's step index stays
+    contiguous. Legacy rows continue to use their stored step verbatim.
+- `include/broker/DatabentoBacktestBroker.hpp` - updated
+  `load_books_from_csv` signature with two `std::optional<int64_t>`
+  defaults and pulled in `<cstdint>`/`<optional>`.
+
+Deletions / removals:
+- None. Existing 6 cached `*.mbp10.csv` files on Hetzner remain on disk
+  but are detected as legacy and will be replaced on next access (the
+  broker rm's the legacy file before re-downloading).
+
+Steps taken:
+1. Confirmed cached files are step-indexed only (no timestamps) and that
+   `DatabentoBacktestBroker::download_if_missing` skips on file exists,
+   regardless of date window.
+2. Added `ts_event` to the downloader's CSV. Used `row.get('ts_event')`
+   with `Timestamp.value` for the nanosecond conversion; fell back to the
+   DataFrame index for safety.
+3. Added the broker helpers (`parse_iso8601_to_ns`, `read_l2_cache_range`)
+   and rewrote `ensure_l2_symbol_loaded` to do the
+   request-window-vs-cached-range check.
+4. Made `load_books_from_csv` take optional bounds + renumber step.
+5. Ran `./scripts/format_code.sh` (74 files normalized).
+6. Built `hft_lib`, `hft_app`, `hft_tests` clean under UCRT64.
+
+Validation performed:
+- `cmake --build build-ucrt-ibkr --target hft_lib hft_app hft_tests`:
+  builds clean.
+- Runtime `./hft_tests.exe` on this host hits a pre-existing
+  STATUS_ENTRYPOINT_NOT_FOUND (UCRT/libstdc++ DLL ABI mismatch on the
+  developer machine) unrelated to this change; CI will run the test
+  binary in a clean Linux environment.
+
+Known risks / follow-up:
+- No unit test exists for `DatabentoBacktestBroker` (the class has no
+  test fixture today). The range-aware path is best validated by an
+  end-to-end backtest run; recommend adding a small fixture test as a
+  follow-up that writes a synthetic dated CSV, then exercises
+  `load_books_from_csv` with various `[start_ns, end_ns]` windows.
+- L1 caching (`local_l1_csv_provider.py` / `*.mbp1.csv`) is still
+  step-indexed and has the same legacy issue. L1 was out of scope for
+  this change; opening a sibling `#todo` would be appropriate when L1
+  starts coming from Databento or from a re-runnable source.
+- The "extends cached range" case currently re-downloads the full
+  requested window rather than stitching head/tail onto the cached file.
+  True partial-reuse (only download the missing slice and append) is a
+  follow-up - cheap reruns of identical or sub-windows already work
+  with this change.
+- Pre-existing 6 mbp10 files on Hetzner (~135 MB total) will be
+  re-downloaded on next access, repaying ~$3 of L2 spend once. After
+  that, all subsequent runs of the same window are free.
+
+Suggested commit:
+```bash
+git commit -m "feat(broker): timestamped L2 cache + range-aware reuse"
+```
+
+## [2026-05-18] - C++ backtest runner end-to-end via hft_app + DatabentoBacktestBroker
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `8cb9a10 feat(log): ts_ns column + session_start/end markers +
+  append mode` (1 ahead of `origin/main` at time of writing).
+
+User request:
+- Mark the original 2026-05-16 "Build a C++-side backtest runner..." `#todo`
+  as resolved. The end-to-end C++ harness is now in production: it drives
+  `LiveExecutionEngine` through `DatabentoBacktestBroker` using real L1+L2,
+  with realistic ranking, sizing, sell-side execution, and full lifecycle
+  logging. The next planned exercise is a separate 10-trading-day run
+  (2026-04-13 → 2026-04-28) reusing the cached L2 for the first week.
+
+What shipped:
+1. `hft_app` (C++) runs in `mode=databento_backtest` against
+   `DatabentoBacktestBroker` end-to-end. First successful run finished
+   2026-05-18 (run `2026-05-18T0221_cpp_backtest`): 4 orders placed
+   across CDNS/TTE/NOK/LRCX, 1 round-trip filled+sold, 1 open position.
+2. Synthetic 8-candidate FillModel sweep is now gated behind
+   `synthetic_fill_model` (default off in backtest). Removing that O(N log N)
+   `sort_sides` per match unwedged 100k-step runs.
+3. Realistic entry routing via `entry_limit_mode = ask` (cross L1 ask so
+   buys actually fill in a 4-5 day window) and `s.ask_price` plumbed into
+   `Stock` from broker top-of-book.
+4. Auto step bound via `steps_auto_from_broker = true` + new
+   `IBroker::max_replay_steps()` virtual + `DatabentoBacktestBroker`
+   override — engine stops at the end of the data window instead of
+   spinning on a frozen book.
+5. L1-mid-change-driven Hawkes proxy
+   (`hawkes_mid_change_threshold_bps`) so the backtest's ranking sees
+   non-zero arrival intensity without trade prints.
+6. Three opt-in CSV logs: `order_log_path` (state-change lifecycle),
+   `step_trace_log_path` (per-step ranking snapshot, ~15 MB / 6-day),
+   `l2_trace_log_path` (per-step L2 for held positions, sub-1 MB).
+7. Wall-clock `ts_ns` prepended to every row plus `# session_start` /
+   `# session_end` comment markers bracketing each engine session, with
+   `AppConfig::log_append_mode` for live restart-within-day visibility.
+8. Per-run report folder convention at `reports/runs/<YYYY-MM-DDTHHMM>_<label>/`
+   with `manifest.json`, plus `scripts/organize_runs.py` to backfill the
+   layout idempotently.
+9. AGENT_WORKFLOW.md updated with the "Backtest run reporting" and
+   "Per-row ts_ns and session markers" sections.
+
+Resolving commits (chronological):
+- `815e4f6 feat(engine): gate synthetic FillModel behind config`
+- `d39bffa feat(engine): realistic L1-driven entry limit, auto step count,
+  mid-change Hawkes proxy`
+- `2d2360b chore(reports): organize backtest artifacts into per-run folders
+  with manifests`
+- `ab80a61 feat(log): orders.csv + step_trace.csv + l2_trace.csv (three
+  opt-in backtest logs)`
+- `8cb9a10 feat(log): ts_ns column + session_start/end markers + append mode`
+
+Files changed (this entry):
+- `agent/AGENT_HANDOFF_LOG.md` — retagged the 2026-05-16 `#todo` to
+  `#todo #Done` with back-reference; added this resolving entry.
+
+Validation performed:
+- End-to-end run `2026-05-18T0221_cpp_backtest`: 100k steps, 4 placed,
+  1 round-trip, ~$3 Databento spend, CI green through 8cb9a10's parent.
+
+Known risks / follow-up:
+- Sibling `#todo` still open: `[2026-05-16] - Run a one-week real
+  Databento backtest with OU gate ON and calibrate thresholds` — broader
+  10-trading-day calibration run is the next step, separate from this
+  one (planned 2026-04-13 → 2026-04-28).
+- Sibling `#todo` still open: `[2026-05-16] - Wire FillModel and
+  remaining ranking inputs to real market data` — fill probability is
+  still synthetic in the buy-side ranking score; only the broker uses
+  real L1/L2 for the actual fill decision.
+- End-of-run realized PnL summary in `src/app/main.cpp` is still a
+  deferred follow-up (orders.csv enables it; not yet implemented).
+
+Suggested commit:
+```bash
+git commit -m "docs(agent): mark C++ backtest runner #todo as #Done"
+```
+
 ## [2026-05-18] - Free-form debug/trace logging API for engine and strategy code #todo
 
 Model / agent:
@@ -80,7 +264,7 @@ Suggested commit (when resolved):
 git commit -m "feat(log): debug/trace LoggingState API + per-component level gating"
 ```
 
-## [2026-05-16] - Build a C++-side backtest runner that drives LiveExecutionEngine through DatabentoBacktestBroker #todo
+## [2026-05-16] - Build a C++-side backtest runner that drives LiveExecutionEngine through DatabentoBacktestBroker #todo #Done (resolved by [2026-05-18] C++ backtest runner end-to-end via hft_app + DatabentoBacktestBroker)
 
 Model / agent:
 - Model: Claude Opus 4.7 (Anthropic), reasoning model

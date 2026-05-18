@@ -1251,6 +1251,23 @@ Sub-items (each can become its own follow-up entry when worked):
    `target_profit_pct = 0.008` is the minimum profitable trade given
    these costs, and being off by 0.05 on commission alone meaningfully
    changes that.
+7. **IBKR live L2 subscription budget** (user-action only, no code).
+   Two independent costs gate live `reqMktDepth`:
+   - **Exchange depth entitlements**: ~$1.50/mo per exchange, non-pro.
+     The 50-symbol universe is mostly NASDAQ + NYSE primary listings,
+     so the relevant entitlements are **NASDAQ TotalView (Network C /
+     UTP)** and **NYSE OpenBook (Network A / CTA)**. Without these
+     entitlements, `reqMktDepth` cannot return depth for symbols on
+     the respective exchange regardless of any other quota.
+   - **Quote Booster Packs**: ~$30/mo per +3 concurrent depth
+     subscriptions, stackable. Default 3 concurrent depth subs are
+     included with the account once the entitlements above are in
+     place. `max_open_symbols=3` was chosen to fit the default cap,
+     so the strategy can run live without a Booster Pack. Booster
+     Packs are needed only if `max_open_symbols` grows beyond 3.
+   Confirm both items in IBKR Account Management before enabling live
+   L2 routing. Estimated total live L2 spend for the current config:
+   ~$3-5/month (entitlements only, no Booster Pack).
 
 Validation performed:
 - None.

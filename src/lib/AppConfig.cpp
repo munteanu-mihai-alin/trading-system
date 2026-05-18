@@ -92,6 +92,12 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.hawkes_use_real_trades = parse_bool(val);
       } else if (key == "decision_log_path") {
         cfg.decision_log_path = val;
+      } else if (key == "order_log_path") {
+        cfg.order_log_path = val;
+      } else if (key == "step_trace_log_path") {
+        cfg.step_trace_log_path = val;
+      } else if (key == "l2_trace_log_path") {
+        cfg.l2_trace_log_path = val;
       } else if (key == "shadow_enabled") {
         cfg.shadow_enabled = parse_bool(val);
       } else if (key == "synthetic_fill_model") {

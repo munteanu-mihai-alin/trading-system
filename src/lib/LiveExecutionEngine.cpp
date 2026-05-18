@@ -72,16 +72,61 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
       broker_(std::move(broker)),
       ranking(cfg_.app.top_k, "shadow_results.csv", cfg_.app.shadow_enabled,
               cfg_.app.synthetic_fill_model, cfg_.app.entry_limit_mode) {
+  const char* kRankingHeader =
+      "step,decision_id,rank,symbol,score,score_tilt,hawkes_buy,"
+      "hawkes_sell,hit_count,ou_mu,ou_initialized,mid,best_limit,"
+      "active,chosen,gate\n";
   if (!cfg_.app.decision_log_path.empty()) {
     decision_log_ = std::make_unique<std::ofstream>(cfg_.app.decision_log_path);
     if (decision_log_->is_open()) {
-      *decision_log_
-          << "step,decision_id,rank,symbol,score,score_tilt,hawkes_buy,"
-             "hawkes_sell,hit_count,ou_mu,ou_initialized,mid,best_limit,"
-             "active,chosen,gate\n";
+      *decision_log_ << kRankingHeader;
     } else {
       decision_log_.reset();
     }
+  }
+  if (!cfg_.app.step_trace_log_path.empty()) {
+    step_trace_log_ =
+        std::make_unique<std::ofstream>(cfg_.app.step_trace_log_path);
+    if (step_trace_log_->is_open()) {
+      *step_trace_log_ << kRankingHeader;
+    } else {
+      step_trace_log_.reset();
+    }
+  }
+  if (!cfg_.app.order_log_path.empty()) {
+    order_log_ = std::make_unique<std::ofstream>(cfg_.app.order_log_path);
+    if (order_log_->is_open()) {
+      *order_log_ << "step,order_id,symbol,side,qty,limit,event,"
+                     "filled_qty,remaining_qty,avg_fill_price\n";
+    } else {
+      order_log_.reset();
+    }
+  }
+  if (!cfg_.app.l2_trace_log_path.empty()) {
+    l2_trace_log_ = std::make_unique<std::ofstream>(cfg_.app.l2_trace_log_path);
+    if (l2_trace_log_->is_open()) {
+      *l2_trace_log_ << "step,symbol,best_bid,bid_size,best_ask,ask_size,"
+                        "microprice,bid_vol_top10,ask_vol_top10,"
+                        "sell_limit,sell_score\n";
+    } else {
+      l2_trace_log_.reset();
+    }
+  }
+}
+
+void LiveExecutionEngine::write_ranking_snapshot_to(
+    std::ofstream& out, int decision_id, int t,
+    const std::string& chosen_symbol, const std::string& gate) {
+  for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
+    const auto& s = ranking.portfolio.items[i];
+    const bool is_chosen =
+        !chosen_symbol.empty() && (s.symbol == chosen_symbol);
+    out << t << ',' << decision_id << ',' << i << ',' << s.symbol << ','
+        << s.score << ',' << s.score_tilt << ',' << s.hawkes.lambda << ','
+        << s.hawkes_sell.lambda << ',' << s.hit_count << ',' << s.ou.mu << ','
+        << (s.ou_initialized ? 1 : 0) << ',' << s.mid << ',' << s.best_limit
+        << ',' << (s.active ? 1 : 0) << ',' << (is_chosen ? 1 : 0) << ','
+        << (is_chosen ? "" : gate) << '\n';
   }
 }
 
@@ -89,20 +134,49 @@ void LiveExecutionEngine::emit_decision_snapshot(
     int t, const std::string& chosen_symbol, const std::string& gate) {
   if (!decision_log_ || !decision_log_->is_open())
     return;
-  const int decision_id = next_decision_id_++;
-  for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
-    const auto& s = ranking.portfolio.items[i];
-    const bool is_chosen = (s.symbol == chosen_symbol);
-    *decision_log_ << t << ',' << decision_id << ',' << i << ',' << s.symbol
-                   << ',' << s.score << ',' << s.score_tilt << ','
-                   << s.hawkes.lambda << ',' << s.hawkes_sell.lambda << ','
-                   << s.hit_count << ',' << s.ou.mu << ','
-                   << (s.ou_initialized ? 1 : 0) << ',' << s.mid << ','
-                   << s.best_limit << ',' << (s.active ? 1 : 0) << ','
-                   << (is_chosen ? 1 : 0) << ',' << (is_chosen ? "" : gate)
-                   << '\n';
-  }
+  write_ranking_snapshot_to(*decision_log_, next_decision_id_++, t,
+                            chosen_symbol, gate);
   decision_log_->flush();
+}
+
+void LiveExecutionEngine::emit_order_event(
+    int order_id, const std::string& symbol, const std::string& side,
+    double qty, double limit, const std::string& event, double filled_qty,
+    double remaining_qty, double avg_fill_price) {
+  if (!order_log_ || !order_log_->is_open())
+    return;
+  *order_log_ << current_step_t_ << ',' << order_id << ',' << symbol << ','
+              << side << ',' << qty << ',' << limit << ',' << event << ','
+              << filled_qty << ',' << remaining_qty << ',' << avg_fill_price
+              << '\n';
+  order_log_->flush();
+}
+
+void LiveExecutionEngine::emit_l2_trace(const std::string& symbol,
+                                        const L2Book& book, double sell_limit,
+                                        double sell_score) {
+  if (!l2_trace_log_ || !l2_trace_log_->is_open())
+    return;
+  const double best_bid = book.best_bid();
+  const double best_ask = book.best_ask();
+  const double bid_sz0 = book.bids[0].size;
+  const double ask_sz0 = book.asks[0].size;
+  double microprice_value = 0.0;
+  if (bid_sz0 > 0.0 && ask_sz0 > 0.0 && best_bid > 0.0 && best_ask > 0.0) {
+    microprice_value =
+        (ask_sz0 * best_bid + bid_sz0 * best_ask) / (bid_sz0 + ask_sz0);
+  }
+  double bid_vol = 0.0;
+  double ask_vol = 0.0;
+  for (const auto& level : book.bids)
+    bid_vol += std::max(level.size, 0.0);
+  for (const auto& level : book.asks)
+    ask_vol += std::max(level.size, 0.0);
+  *l2_trace_log_ << current_step_t_ << ',' << symbol << ',' << best_bid << ','
+                 << bid_sz0 << ',' << best_ask << ',' << ask_sz0 << ','
+                 << microprice_value << ',' << bid_vol << ',' << ask_vol << ','
+                 << sell_limit << ',' << sell_score << '\n';
+  l2_trace_log_->flush();
 }
 
 bool LiveExecutionEngine::start() {
@@ -134,10 +208,20 @@ void LiveExecutionEngine::initialize_universe(int n_stocks) {
 }
 
 void LiveExecutionEngine::step(int t) {
+  current_step_t_ = t;
   broker_->on_step(t);
   reconcile_broker_state();
   refresh_order_state();
   ranking.step(t);
+
+  // Per-step ranking snapshot to the step-trace file (separate from the
+  // buy-event decisions file). No chosen symbol, no gate - this is the
+  // full ranking at end-of-step for time-series analysis.
+  if (step_trace_log_ && step_trace_log_->is_open()) {
+    write_ranking_snapshot_to(*step_trace_log_, next_step_trace_id_++, t,
+                              /*chosen=*/"", /*gate=*/"");
+    step_trace_log_->flush();
+  }
 
   if (!cfg_.app.order_enabled) {
     if ((t % 100) == 0) {
@@ -217,6 +301,9 @@ void LiveExecutionEngine::step(int t) {
     }
     emit_decision_snapshot(t, s.symbol, /*gate=*/"");
     broker_->place_limit_order(req);
+    emit_order_event(req.id, req.symbol, "buy", req.qty, req.limit, "placed",
+                     /*filled_qty=*/0.0, /*remaining_qty=*/req.qty,
+                     /*avg_fill_price=*/0.0);
     entry_orders_[req.id] = EntryOrderState{s.symbol, req.qty, req.limit};
     ++orders_placed_;
     ++symbol_order_counts_[s.symbol];
@@ -413,6 +500,9 @@ void LiveExecutionEngine::refresh_order_state() {
       const double entry_price = (state->avg_fill_price > 0.0)
                                      ? state->avg_fill_price
                                      : it->second.limit;
+      emit_order_event(it->first, it->second.symbol, "buy", it->second.qty,
+                       it->second.limit, "filled", filled_qty, 0.0,
+                       entry_price);
       auto& position = open_positions_[it->second.symbol];
       const double current_qty = position.qty;
       const double next_qty = current_qty + filled_qty;
@@ -429,6 +519,12 @@ void LiveExecutionEngine::refresh_order_state() {
     }
 
     if (is_terminal_order_status(state->status)) {
+      const char* event = state->status == OrderLifecycleStatus::Cancelled
+                              ? "cancelled"
+                              : "rejected";
+      emit_order_event(it->first, it->second.symbol, "buy", it->second.qty,
+                       it->second.limit, event, state->filled_qty,
+                       state->remaining_qty, state->avg_fill_price);
       it = entry_orders_.erase(it);
       continue;
     }
@@ -445,7 +541,20 @@ void LiveExecutionEngine::refresh_order_state() {
     }
 
     auto pos = open_positions_.find(it->second);
+    // Resolve the sell-side qty/limit before we potentially erase the
+    // position; needed so the order-log row has full context even on
+    // Filled.
+    const double sell_qty = (pos != open_positions_.end()) ? pos->second.qty
+                            : (state->requested_qty > 0.0)
+                                ? state->requested_qty
+                                : 0.0;
+    const double sell_limit_px =
+        (pos != open_positions_.end()) ? pos->second.sell_limit : 0.0;
     if (state->status == OrderLifecycleStatus::Filled) {
+      emit_order_event(it->first, it->second, "sell", sell_qty, sell_limit_px,
+                       "filled",
+                       state->filled_qty > 0.0 ? state->filled_qty : sell_qty,
+                       0.0, state->avg_fill_price);
       if (pos != open_positions_.end()) {
         open_positions_.erase(pos);
       }
@@ -455,6 +564,12 @@ void LiveExecutionEngine::refresh_order_state() {
 
     if (state->status == OrderLifecycleStatus::Cancelled ||
         state->status == OrderLifecycleStatus::Rejected) {
+      const char* event = state->status == OrderLifecycleStatus::Cancelled
+                              ? "cancelled"
+                              : "rejected";
+      emit_order_event(it->first, it->second, "sell", sell_qty, sell_limit_px,
+                       event, state->filled_qty, state->remaining_qty,
+                       state->avg_fill_price);
       if (pos != open_positions_.end()) {
         pos->second.sell_order_id = 0;
       }
@@ -510,6 +625,10 @@ void LiveExecutionEngine::route_exit_orders() {
 
     position.sell_limit = sell_limit;
     position.sell_score = sell_score;
+    // Per-step L2 trace for this held symbol (whether or not we end up
+    // submitting the sell this step). Captures the microstructure state
+    // the sell score was computed from.
+    emit_l2_trace(position.symbol, book, sell_limit, sell_score);
     if (sell_score < cfg_.app.min_sell_execution_score)
       continue;
 
@@ -523,6 +642,9 @@ void LiveExecutionEngine::route_exit_orders() {
       continue;
 
     broker_->place_limit_order(req);
+    emit_order_event(req.id, req.symbol, "sell", req.qty, req.limit, "placed",
+                     /*filled_qty=*/0.0, /*remaining_qty=*/req.qty,
+                     /*avg_fill_price=*/0.0);
     position.sell_order_id = req.id;
     exit_order_symbols_[req.id] = position.symbol;
   }

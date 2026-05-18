@@ -57,6 +57,9 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, 0.0);
   EXPECT_FALSE(cfg.hawkes_use_real_trades);
   EXPECT_TRUE(cfg.decision_log_path.empty());
+  EXPECT_TRUE(cfg.order_log_path.empty());
+  EXPECT_TRUE(cfg.step_trace_log_path.empty());
+  EXPECT_TRUE(cfg.l2_trace_log_path.empty());
   EXPECT_FALSE(cfg.shadow_enabled);
   EXPECT_TRUE(cfg.synthetic_fill_model);
   EXPECT_EQ(cfg.entry_limit_mode, "mid");
@@ -137,6 +140,9 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "ou_buy_threshold_pct=-0.005\n"
       "hawkes_use_real_trades=true\n"
       "decision_log_path=tmp/decisions.csv\n"
+      "order_log_path=tmp/orders.csv\n"
+      "step_trace_log_path=tmp/step_trace.csv\n"
+      "l2_trace_log_path=tmp/l2_trace.csv\n"
       "shadow_enabled=true\n"
       "synthetic_fill_model=false\n"
       "entry_limit_mode=ask\n"
@@ -192,6 +198,9 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.ou_buy_threshold_pct, -0.005);
   EXPECT_TRUE(cfg.hawkes_use_real_trades);
   EXPECT_EQ(cfg.decision_log_path, "tmp/decisions.csv");
+  EXPECT_EQ(cfg.order_log_path, "tmp/orders.csv");
+  EXPECT_EQ(cfg.step_trace_log_path, "tmp/step_trace.csv");
+  EXPECT_EQ(cfg.l2_trace_log_path, "tmp/l2_trace.csv");
   EXPECT_TRUE(cfg.shadow_enabled);
   EXPECT_FALSE(cfg.synthetic_fill_model);
   EXPECT_EQ(cfg.entry_limit_mode, "ask");

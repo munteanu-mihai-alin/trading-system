@@ -56,6 +56,28 @@ struct AppConfig {
   // live trading and existing tests see no behavior change. Intended only
   // for backtest analysis; do not set in live configs.
   std::string decision_log_path;
+  // Order-lifecycle CSV: when non-empty, the engine writes one row per
+  // order state change (placed, filled, cancelled, rejected) covering
+  // both buys and sells. Schema: step,order_id,symbol,side,qty,limit,
+  // event,filled_qty,remaining_qty,avg_fill_price. Off by default; for
+  // backtest and post-mortem analytics. Realized PnL is derived from
+  // this file end-of-run, no separate fills.csv needed.
+  std::string order_log_path;
+  // Per-engine-step ranking snapshot. Same schema as decision_log_path
+  // (16 cols) but fires every step, not just on buys. Useful to see how
+  // scores, hawkes lambdas, OU mu, and hit_count evolve over the run.
+  // Size estimate: ~130 bytes/row * 50 symbols/step * steps. A 4-day
+  // backtest (~1560 steps) -> ~10 MB. Off by default. Intended for
+  // backtest debugging; keep empty in live.
+  std::string step_trace_log_path;
+  // Per-step L2 snapshot for held positions. When non-empty, the engine
+  // writes one row per open-position per step capturing best_bid/ask
+  // + sizes, microprice, top-10 bid/ask volume, sell_limit, sell_score.
+  // Schema: step,symbol,best_bid,bid_size,best_ask,ask_size,microprice,
+  // bid_vol_top10,ask_vol_top10,sell_limit,sell_score. ~80 bytes/row.
+  // For 3 held symbols across a 6-day backtest (~2340 steps): ~0.6 MB.
+  // Off by default.
+  std::string l2_trace_log_path;
   // Shadow-portfolio simulation in RankingEngine. When true, the engine
   // marks the next `shadow_top_k` symbols as `shadow_active` after the
   // top-k active ones, records synthetic per-step PnL for both real and

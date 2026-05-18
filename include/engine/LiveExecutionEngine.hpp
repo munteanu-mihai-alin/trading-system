@@ -48,6 +48,22 @@ class LiveExecutionEngine {
   // event emits one CSV row per ranked symbol.
   std::unique_ptr<std::ofstream> decision_log_;
   int next_decision_id_ = 0;
+  // Optional log: every order state change (placed/filled/cancelled/
+  // rejected) for both buys and sells. Realized PnL is derived from
+  // this file end-of-run.
+  std::unique_ptr<std::ofstream> order_log_;
+  // Optional log: per-engine-step ranking snapshot for all symbols.
+  // Same schema as decision_log_ but fires every step, not just on
+  // buys. Heavier - see AppConfig::step_trace_log_path docs.
+  std::unique_ptr<std::ofstream> step_trace_log_;
+  int next_step_trace_id_ = 0;
+  // Optional log: per-step L2 microstructure trace for held positions.
+  // Written from route_exit_orders.
+  std::unique_ptr<std::ofstream> l2_trace_log_;
+  // Current engine step, set at top of step(t). Lets refresh_order_state
+  // and other helpers tag emitted rows with the right step without
+  // threading t through every signature.
+  int current_step_t_ = 0;
 
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
@@ -84,6 +100,23 @@ class LiveExecutionEngine {
   // one that triggered this snapshot.
   void emit_decision_snapshot(int t, const std::string& chosen_symbol,
                               const std::string& gate);
+  // Underlying writer used by both emit_decision_snapshot and the
+  // per-step trace; factored so both files share the same 16-column
+  // schema. decision_id is meaningful within a single output file
+  // (each call increments). When chosen is empty, no row is marked
+  // chosen=1.
+  void write_ranking_snapshot_to(std::ofstream& out, int decision_id, int t,
+                                 const std::string& chosen_symbol,
+                                 const std::string& gate);
+  // Order-lifecycle event (placed/filled/cancelled/rejected). No-op
+  // when order_log_ is null. Uses current_step_t_ for the step column.
+  void emit_order_event(int order_id, const std::string& symbol,
+                        const std::string& side, double qty, double limit,
+                        const std::string& event, double filled_qty,
+                        double remaining_qty, double avg_fill_price);
+  // Per-step L2 trace row. No-op when l2_trace_log_ is null.
+  void emit_l2_trace(const std::string& symbol, const L2Book& book,
+                     double sell_limit, double sell_score);
 
  public:
   RankingEngine ranking;

@@ -4,6 +4,82 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-18] - Free-form debug/trace logging API for engine and strategy code #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Local clone at `D:\trading-system`, on `main`, after the
+  `d39bffa feat(engine): realistic L1-driven entry limit, auto step count,
+  mid-change Hawkes proxy` commit.
+
+Context:
+- Today the `hft::log::LoggingState` producer API only exposes four event
+  types (set_app_state, set_component_state, heartbeat, raise_warning,
+  raise_error). Internally spdlog has full level support (trace/debug/
+  info/warn/err/critical) but it is not surfaced to the engine.
+- Engine and strategy code that wants to log "I considered X, picked Y
+  because Z" has no easy path. The current workaround is the
+  decision_log_path CSV writer, which only fires on a successful buy and
+  has a fixed 16-column schema. Anything else requires hard-coded stdout
+  prints or a custom CSV per call site.
+- This was flagged by the user during the 2026-05-18 logging audit. The
+  design decision is non-trivial enough to warrant a dedicated #todo
+  rather than a quick patch.
+
+Design questions to settle before implementing:
+1. Channel: extend the existing SPSC ring + writer thread, or bypass the
+   ring with direct spdlog calls? The ring is wait-free on the producer
+   side (good for the engine hot path) but adds a fixed event-type
+   surface. Direct spdlog calls are simpler but introduce a lock on the
+   shared sink.
+2. Levels: which of trace/debug/info/warn/err/critical to expose. At
+   minimum debug and trace. The current `raise_warning` / `raise_error`
+   already cover warn/err and should stay as the dominant path for
+   structured warnings; the new API is for unstructured prose.
+3. Filtering: gate by AppConfig (one knob per channel? per level?), by
+   env var (`HFT_LOG_LEVEL`), or both. Backtest mode would benefit from
+   running at debug; live runs should stay at info.
+4. API shape: `log_debug(component, fmt, args...)` -> string. spdlog
+   fmt-style formatting is the natural fit but pulls in fmtlib at the
+   header surface. Alternative: thunk through a `LogLine` helper that
+   builds a std::string once.
+5. Performance: trace/debug calls in the hot path should compile to a
+   single load+branch when disabled (level check elides arg evaluation).
+   This is hard with naive formatting; spdlog macros handle it well.
+
+Proposed scope of the first iteration:
+- Surface spdlog's debug and trace levels through a new `LoggingState`
+  family: `log_debug(ComponentId, std::string_view)` and
+  `log_trace(ComponentId, std::string_view)`.
+- Gate via two new AppConfig knobs: `log_level` (one of trace/debug/info/
+  warn/err, default info) and `log_engine_decisions_debug` (bool,
+  default false, turns on per-step engine internals).
+- Bypass the SPSC ring for these calls; go directly to spdlog with a
+  cached logger handle. The ring is reserved for the structured-event
+  path.
+- Wire a few high-value debug spots: every buy gate decision in
+  `LiveExecutionEngine::step` ("skipped X because OU gate"), every sell
+  scoring run in `route_exit_orders`, every L2 lazy-load in the broker.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- spdlog's default formatter is text; for analytics we may want a
+  parallel structured-JSON sink. Defer to a follow-up.
+- Excessive debug logging in the hot path can swamp the engine; the
+  level-check elision must be measured (rdtsc) before flipping on for
+  long runs.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(log): debug/trace LoggingState API + per-component level gating"
+```
+
 ## [2026-05-16] - Build a C++-side backtest runner that drives LiveExecutionEngine through DatabentoBacktestBroker #todo
 
 Model / agent:

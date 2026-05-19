@@ -1,0 +1,7 @@
+ts_ns,step,symbol,best_bid,bid_size,best_ask,ask_size,microprice,bid_vol_top10,ask_vol_top10,sell_limit,sell_score
+# session_start ts=2026-05-19T02:58:32.308Z ts_ns=1779159512308523340 kind=l2_trace mode=databento_backtest label=cpp_backtest_10day_full universe_size=50
+1779160933592639513,1,CDNS,265.1,5,269.45,80,265.356,33,271,269.629,1.10607e-06
+1779162079742335181,1,TTE,93.09,108,93.16,1600,93.0944,3693,3558,93.98,2.29347e-05
+1779163303178614633,1,NOK,9.79,200,9.8,26567,9.79007,83968,69967,9.88198,4.12431e-06
+1779164384865375703,4251,GFS,48.62,66,48.69,34,48.6662,957,457,61.0164,1.11759e-28
+# session_end ts=2026-05-19T04:19:44.904Z ts_ns=1779164384904754457 kind=l2_trace orders_placed=4 open_positions=3

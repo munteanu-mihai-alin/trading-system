@@ -1,0 +1,25 @@
+{
+  "artifacts": [
+    "config.ini",
+    "decisions.csv",
+    "l2_trace.csv",
+    "manifest.json",
+    "orders.csv",
+    "step_trace.csv",
+    "stdout.log"
+  ],
+  "ended_at": "2026-05-19T04:19:44Z",
+  "harness": "cpp_hft_app",
+  "label": "C++ 10-day Databento backtest, uncapped orders",
+  "latency_line": "Latency (cycles): p50=10802 p99=16588 p999=28358 max=50600 avg=10974.9",
+  "mode_line": "Mode: databento_backtest",
+  "notes": "10 trading day window 2026-04-13 to 2026-04-28. ts_event-aware L1+L2 caches. 4 orders, 1 round-trip filled (CDNS +$0.57 net), 3 open positions. GFS buy limit anomaly: limit=$402.19 vs fill=$60.45 - likely L1 BID_ASK row glitch. Databento spend ~5.3 GB MBP-10 cache.",
+  "open_notional": 1024.17,
+  "open_positions": 3,
+  "orders_placed": 4,
+  "outcome": "completed",
+  "realized_pnl_net": 0.57,
+  "run_id": "2026-05-19T0558_cpp_backtest_10day_full",
+  "started_at": "2026-05-19T02:58:32Z",
+  "validation_line": "Validation: calibration=0 rolling=0 ks=0 alarm=OFF"
+}

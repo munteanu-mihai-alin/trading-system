@@ -4,6 +4,118 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-19] - 10-day Databento backtest completed end-to-end + ticker_id cross-wire found #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `2290c02 docs(agent): add IBKR live L2 subscription costs to live-trading prereqs #todo`.
+- Hetzner binary rebuilt from CI artifact at the same commit.
+
+User request:
+- Run the 10-day Databento backtest (2026-04-13 -> 2026-04-28) end-to-end
+  against `DatabentoBacktestBroker` driven by `hft_app`, with the new
+  ts_event-aware L1+L2 cache plus full lifecycle/logging stack.
+
+What ran:
+- IBKR L1 re-backfill for 50 symbols across 16 calendar days (10 trading
+  days returned from IBKR; rest were skipped weekends/holidays). ~4.5h
+  wall-clock due to the 21s pacing the script enforces. PSTG returned
+  IBKR error 200 ("no security definition") across all chunks - this is
+  a pre-existing issue (the prior 4-day backfill on Hetzner also has an
+  empty PSTG.mbp1.csv); broker gracefully drops the symbol from the
+  active universe.
+- Two hft_app runs back-to-back:
+  - **Run #1** `2026-05-19T0526_cpp_backtest_10day_capped`: I had
+    accidentally set `max_orders_per_run=1` in the config (copied
+    verbatim from the example). The run placed exactly one trade
+    (CDNS buy + sell, +$0.57 net) over the full window and stopped.
+    Clean validation of the new logging schema (`ts_ns` columns,
+    `session_start`/`session_end` markers, `cpp_backtest_10day` label)
+    but not a real strategy test.
+  - **Run #2** `2026-05-19T0558_cpp_backtest_10day_full`: same config
+    with `max_orders_per_run=0` and `max_orders_per_symbol=0`. 4 buys
+    (CDNS, TTE, NOK, GFS), 1 sell filled (CDNS round-trip again), 3
+    positions open at end (TTE, NOK, GFS @ $1024.17 notional). Wall
+    time 1h21m. Latency p50=10.8k cycles, p99=16.6k, max=50.6k.
+
+Files changed:
+- `reports/runs/2026-05-19T0558_cpp_backtest_10day_full/` mirrored
+  locally (21 MB, mostly step_trace.csv). Hetzner has the canonical
+  copy plus the 5.3 GB of L2 caches.
+- `reports/runs/2026-05-19T0526_cpp_backtest_10day_capped/` on Hetzner
+  only (small, not interesting enough to mirror).
+
+Smoking-gun bug: ticker_id cross-wire in DatabentoBacktestBroker:
+- GFS was bought at step 4250 with limit $402.19 vs an actual market
+  price of $60.45. The buy still filled at the real $60.45 (broker did
+  the right thing against L2), but the limit was off by ~7x because
+  `s.mid` for GFS was reading some OTHER symbol's top-of-book.
+- Grep'd step_trace.csv for GFS rows. Pattern is unambiguous:
+  - step 0  GFS mid=$48.555  matches data/l1/GFS row 0 ($48.38/$48.73) (correct)
+  - step 30 GFS mid=$24.165  matches data/l1/**HPE** row 30 ($24.16/$24.17)
+  - step 60 GFS mid=$341.325 matches data/l1/**WDC** row 60 ($341.11/$341.54)
+  - step 4250 GFS mid=$401.98 (some other symbol at that row)
+- Both the data and the offset migrate per step, so this isn't a static
+  swap. Hypothesis: when `subscribe_market_depth` lands for newly held
+  positions (CDNS/TTE/NOK opened at step 0-1; CDNS sold at step 4250
+  freeing a slot for GFS to be considered), the engine's ticker_id
+  assignment collides with an already-subscribed top-of-book ticker_id,
+  causing `top_replay_by_ticker_[req.ticker_id]` to overwrite or
+  cross-reference an entry. The L2 path runs through
+  `replay_by_ticker_` so the L2 fill itself is correct - it's the L1
+  read path that goes through the wrong symbol's series.
+- Proposed scope of investigation (deferred to a follow-up agent):
+  - Audit where the engine generates `ticker_id` for both
+    `TopOfBookRequest` and `MarketDepthRequest`. They should be
+    distinct ID spaces, or use one stable `ticker_id` per symbol that
+    indexes into separate `top_replay_by_ticker_` / `replay_by_ticker_`
+    maps without collision.
+  - Add a unit test that subscribes top-of-book + market-depth for the
+    same symbol set, asserts no cross-wiring.
+- Implication: until this is fixed, ANY backtest result that involves
+  symbols entering the held set mid-run is contaminated for the
+  ranking path (the buy decision uses crossed `s.mid`). The CDNS
+  round-trip is clean because CDNS was held from step 0; its L2
+  subscribe happened before any other position swaps.
+
+Validation performed:
+- End-to-end run completed cleanly. New schema confirmed working:
+  ts_ns columns, session markers in all 4 logs, `cpp_backtest_10day_full`
+  label propagated.
+- L1 ts_event filter exercised (50 caches built via local_l1_csv_provider).
+- L2 ts_event filter exercised (4 caches built fresh for CDNS, TTE, NOK,
+  GFS, total 5.3 GB).
+- CDNS L2 re-downloaded between Run #1 and Run #2 (~95 MB -> 603 MB)
+  because Run #1's cache didn't cover the full window. Confirms the
+  range-aware cache check is firing.
+
+Databento cost note:
+- Run #2 fetched 5.3 GB of MBP-10 across CDNS/GFS/NOK/TTE. Rough cost
+  estimate: $20-80 depending on the user's Databento subscription tier.
+  Subsequent reruns of the same window are free thanks to the
+  ts_event-aware cache.
+
+Known risks / follow-up:
+- `#todo` (this entry): **ticker_id cross-wire bug**. Surface and get
+  approval before working on it; needs careful inspection of the
+  engine + broker ticker_id assignment. NOT blocking the existing
+  open `#todo`s but blocks confident ranking-side validation in future
+  multi-day backtests.
+- Pre-existing PSTG empty-L1 issue is unrelated; the broker handles
+  it gracefully today.
+- Only 1 round-trip closed in 12 trading days is sparse turnover.
+  When the cross-wire is fixed, want to re-run and see whether more
+  buys would have been generated (or whether the sparse-turnover is
+  the actual strategy behavior).
+
+Suggested commit:
+```bash
+git commit -m "chore(reports): 10-day backtest run + ticker_id cross-wire #todo"
+```
+
 ## [2026-05-19] - L1 timestamped cache + range-aware reuse
 
 Model / agent:

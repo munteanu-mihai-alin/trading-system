@@ -1,0 +1,16 @@
+ts_ns,step,order_id,symbol,side,qty,limit,event,filled_qty,remaining_qty,avg_fill_price
+# session_start ts=2026-05-19T02:58:32.308Z ts_ns=1779159512308493809 kind=order mode=databento_backtest label=cpp_backtest_10day_full universe_size=50
+1779159515584724888,0,1,CDNS,buy,1,267.16,placed,0,1,0
+1779159515584808194,0,2,TTE,buy,5,93.09,placed,0,5,0
+1779159515584876457,0,3,NOK,buy,51,9.77,placed,0,51,0
+1779159515584890517,1,3,NOK,buy,51,9.77,filled,51,0,9.77
+1779159515584894182,1,2,TTE,buy,5,93.09,filled,5,0,93.09
+1779159515584896846,1,1,CDNS,buy,1,267.16,filled,1,0,267.16
+1779160933592696221,1,4,CDNS,sell,1,269.629,placed,0,1,0
+1779162079744274396,1,5,TTE,sell,5,93.98,placed,0,5,0
+1779163303178670280,1,6,NOK,sell,51,9.88198,placed,0,51,0
+1779163303544766548,4250,4,CDNS,sell,1,269.629,filled,1,0,269.73
+1779163303545899653,4250,7,GFS,buy,1,402.19,placed,0,1,0
+1779163303545913321,4251,7,GFS,buy,1,402.19,filled,1,0,60.45
+1779164384865434424,4251,8,GFS,sell,1,61.0164,placed,0,1,0
+# session_end ts=2026-05-19T04:19:44.904Z ts_ns=1779164384904748409 kind=order orders_placed=4 open_positions=3

@@ -4,6 +4,75 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-19] - Per-symbol price + order-event plot for backtest postmortem #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `b00e68a chore(reports): 10-day Databento backtest run +
+  ticker_id cross-wire #todo`.
+
+Context:
+- After the 10-day backtest run in `2026-05-19T0558_cpp_backtest_10day_full`,
+  the user asked "why did NOK not fill?". The answer required cross-
+  referencing three separate CSVs (orders.csv, step_trace.csv,
+  data/l1/NOK.mbp1.csv) by hand to discover that NOK's actual market
+  ask hit the sell limit 98% of the window but the broker had lost
+  NOK's L2 state due to the ticker_id cross-wire bug. A visualization
+  would have made this obvious immediately.
+- The new logging stack (decisions.csv, orders.csv, step_trace.csv,
+  l2_trace.csv, all timestamped via ts_event/ts_ns) is already
+  sufficient input data for a plot - the missing piece is the
+  rendering.
+
+Proposed scope:
+- Add `scripts/plot_run.py` taking a `reports/runs/<run_id>` folder
+  argument. For each symbol that appears in `orders.csv`:
+  - Plot the L1 mid (and optionally bid/ask band) from
+    `data/l1/<SYM>.mbp1.csv` across the run window (X axis = step
+    or wall-clock from ts_event).
+  - Overlay markers for every order event in `orders.csv` for that
+    symbol:
+    - buy placed   -> upward triangle, color by status (filled = solid,
+                       unfilled at end = open marker)
+    - buy filled   -> filled upward triangle at avg_fill_price
+    - sell placed  -> downward triangle at limit, color by status
+    - sell filled  -> filled downward triangle at avg_fill_price
+    - cancelled/rejected -> x mark
+  - Overlay a horizontal line at the entry-derived sell target
+    (`entry_price * (1 + target_profit_pct + costs)`) so it's
+    obvious when the price did/didn't cross it.
+  - Save one PNG per symbol under `reports/runs/<run_id>/plots/`.
+- Also a multi-panel "overview" plot: one row per held symbol stacked
+  vertically with shared X axis, plus an open-positions count line at
+  the bottom. Useful for spotting the cross-wire pattern (held
+  symbols' price plots side-by-side reveals when one symbol's data
+  bleeds into another's).
+- Python with matplotlib + pandas. No new dependencies beyond the
+  existing `.venv-ibkr`. Self-contained script; no integration with
+  organize_runs.py needed.
+- Useful for both individual-trade postmortems (this NOK case) and
+  for the cost-calibration follow-up where the user needs to see the
+  fill distribution to tune `target_profit_pct`.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- Until the ticker_id cross-wire bug is fixed, plots will show
+  apparent-anomalies that are actually backend-state-corruption, not
+  market events. The plot is useful precisely because it surfaces
+  those quickly - but worth flagging on the plot itself that this
+  run is contaminated.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(scripts): plot_run.py for per-symbol backtest postmortem"
+```
+
 ## [2026-05-19] - 10-day Databento backtest completed end-to-end + ticker_id cross-wire found #todo
 
 Model / agent:
@@ -75,11 +144,23 @@ Smoking-gun bug: ticker_id cross-wire in DatabentoBacktestBroker:
     maps without collision.
   - Add a unit test that subscribes top-of-book + market-depth for the
     same symbol set, asserts no cross-wiring.
-- Implication: until this is fixed, ANY backtest result that involves
-  symbols entering the held set mid-run is contaminated for the
-  ranking path (the buy decision uses crossed `s.mid`). The CDNS
-  round-trip is clean because CDNS was held from step 0; its L2
-  subscribe happened before any other position swaps.
+- Implication (updated after NOK no-fill analysis): the cross-wire
+  affects BOTH paths, not just ranking:
+  - **Buy path**: `s.mid` reads wrong symbol's L1 -> ranking score and
+    `best_limit` use crossed prices (visible in GFS limit $402 vs
+    fill $60).
+  - **Sell path**: `depth_for_symbol(symbol)` scans `replay_by_ticker_`
+    for `series.symbol == symbol`. When a later
+    `subscribe_market_depth` collides in the ticker_id slot, the prior
+    symbol's series is overwritten -> the lookup returns empty L2Book
+    -> `best_bid()` returns 0 -> fallback to L1 (which is also
+    cross-wired). NOK is the textbook case: L1 shows 4623 of 4680
+    minute-bars at ask >= $9.88 (sell limit) so the sell SHOULD have
+    filled trivially, but it sat unfilled because the broker no
+    longer had NOK's L2 entry after GFS subscribed at step 4250.
+  - **Net effect**: only the FIRST market-depth subscribe is
+    trustworthy. CDNS's CDNS round-trip is the only result that can
+    be taken at face value from Run #2.
 
 Validation performed:
 - End-to-end run completed cleanly. New schema confirmed working:

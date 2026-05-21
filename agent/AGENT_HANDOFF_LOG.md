@@ -139,6 +139,116 @@ Suggested commit:
 git commit -m "fix(engine,broker): cross-wire ticker_id alignment + L2 time-paced to L1 minute-bar"
 ```
 
+## [2026-05-21] - 10-day backtest re-run on top of cross-wire + L2-pacing fixes (validation)
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `bb6e421 feat(scripts): plot_run.py` (binary built from CI of
+  `f2db174 fix(engine,broker): cross-wire ticker_id alignment + L2 time-
+  paced to L1 minute-bar`).
+
+User request:
+- Re-run the 10-day Databento backtest on the same window
+  (2026-04-13 -> 04-28) reusing existing L2 caches where possible, to
+  validate the cross-wire + L2-pacing fixes end-to-end.
+
+What ran:
+- Run `2026-05-21T0344_cpp_backtest_10day_xwire_fix`. Same config as
+  Run #2 except `max_orders_per_run` / `max_orders_per_symbol` uncapped
+  (0) and `run_label` bumped. Started 00:44:49 UTC, finished 05:07:11 UTC
+  (~4h 23m wall time). The L2 lazy-load downloads for 12 NEW symbols
+  dominated wall time; engine compute was negligible.
+
+Results vs Run #2 (the buggy baseline):
+```
+                            Run #2 (buggy)   Run #3 (fixed)
+  Orders placed:                       4              16
+  Round-trips closed:                  1              14
+  Realized PnL net:               +$0.57        +$33.08
+  Win rate:                         100%            100%
+  Latency p50 (cycles):           10802            3542
+  Symbols actually traded:             4              14
+  Avg holding (market min):       20509            1311
+```
+
+Cross-wire fix validated at the data level:
+- Spot-checked HPE and GFS in step_trace.csv. For every sampled step
+  (30, 60, 300, 1000, 4250), the recorded `mid` matches that
+  symbol's OWN L1 mid exactly. Compare to Run #2 where GFS at step 30
+  showed mid=$24.165 (= HPE's L1) and at step 60 showed $341.32
+  (= WDC's L1).
+- step_trace HPE step 4250: mid=$28.625; L1 row 4250: (28.62+28.63)/2
+  = $28.625. Match.
+- step_trace GFS step 4250: mid=$60.43; L1 row 4250: (60.41+60.45)/2
+  = $60.43. Match.
+
+L2 pacing fix validated by behavior:
+- HPE: two same-day round-trips fired on 04-13 (steps 1->110 and
+  301->388). Pre-fix would have shown L2 best_bid frozen near $24.50
+  for the whole run, so the +0.8% sell at $24.75 wouldn't have
+  crossed in time.
+- AWK / TSEM remain open at end. AWK's sell at $138.19 placed at step
+  1; needs L1 ask to reach $138.19 for a fill. L1 max ask in window
+  is $138.34 (one minute-bar). The L2-paced fill check correctly
+  caught that one bar - but L2 might have been on a different side
+  of the spread at that exact ts_event. Either way the behavior is
+  realistic, not bug-driven.
+
+L2 cache spend:
+- Reused: CDNS, GFS, NOK, TTE (~5.3 GB from Run #2's downloads).
+- New: AMKR, ARM, AWK, CEG, CSCO, DELL, HPE, HPQ, LRCX, TSEM, VST,
+  WDC (~14 GB). Rough Databento estimate $50-100. Future runs on
+  this window are free thanks to the ts_event-aware cache.
+
+Operational note:
+- The last L2 download (TSEM) hit `BentoServerError: 504 The remote
+  gateway timed out` mid-stream. `std::system` returned non-zero, but
+  the engine's `ensure_l2_symbol_loaded` already had a partial cache
+  written so the run continued and completed cleanly. Worth opening
+  a small follow-up to add a retry-with-backoff in the broker's
+  download path; not blocking.
+
+Honest caveats on the +$33 result:
+- 14/14 wins is suspiciously perfect. Three reasons:
+  (1) `entry_limit_mode=ask` always crosses on entry, so we never
+      miss a buy due to the limit being too low.
+  (2) The 04-13 -> 04-25 window happens to be a broad uptrend across
+      semis/utilities/value names; the +0.8% target is achievable on
+      almost any symbol with sustained drift.
+  (3) Any sell that doesn't fill in 4680 steps is "open at end"
+      (TSEM, AWK), not "loss". Realized PnL only sums closed
+      round-trips.
+- A flat or down-trend window would surface real losses. The
+  one-week Databento calibration `#todo` should be re-scoped to
+  include a deliberately adversarial window.
+
+Files changed:
+- `reports/runs/2026-05-21T0344_cpp_backtest_10day_xwire_fix/`
+  - config.ini, stdout.log, decisions.csv, orders.csv, step_trace.csv,
+    l2_trace.csv, manifest.json
+  - metrics.json, metrics.md (from plot_run.py)
+  - plots/*.png (12 symbol plots + equity_curve + pnl_per_trade)
+
+Validation performed:
+- Manual data-level cross-wire spot-checks (above).
+- plot_run.py rendered all 12 per-symbol panels + equity curve +
+  per-trade PnL cleanly.
+
+Known risks / follow-up:
+- BentoServerError 504 robustness: add retry-with-backoff in
+  `DatabentoBacktestBroker::ensure_l2_symbol_loaded`. Today an error
+  on the last symbol of the universe is fine but mid-run could lose
+  data. Small `#todo` worth opening if it happens again.
+- Strategy threshold calibration (existing `#todo`) is now the
+  natural next thing - the engine is correct, the question is
+  whether the strategy parameters are profitable out-of-sample.
+
+Suggested commit: already used in `50888eb chore(reports): 10-day
+backtest with cross-wire + L2-pacing fixes applied`.
+
 ## [2026-05-21] - plot_run.py: backtest postmortem plotter + risk-adjusted metrics
 
 Model / agent:

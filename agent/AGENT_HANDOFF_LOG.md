@@ -139,7 +139,88 @@ Suggested commit:
 git commit -m "fix(engine,broker): cross-wire ticker_id alignment + L2 time-paced to L1 minute-bar"
 ```
 
-## [2026-05-19] - Per-symbol price + order-event plot for backtest postmortem #todo
+## [2026-05-21] - plot_run.py: backtest postmortem plotter + risk-adjusted metrics
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `f2db174 fix(engine,broker): cross-wire ticker_id alignment +
+  L2 time-paced to L1 minute-bar`.
+
+User request:
+- "Let's try to plot data with all critical info in python in the meantime.
+  What would be a lightweight approach to this. Ideally I would see the
+  data also (not just buys and sells) as well as sharpe ratio and other 3
+  such measuring ratios, pnl, etc."
+
+What shipped:
+- `scripts/plot_run.py` (single file, ~310 LOC). Inputs: a
+  `reports/runs/<run_id>/` folder plus optional `data/l1/` for higher-
+  fidelity price lines. Outputs into `plots/`:
+  - `equity_curve.png` - cumulative realized PnL over simulated market
+    time, win/loss colored markers per round-trip.
+  - `<SYMBOL>.png` per traded symbol - L1 mid line, buy/sell markers,
+    sell-target horizontal line, open-at-end markers when no exit.
+  - `pnl_per_trade.png` - bar chart colored green for wins / red for
+    losses.
+  - `metrics.json` + `metrics.md` summarising: Sharpe, Sortino, Calmar,
+    max drawdown ($), win rate, profit factor, avg win/loss, gross
+    profit/loss, avg holding (market minutes), n closed / n open.
+
+Key design choice:
+- `orders.csv.ts_ns` is the engine's wall-clock when the row was
+  written, NOT the simulated market timestamp. Reusing it for plot
+  markers puts them at 2026-05-19 instead of inside the 2026-04-13 to
+  -29 backtest window. The script joins the `step` column against
+  `L1.ts_event[step]` per symbol to recover the simulated market
+  timestamp. Falls back to engine wall-clock when the L1 CSV is legacy
+  (no ts_event).
+- Sharpe/Sortino annualise using
+  `MINUTES_PER_YEAR / avg_holding_market_minutes` for trades-per-year,
+  which sidesteps the engine wall-clock compression. Both return 0
+  cleanly when only one round-trip exists (std is zero).
+- No new dependencies beyond `matplotlib` + `pandas`, which we install
+  into `.venv-ibkr` (the existing IB-API venv on the dev machine).
+
+Smoke test:
+- Ran on `reports/runs/2026-05-19T0558_cpp_backtest_10day_full` (the
+  prior Run #2). Produced 6 PNGs + metrics.{json,md}. The CDNS plot
+  incidentally visualises the L2 pacing bug that's now fixed: L1 mid
+  climbed to $330+ throughout the window but the sell at $269.63
+  only crossed at the very end because pre-fix L2 advanced 1 row per
+  engine step. After the f2db174 pacing fix, equivalent trades
+  should close within minutes of price crossing target.
+
+Files changed:
+- `scripts/plot_run.py` (new).
+- `reports/runs/2026-05-19T0558_cpp_backtest_10day_full/plots/` (6 PNGs).
+- `reports/runs/2026-05-19T0558_cpp_backtest_10day_full/metrics.json`
+- `reports/runs/2026-05-19T0558_cpp_backtest_10day_full/metrics.md`
+
+Deletions / removals: none.
+
+Validation performed:
+- End-to-end smoke test on the existing Run #2 artefacts. All 6 PNGs
+  rendered, metrics computed without divide-by-zero, markdown table
+  is readable.
+
+Known risks / follow-up:
+- The script handles only the schemas we have today. If any future
+  log adds a column (e.g. realised PnL on the sell row), the
+  metrics derivation will keep working but won't take advantage.
+- For the still-running re-run (cpp_backtest_10day_xwire_fix), the
+  L2 pacing fix should produce more closed round-trips - the new
+  plots will show whether the strategy actually performs at market
+  speed.
+
+Suggested commit (already used):
+```bash
+git commit -m "feat(scripts): plot_run.py for per-symbol backtest postmortem + metrics"
+```
+
+## [2026-05-19] - Per-symbol price + order-event plot for backtest postmortem #todo #Done (resolved by [2026-05-21] plot_run.py)
 
 Model / agent:
 - Model: Claude Opus 4.7 (Anthropic), reasoning model

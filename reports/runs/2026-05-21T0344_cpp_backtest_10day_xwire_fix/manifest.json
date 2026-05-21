@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    "config.ini",
+    "decisions.csv",
+    "l2_trace.csv",
+    "manifest.json",
+    "metrics.json",
+    "metrics.md",
+    "orders.csv",
+    "plots/",
+    "step_trace.csv",
+    "stdout.log"
+  ],
+  "ended_at": "2026-05-21T05:07:11Z",
+  "harness": "cpp_hft_app",
+  "label": "C++ 10-day Databento backtest, cross-wire + L2-pacing fixes applied",
+  "latency_line": "Latency (cycles): p50=3542 p99=4598 p999=17644 max=79684 avg=3616.44",
+  "mode_line": "Mode: databento_backtest",
+  "notes": "First run on top of f2db174 cross-wire + L2 pacing fixes. 16 orders placed, 14 round-trips closed (100% win rate, +$33.08 net), 2 open at end (TSEM, AWK). L2 reused for CDNS/GFS/NOK/TTE; new downloads for AMKR/ARM/AWK/CEG/CSCO/DELL/HPE/HPQ/LRCX/TSEM/VST/WDC (~14 GB). Run ended cleanly despite a BentoServerError 504 during the last (TSEM) download. Latency p50 dropped from Run #2's 10.8k cycles to 3.5k.",
+  "open_notional": 818.08,
+  "open_positions": 2,
+  "orders_placed": 16,
+  "outcome": "completed",
+  "realized_pnl_net": 33.08,
+  "run_id": "2026-05-21T0344_cpp_backtest_10day_xwire_fix",
+  "started_at": "2026-05-21T00:44:49Z",
+  "validation_line": "Validation: calibration=0 rolling=0 ks=0 alarm=OFF"
+}

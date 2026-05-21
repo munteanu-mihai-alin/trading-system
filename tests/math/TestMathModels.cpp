@@ -154,6 +154,9 @@ HFT_TEST(test_live_trading_config_mode_names) {
 }
 
 HFT_TEST(test_ranked_portfolio_sorts_descending_by_score) {
+  // RankedPortfolio keeps `items` in stable subscribe order and produces
+  // a parallel `ranked_indices` view sorted by score descending. The
+  // sorted view indexes back into items.
   RankedPortfolio<Stock> p;
   Stock a;
   a.score = 1.0;
@@ -163,9 +166,17 @@ HFT_TEST(test_ranked_portfolio_sorts_descending_by_score) {
   c.score = 2.0;
   p.items = {a, b, c};
   p.rank();
-  hft::test::require(p.items[0].score == 3.0,
-                     "highest score should sort first");
-  hft::test::require(p.items[2].score == 1.0, "lowest score should sort last");
+  hft::test::require(p.items[p.ranked_indices[0]].score == 3.0,
+                     "highest score should rank first");
+  hft::test::require(p.items[p.ranked_indices[2]].score == 1.0,
+                     "lowest score should rank last");
+  // items must remain in stable subscribe order (a, b, c) so the
+  // ticker_id <-> portfolio-index alignment used by reconcile_broker_state
+  // stays correct.
+  hft::test::require(p.items[0].score == 1.0,
+                     "items[0] should be the first subscribed (stable order)");
+  hft::test::require(p.items[1].score == 3.0,
+                     "items[1] should be the second subscribed (stable order)");
 }
 
 HFT_TEST(test_l2_book_best_prices_default_and_set) {
@@ -246,7 +257,9 @@ HFT_TEST(test_ranked_portfolio_preserves_equal_scores_count) {
   p.rank();
   hft::test::require(p.items.size() == 3,
                      "equal-score ranking should preserve item count");
-  hft::test::require_close(p.items[0].score, 2.0, 1e-12,
+  hft::test::require(p.ranked_indices.size() == 3,
+                     "equal-score ranking should populate ranked_indices");
+  hft::test::require_close(p.items[p.ranked_indices[0]].score, 2.0, 1e-12,
                            "equal-score ranking should keep valid values");
 }
 
@@ -260,12 +273,12 @@ HFT_TEST(test_ranked_portfolio_handles_reverse_sorted_input) {
   c.score = 3.0;
   p.items = {a, b, c};
   p.rank();
-  hft::test::require_close(p.items[0].score, 3.0, 1e-12,
-                           "reverse input should sort descending");
-  hft::test::require_close(p.items[1].score, 2.0, 1e-12,
-                           "middle score should remain in middle");
-  hft::test::require_close(p.items[2].score, 1.0, 1e-12,
-                           "lowest score should end last");
+  hft::test::require_close(p.items[p.ranked_indices[0]].score, 3.0, 1e-12,
+                           "reverse input should rank descending");
+  hft::test::require_close(p.items[p.ranked_indices[1]].score, 2.0, 1e-12,
+                           "middle score should rank middle");
+  hft::test::require_close(p.items[p.ranked_indices[2]].score, 1.0, 1e-12,
+                           "lowest score should rank last");
 }
 
 HFT_TEST(test_latency_model_single_sample_mean) {
@@ -293,10 +306,10 @@ HFT_TEST(test_ranked_portfolio_orders_negative_and_positive_scores) {
   c.score = 0.0;
   p.items = {a, b, c};
   p.rank();
-  hft::test::require_close(p.items[0].score, 0.5, 1e-12,
-                           "highest positive score should be first");
-  hft::test::require_close(p.items[2].score, -1.0, 1e-12,
-                           "negative score should be last");
+  hft::test::require_close(p.items[p.ranked_indices[0]].score, 0.5, 1e-12,
+                           "highest positive score should rank first");
+  hft::test::require_close(p.items[p.ranked_indices[2]].score, -1.0, 1e-12,
+                           "negative score should rank last");
 }
 
 HFT_TEST(test_latency_model_multiple_records_average) {

@@ -252,6 +252,12 @@ void DatabentoBacktestBroker::subscribe_market_depth(
 
 void DatabentoBacktestBroker::on_step(int t) {
   current_step_ = std::max(t, 0);
+
+  // L1: advance by step index. One L1 row per minute-bar, so step t maps
+  // directly to row t. The row's ts_event becomes "wall-clock at engine
+  // step t" for that symbol, which the L2 path below uses to time-pace.
+  std::unordered_map<std::string, std::int64_t> l1_ts_by_symbol;
+  l1_ts_by_symbol.reserve(top_replay_by_ticker_.size());
   for (auto& item : top_replay_by_ticker_) {
     auto& series = item.second;
     if (series.books.empty())
@@ -259,14 +265,38 @@ void DatabentoBacktestBroker::on_step(int t) {
     const auto idx = static_cast<std::size_t>(std::min<int>(
         current_step_, static_cast<int>(series.books.size() - 1)));
     series.current = series.books[idx];
+    series.current_ts_event =
+        (idx < series.ts_events.size()) ? series.ts_events[idx] : 0;
+    if (series.current_ts_event > 0)
+      l1_ts_by_symbol[series.symbol] = series.current_ts_event;
   }
+
+  // L2: advance the per-series cursor monotonically until the next ts_event
+  // would exceed the matching L1 ts_event for the same symbol. This keeps
+  // L1 and L2 time-aligned: at engine step t, the L2 book is the latest
+  // snapshot whose exchange timestamp is at or before L1's minute-bar t.
+  //
+  // Legacy fallback (no ts_events in cache, OR no matching L1 series):
+  // advance by step index, preserving the prior 1-row-per-step behaviour.
   for (auto& item : replay_by_ticker_) {
     auto& series = item.second;
     if (series.books.empty())
       continue;
-    const auto idx = static_cast<std::size_t>(std::min<int>(
-        current_step_, static_cast<int>(series.books.size() - 1)));
-    series.current = series.books[idx];
+    const auto l1_it = l1_ts_by_symbol.find(series.symbol);
+    if (series.ts_events.empty() || l1_it == l1_ts_by_symbol.end() ||
+        l1_it->second <= 0) {
+      const auto idx = static_cast<std::size_t>(std::min<int>(
+          current_step_, static_cast<int>(series.books.size() - 1)));
+      series.cursor = idx;
+      series.current = series.books[idx];
+      continue;
+    }
+    const std::int64_t l1_ts = l1_it->second;
+    while (series.cursor + 1 < series.ts_events.size() &&
+           series.ts_events[series.cursor + 1] <= l1_ts) {
+      ++series.cursor;
+    }
+    series.current = series.books[series.cursor];
   }
   fill_crossed_orders();
 }
@@ -401,15 +431,20 @@ bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
       return false;
   }
 
-  auto books = load_top_books_from_csv(out, req_start, req_end);
+  std::vector<std::int64_t> ts_events;
+  auto books = load_top_books_from_csv(out, req_start, req_end, &ts_events);
   if (books.empty())
     return false;
 
   TopReplaySeries series;
   series.symbol = req.symbol;
   series.books = std::move(books);
-  series.current = series.books[std::min<std::size_t>(
-      static_cast<std::size_t>(current_step_), series.books.size() - 1)];
+  series.ts_events = std::move(ts_events);
+  const auto idx = std::min<std::size_t>(
+      static_cast<std::size_t>(current_step_), series.books.size() - 1);
+  series.current = series.books[idx];
+  series.current_ts_event =
+      (idx < series.ts_events.size()) ? series.ts_events[idx] : 0;
   top_replay_by_ticker_[req.ticker_id] = std::move(series);
   return true;
 }
@@ -447,15 +482,39 @@ bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
       return false;
   }
 
-  auto books = load_books_from_csv(out, req_start, req_end);
+  std::vector<std::int64_t> ts_events;
+  auto books = load_books_from_csv(out, req_start, req_end, &ts_events);
   if (books.empty())
     return false;
 
   ReplaySeries series;
   series.symbol = req.symbol;
   series.books = std::move(books);
-  series.current = series.books[std::min<std::size_t>(
-      static_cast<std::size_t>(current_step_), series.books.size() - 1)];
+  series.ts_events = std::move(ts_events);
+  // Initialise the L2 cursor to the row whose ts_event matches the matching
+  // L1 series at current_step_. This matters when L2 is lazy-loaded mid-run
+  // (e.g., a position opens at step 4250) so the L2 stream starts at the
+  // right wall-clock instead of step 0.
+  std::int64_t l1_ts_at_now = 0;
+  for (const auto& kv : top_replay_by_ticker_) {
+    if (kv.second.symbol == series.symbol) {
+      l1_ts_at_now = kv.second.current_ts_event;
+      break;
+    }
+  }
+  std::size_t cursor = 0;
+  if (l1_ts_at_now > 0 && !series.ts_events.empty()) {
+    while (cursor + 1 < series.ts_events.size() &&
+           series.ts_events[cursor + 1] <= l1_ts_at_now) {
+      ++cursor;
+    }
+  } else {
+    // Legacy fallback: align to current_step_ index.
+    cursor = std::min<std::size_t>(static_cast<std::size_t>(current_step_),
+                                   series.books.size() - 1);
+  }
+  series.cursor = cursor;
+  series.current = series.books[cursor];
   replay_by_ticker_[req.ticker_id] = std::move(series);
   return true;
 }
@@ -472,7 +531,8 @@ bool DatabentoBacktestBroker::download_if_missing(
 
 std::vector<TopOfBook> DatabentoBacktestBroker::load_top_books_from_csv(
     const std::filesystem::path& path, std::optional<std::int64_t> start_ns,
-    std::optional<std::int64_t> end_ns) const {
+    std::optional<std::int64_t> end_ns,
+    std::vector<std::int64_t>* out_ts_events) const {
   std::ifstream in(path);
   if (!in.is_open())
     return {};
@@ -508,15 +568,20 @@ std::vector<TopOfBook> DatabentoBacktestBroker::load_top_books_from_csv(
     const auto idx = static_cast<std::size_t>(step);
     if (idx >= books.size()) {
       books.resize(idx + 1);
+      if (out_ts_events)
+        out_ts_events->resize(idx + 1, 0);
     }
     books[idx] = top;
+    if (out_ts_events)
+      (*out_ts_events)[idx] = ts_event_ns;
   }
   return books;
 }
 
 std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csv(
     const std::filesystem::path& path, std::optional<std::int64_t> start_ns,
-    std::optional<std::int64_t> end_ns) const {
+    std::optional<std::int64_t> end_ns,
+    std::vector<std::int64_t>* out_ts_events) const {
   std::ifstream in(path);
   if (!in.is_open())
     return {};
@@ -559,7 +624,11 @@ std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csv(
     const auto idx = static_cast<std::size_t>(step);
     if (idx >= books.size()) {
       books.resize(idx + 1);
+      if (out_ts_events)
+        out_ts_events->resize(idx + 1, 0);
     }
+    if (out_ts_events && (*out_ts_events)[idx] == 0)
+      (*out_ts_events)[idx] = ts_event_ns;
 
     L2Level l{price, size};
     if (side == "bid" || side == "B" || side == "b" || side == "0") {

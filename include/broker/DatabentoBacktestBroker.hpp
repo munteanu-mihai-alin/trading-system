@@ -15,13 +15,24 @@ class DatabentoBacktestBroker : public IBroker {
   struct ReplaySeries {
     std::string symbol;
     std::vector<L2Book> books;
+    // Parallel ts_event_ns per book row. Empty when the cache file is the
+    // legacy (no ts_event) schema; in that case `on_step` falls back to
+    // step-index advancement.
+    std::vector<std::int64_t> ts_events;
     L2Book current;
+    // Monotonically-advancing cursor into `books`. Used by `on_step` to walk
+    // L2 rows that fall within the current engine wall-clock (taken from the
+    // matching L1 series' ts_event). Not the same as the engine's logical
+    // step counter, which over-advances dense L2 streams.
+    std::size_t cursor = 0;
   };
 
   struct TopReplaySeries {
     std::string symbol;
     std::vector<TopOfBook> books;
+    std::vector<std::int64_t> ts_events;  // parallel to books; 0 if legacy
     TopOfBook current;
+    std::int64_t current_ts_event = 0;
   };
 
   bool connected_ = false;
@@ -45,14 +56,19 @@ class DatabentoBacktestBroker : public IBroker {
   bool ensure_l2_symbol_loaded(const MarketDepthRequest& req);
   bool download_if_missing(const std::filesystem::path& out,
                            const std::string& command) const;
+  // out_ts_events (optional) is populated with one ts_event_ns per returned
+  // book row, parallel to the books vector. Used by `on_step` to time-pace
+  // L2 advancement against the matching L1 ts_event for the same symbol.
   [[nodiscard]] std::vector<TopOfBook> load_top_books_from_csv(
       const std::filesystem::path& path,
       std::optional<std::int64_t> start_ns = std::nullopt,
-      std::optional<std::int64_t> end_ns = std::nullopt) const;
+      std::optional<std::int64_t> end_ns = std::nullopt,
+      std::vector<std::int64_t>* out_ts_events = nullptr) const;
   [[nodiscard]] std::vector<L2Book> load_books_from_csv(
       const std::filesystem::path& path,
       std::optional<std::int64_t> start_ns = std::nullopt,
-      std::optional<std::int64_t> end_ns = std::nullopt) const;
+      std::optional<std::int64_t> end_ns = std::nullopt,
+      std::vector<std::int64_t>* out_ts_events = nullptr) const;
   [[nodiscard]] TopOfBook top_for_symbol(const std::string& symbol) const;
   [[nodiscard]] L2Book depth_for_symbol(const std::string& symbol) const;
   void fill_crossed_orders();

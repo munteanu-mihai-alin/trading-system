@@ -4,6 +4,141 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-21] - Fix ticker_id cross-wire + L2 pacing aligned to L1 minute-bar wall-clock
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `4cb202f docs(agent): cross-wire bug also breaks sell path
+  + add plot_run #todo`.
+
+User request:
+- "Do cross-wire fix with option 1. Then do L2 pacing. Make them be
+  synced with minute L1 data (hopefully this affects only Databento
+  backtest broker)."
+
+What shipped:
+
+1. **Cross-wire fix (option 1 from the prior #todo).** Stopped
+   `RankedPortfolio` from sorting `items` in place. Added a parallel
+   `std::vector<std::size_t> ranked_indices` populated by `rank()`.
+   `items` now stays in stable subscribe order; ranked iteration
+   happens via `ranked_indices`. Updated call sites:
+   - `RankingEngine::step`: assigns `active`/`shadow_active` by rank
+     position via ranked_indices (was: by items[i] position which was
+     stable AFTER the in-place sort).
+   - `LiveExecutionEngine::route_buy_orders`: iterates ranked order
+     so the highest-score active symbol gets first dibs on the budget
+     when account_budget is tight.
+   - `LiveExecutionEngine::write_ranking_snapshot_to`: emits rows in
+     rank order with the `rank` column matching the score sort
+     (decisions.csv/step_trace.csv consumers expect this).
+   - `reconcile_broker_state` (line 826), `update_hawkes_from_trades`
+     (line 782), `compute_per_symbol_notional` (line 469),
+     `portfolio_index_for_symbol` (line 513), `route_exit_orders`
+     stable-iteration paths: unchanged - they were already relying
+     on stable order, which now holds.
+   - Unit tests in `tests/math/TestMathModels.cpp` updated to assert
+     on `p.items[p.ranked_indices[k]]` instead of `p.items[k]`. Also
+     added a stable-order assertion in
+     `test_ranked_portfolio_sorts_descending_by_score`.
+
+2. **L2 pacing fix (DatabentoBacktestBroker only).** Added a parallel
+   `std::vector<std::int64_t> ts_events` to `ReplaySeries` and
+   `TopReplaySeries`, populated from the new ts_event-aware CSVs. In
+   `on_step(t)`:
+   - L1 advances by step index (unchanged) and exposes
+     `current_ts_event` per series.
+   - For each L2 series, the broker advances a monotonic `cursor`
+     until the next L2 row's `ts_event` would exceed the matching
+     L1 ts_event for the same symbol. Net effect: L2 books are
+     time-aligned with the L1 minute-bar at step t.
+   - Fallbacks: when a cache has no ts_events (legacy schema), or no
+     matching L1 series exists, the broker falls back to step-index
+     advancement (today's behavior). Keeps pre-existing test fixtures
+     working.
+   - Lazy-load: when `ensure_l2_symbol_loaded` runs mid-run, the
+     initial cursor seeks to the L2 row matching the matching L1's
+     current ts_event - so e.g. a position opened at step 4250 starts
+     its L2 stream at the right wall-clock, not at row 0.
+   - Live brokers (IBKRClient, LocalSimBroker) are unaffected; this
+     change is contained to DatabentoBacktestBroker.
+
+Files changed:
+- `include/core/portfolio.hpp` - added `ranked_indices`, doc comment.
+- `src/lib/RankingEngine.cpp` - rank-based active/shadow_active.
+- `src/lib/LiveExecutionEngine.cpp` - rank-ordered buy routing and
+  rank-ordered ranking snapshot.
+- `include/broker/DatabentoBacktestBroker.hpp` - added `ts_events`
+  and `cursor` to series structs; added `out_ts_events` out-param
+  on both loaders.
+- `src/lib/DatabentoBacktestBroker.cpp` - populated ts_events in
+  loaders; rewrote `on_step` to time-pace L2; seeded cursor on
+  mid-run lazy-load.
+- `tests/math/TestMathModels.cpp` - 4 RankedPortfolio tests adjusted
+  for new semantics; added stable-order assertion.
+
+Deletions / removals:
+- None.
+
+Steps taken:
+1. Audited every call site of `portfolio.items` to decide stable vs
+   ranked iteration. ~12 sites total; 3 needed to switch to
+   ranked_indices, the rest were already stable-order-correct.
+2. Refactored `RankedPortfolio::rank` to build `ranked_indices`
+   without mutating `items`.
+3. Updated `RankingEngine::step` and the two
+   `LiveExecutionEngine` ranked-order call sites.
+4. Updated the 4 RankedPortfolio unit tests in TestMathModels.
+5. Built `hft_lib`, `hft_app`, `hft_tests` clean. Tests didn't run
+   (DLL ABI mismatch on this UCRT64 host; CI will run them).
+6. Added `ts_events` + `cursor` to the broker series structs.
+7. Extended both CSV loaders to optionally populate ts_events
+   parallel to the books vectors.
+8. Rewrote `on_step` to L1-then-L2 with time-alignment on L2.
+9. Seeded the L2 cursor on lazy-load via binary scan against the
+   matching L1 series' current ts_event.
+10. `./scripts/format_code.sh` - 74 files normalized.
+
+Validation performed:
+- `cmake --build build-ucrt-ibkr --target hft_lib hft_app hft_tests`:
+  clean both before and after format.
+- Manual logic review of the cross-wire and pacing changes.
+- No end-to-end backtest run yet; that's the next step (re-run
+  the 10-day window and confirm:
+   - GFS now sees its own L1 prices, not HPE's/WDC's;
+   - NOK's sell fills shortly after price crosses $9.88 in real
+     wall-clock time, not after 4250 engine steps).
+
+Known risks / follow-up:
+- The L2 cursor advancement is O(steps_consumed_per_step) amortised
+  across the run, but a single step that consumes 100k L2 rows
+  (dense L2 inside one minute-bar) does that much work in one
+  `on_step` call. For the current universe this is fine
+  (NOK ~25M rows / 12 days / 390 mins = ~5.4k rows/min worst case).
+  If we move to higher-resolution backtests, the cursor advance
+  should be moved off the hot path or done lazily on query.
+- The cross-wire fix changes the meaning of `items[0]` in user
+  code from "highest-scoring" to "first subscribed". The unit tests
+  that wrote `items[0].cooldown` etc. continue to work because they
+  operate on the SAME index before and after `step()` - stable order
+  preserves identity. But any new code that assumes items is sorted
+  will now be wrong; the doc comment on RankedPortfolio calls this
+  out explicitly.
+- The L2 pacing currently uses an exact-match-or-earlier comparison
+  (`ts_events[cursor+1] <= l1_ts`). If L2 events occur EXACTLY at
+  the L1 minute boundary, they fall into the current bar (inclusive).
+  That's the conservative choice; the alternative (`<`) would skip
+  ties to the next bar. Worth noting for anyone investigating fill
+  timing later.
+
+Suggested commit:
+```bash
+git commit -m "fix(engine,broker): cross-wire ticker_id alignment + L2 time-paced to L1 minute-bar"
+```
+
 ## [2026-05-19] - Per-symbol price + order-event plot for backtest postmortem #todo
 
 Model / agent:
@@ -73,7 +208,7 @@ Suggested commit (when resolved):
 git commit -m "feat(scripts): plot_run.py for per-symbol backtest postmortem"
 ```
 
-## [2026-05-19] - 10-day Databento backtest completed end-to-end + ticker_id cross-wire found #todo
+## [2026-05-19] - 10-day Databento backtest completed end-to-end + ticker_id cross-wire found #todo #Done (resolved by [2026-05-21] Fix ticker_id cross-wire + L2 pacing)
 
 Model / agent:
 - Model: Claude Opus 4.7 (Anthropic), reasoning model

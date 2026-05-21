@@ -181,15 +181,19 @@ void LiveExecutionEngine::write_ranking_snapshot_to(
     std::ofstream& out, int decision_id, int t,
     const std::string& chosen_symbol, const std::string& gate) {
   const auto ts = wall_ns_now();
-  for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
-    const auto& s = ranking.portfolio.items[i];
+  // Emit rows in rank order so the `rank` column matches the score sort.
+  // ranked_indices indexes into items (which is stable subscribe order).
+  for (std::size_t rank = 0; rank < ranking.portfolio.ranked_indices.size();
+       ++rank) {
+    const auto& s =
+        ranking.portfolio.items[ranking.portfolio.ranked_indices[rank]];
     const bool is_chosen =
         !chosen_symbol.empty() && (s.symbol == chosen_symbol);
-    out << ts << ',' << t << ',' << decision_id << ',' << i << ',' << s.symbol
-        << ',' << s.score << ',' << s.score_tilt << ',' << s.hawkes.lambda
-        << ',' << s.hawkes_sell.lambda << ',' << s.hit_count << ',' << s.ou.mu
-        << ',' << (s.ou_initialized ? 1 : 0) << ',' << s.mid << ','
-        << s.best_limit << ',' << (s.active ? 1 : 0) << ','
+    out << ts << ',' << t << ',' << decision_id << ',' << rank << ','
+        << s.symbol << ',' << s.score << ',' << s.score_tilt << ','
+        << s.hawkes.lambda << ',' << s.hawkes_sell.lambda << ',' << s.hit_count
+        << ',' << s.ou.mu << ',' << (s.ou_initialized ? 1 : 0) << ',' << s.mid
+        << ',' << s.best_limit << ',' << (s.active ? 1 : 0) << ','
         << (is_chosen ? 1 : 0) << ',' << (is_chosen ? "" : gate) << '\n';
   }
 }
@@ -313,7 +317,11 @@ void LiveExecutionEngine::step(int t) {
   // score_weighted vs rank_weighted, etc.). Picked up below.
   const auto per_symbol_notional = compute_per_symbol_notional();
 
-  for (const auto& s : ranking.portfolio.items) {
+  // Iterate by rank so the highest-scoring active symbol gets first dibs on
+  // shared budget when the account_budget gate is tight. items is in stable
+  // subscribe order; ranked_indices is the score-sorted view.
+  for (const auto idx : ranking.portfolio.ranked_indices) {
+    const auto& s = ranking.portfolio.items[idx];
     if (!s.active)
       continue;
     if (!can_open_new_exposure())

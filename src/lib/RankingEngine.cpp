@@ -118,14 +118,17 @@ void RankingEngine::step(int t) {
 
   portfolio.rank();
 
-  for (std::size_t i = 0; i < portfolio.items.size(); ++i) {
-    portfolio.items[i].active = static_cast<int>(i) < live_top_k_;
+  // Assign active / shadow_active by RANK position, not by subscribe-order
+  // position. portfolio.ranked_indices[rank] points to the items index of
+  // the rank-th highest-scoring symbol.
+  for (std::size_t rank = 0; rank < portfolio.ranked_indices.size(); ++rank) {
+    auto& s = portfolio.items[portfolio.ranked_indices[rank]];
+    s.active = static_cast<int>(rank) < live_top_k_;
     if (shadow_enabled_) {
-      portfolio.items[i].shadow_active =
-          static_cast<int>(i) >= live_top_k_ &&
-          static_cast<int>(i) < (live_top_k_ + shadow_top_k_);
+      s.shadow_active = static_cast<int>(rank) >= live_top_k_ &&
+                        static_cast<int>(rank) < (live_top_k_ + shadow_top_k_);
     } else {
-      portfolio.items[i].shadow_active = false;
+      s.shadow_active = false;
     }
   }
 

@@ -4,6 +4,132 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-21] - QuantStats integration in plot_run.py for industry-standard tearsheet #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `dc8df83 docs(agent): Run #3 validation handoff entry`.
+
+Context:
+- `scripts/plot_run.py` (shipped 2026-05-21) computes ~11 risk-adjusted
+  metrics from `orders.csv` round-trips: Sharpe, Sortino, Calmar, max
+  drawdown, win rate, profit factor, gross profit/loss, avg holding.
+  Math is correct but limited compared to industry-standard
+  tearsheets, and our annualisation (`MINUTES_PER_YEAR /
+  avg_holding_market_minutes`) is a bespoke shortcut.
+- QuantStats (https://github.com/ranaroussi/quantstats) is the de-
+  facto standard tearsheet generator. `qs.reports.html(returns)`
+  produces a full HTML with 50+ metrics including Sterling, Burke,
+  Omega, Ulcer index, VaR, CVaR, monthly returns heatmap, rolling
+  Sharpe, drawdown periods, Tail ratio, Skew, Kurtosis. Plus the
+  annualisation math is battle-tested and well-documented.
+- Was noted as a "should have used this" follow-up during the user-
+  facing comparison of frameworks (2026-05-21 conversation).
+
+Proposed scope:
+- Add `quantstats` to the `.venv-ibkr` install line (one dep, MIT
+  license, pure Python).
+- In `scripts/plot_run.py`:
+  - Build a `pd.Series` of per-trade returns (`net_pnl / account_budget`)
+    indexed by the simulated market timestamp of each sell.
+  - Resample to a per-minute equity curve, derive per-minute returns
+    so QuantStats sees a real time series rather than 14 sparse
+    points.
+  - Call `qs.reports.html(returns, output=run_dir / 'tearsheet.html')`
+    and `qs.reports.metrics(returns, mode='full')` to also write
+    `tearsheet_metrics.json`.
+  - Keep the existing `metrics.json` + `metrics.md` for the lightweight
+    integer-friendly numbers we already use.
+- Optional: a side-by-side comparison of "my-math" vs "QuantStats"
+  Sharpe in metrics.md to flag drift.
+
+Open design questions:
+- Resampling to minute grid: how to handle weekend gaps? Strip non-
+  market hours / weekends before computing returns, or let
+  QuantStats apply its default annualisation (which assumes
+  contiguous samples)?
+- Whether to compute returns on per-trade dollars / budget (simple)
+  or on a mark-to-market equity curve (more accurate but requires
+  joining L1 mids for held positions every minute - ~50x more work).
+- The `tearsheet.html` is ~500 KB per run; commit or gitignore?
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it. Strict
+  upgrade once landed.
+- The tearsheet only meaningfully populates once a run has >= 20
+  round-trips; sparse runs (e.g. current Run #3 with 14) will still
+  produce mostly-empty rolling-window plots.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(scripts): plot_run.py emits a QuantStats tearsheet alongside lightweight metrics"
+```
+
+## [2026-05-21] - BentoServerError 504 retry-with-backoff in DatabentoBacktestBroker download path #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `dc8df83 docs(agent): Run #3 validation handoff entry`.
+
+Context:
+- Run #3 (`2026-05-21T0344_cpp_backtest_10day_xwire_fix`) hit a
+  transient `BentoServerError: 504 The remote gateway timed out`
+  during the LAST L2 download (TSEM, near end of run). `std::system`
+  returned non-zero, but the engine had already written a partial
+  cache so the run completed cleanly with TSEM open at end.
+- Today `DatabentoBacktestBroker::ensure_l2_symbol_loaded` calls
+  `std::system(cmd)` once and treats any non-zero exit as a permanent
+  failure. The `databento_download_l2.py` script itself doesn't
+  retry either - one chunk failure propagates up to `client.timeseries.
+  get_range` raising, killing the subprocess.
+- Harmless on the LAST symbol of the universe. Mid-run would silently
+  drop one symbol from the held set for the remainder of the
+  backtest, biasing PnL.
+
+Proposed scope:
+- Add a retry loop in `databento_download_l2.py` around the
+  `client.timeseries.get_range(**request)` call. Catch `BentoServerError`
+  with status_code in {502, 503, 504} (transient gateway errors).
+  Exponential backoff: 2s, 8s, 32s, abort. Log to stderr so the
+  broker can surface it.
+- OR: Add the retry loop at the broker level in
+  `ensure_l2_symbol_loaded`. Re-invoke `std::system(cmd)` up to N
+  times before giving up. Simpler but blunter (re-downloads
+  everything if any chunk fails).
+- Recommend the script-level fix: it knows which chunk failed and
+  can resume from that ts_event without re-downloading the prefix.
+
+Open design questions:
+- Whether to also surface the retry events into the engine's
+  spdlog so a post-mortem can see "retried 3 times on TSEM at
+  04:50 UTC". Probably yes - matches the existing error/warning
+  channel.
+- Default retry count: 3 vs 5. 3 seems right (~40s extra wait per
+  failed chunk).
+
+Validation performed:
+- None; investigation note only. Reproducer is non-deterministic
+  (Databento gateway flakiness).
+
+Known risks / follow-up:
+- `#todo`. Surface to user. Not blocking - the one observed
+  occurrence was harmless. Open for hardening before any longer
+  multi-week backtest that downloads more symbols.
+
+Suggested commit (when resolved):
+```bash
+git commit -m "feat(databento): retry-with-backoff on transient 502/503/504 errors"
+```
+
 ## [2026-05-21] - Fix ticker_id cross-wire + L2 pacing aligned to L1 minute-bar wall-clock
 
 Model / agent:

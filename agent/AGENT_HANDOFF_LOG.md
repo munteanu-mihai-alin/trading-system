@@ -1709,7 +1709,7 @@ Suggested commit:
 git commit -m "feat(engine): drive Hawkes from real IBKR AllLast trade prints (opt-in)"
 ```
 
-## [2026-05-16] - Wire FillModel and remaining ranking inputs to real market data #todo
+## [2026-05-16] - Wire FillModel and remaining ranking inputs to real market data #todo #Done (decided against on 2026-05-21: FillModel class stays as-is; sell path already uses compute_execution_score on real L2; buy path's missing fill-probability term is acknowledged but not blocking paper trading)
 
 Model / agent:
 - Model: Claude Opus 4.7 (Anthropic), reasoning model
@@ -1913,17 +1913,62 @@ Sub-items (each can become its own follow-up entry when worked):
    Confirm both items in IBKR Account Management before enabling live
    L2 routing. Estimated total live L2 spend for the current config:
    ~$3-5/month (entitlements only, no Booster Pack).
+8. **IBKRClient code-path audit for paper trading** (added 2026-05-21).
+   The engine has only been exercised end-to-end through
+   `DatabentoBacktestBroker`. Before paper trading we need to verify
+   `IBKRClient` actually supports every flow the engine touches:
+   - `subscribe_top_of_book` -> L1 stream (real-time, not backfill)
+   - `subscribe_market_depth` -> L2 stream from `reqMktDepth`
+   - `place_limit_order` / `cancel_order` -> orderRef wiring
+   - Order lifecycle callbacks: Submitted / Filled / PartiallyFilled /
+     Cancelled / Rejected on `OrderLifecycleBook`
+   - `sync_next_order_id_from_broker` -> reqIds round-trip
+   - Reconnect handling: what happens when IB Gateway briefly drops?
+   The existing `ibkr_paper_order_probe` binary covers connect +
+   single-order round-trip; nothing has exercised the engine in
+   `mode=ibkr_paper` against a live Gateway. Recommended first
+   action before any paper-mode universe run.
+9. **Symbol-contract correctness audit** (added 2026-05-21). The L1
+   backfill via `ibkr_historical_l1.py` surfaced one contract-
+   resolution failure (PSTG: "No security definition has been found
+   for the request" - both `--primary-exchange NASDAQ` and `NYSE`
+   failed). The same `reqContractDetails` lookup will run on every
+   subscribe in paper, and any symbol that fails will silently never
+   stream L1 / L2. Before paper, run a contract-resolution probe
+   for all 50 symbols of `kSymbolCompanyList` and confirm each
+   resolves to exactly one contract. Likely 1-3 symbols in the
+   current universe need a primary_exchange override or to be
+   dropped.
+10. **Position reconciliation at startup** (added 2026-05-21). If
+    `hft_app` restarts mid-session (Gateway drop, crash, manual
+    restart for config change), the engine must rebuild
+    `open_positions_` from IBKR's account state via
+    `reqPositions` / `reqAccountUpdates`, not from a fresh empty
+    map. Otherwise existing positions get orphaned: the engine
+    won't try to sell them, won't honor the budget gate against
+    them, and `max_open_symbols` accounting will be wrong. Today's
+    code starts with `open_positions_` empty regardless of broker
+    state. Hard blocker for any restart-tolerant paper session.
 
 Validation performed:
-- None.
+- None on items 1-7. Items 8-10 added 2026-05-21 from a paper-
+  trading readiness review with the user; not yet investigated.
 
 Known risks / follow-up:
-- `#todo`. None of this is sequential with the FillModel `#todo` and the
-  one-week Databento `#todo`, but all three must be resolved before the
-  user enables live mode.
+- `#todo`. The FillModel companion `#todo` was decided against on
+  2026-05-21 (sell path already uses `compute_execution_score`
+  on real L2; buy path's missing fill-probability term is
+  acknowledged-but-deferred). The one-week Databento calibration
+  `#todo` still stands but is downstream of paper validation.
 - This entry is intentionally broad. A future agent picking it up may
   prefer to split it into per-sub-item `#todo`s and retag this one
   `#Done (split into ...)` for clarity.
+- Of the 10 sub-items, the practical paper-trading minimum is:
+  **8 (code-path audit), 9 (symbol audit), 10 (position
+  reconciliation), 7 (subscriptions), and 1 (kill-switch)**. Items
+  2 (endurance) is the test itself, not a prereq. Items 4 (ops),
+  5 (Gateway session), 6 (cost calibration) are strong-recommend
+  but not strict blockers for the first short paper smoke.
 
 Suggested commit (when sub-items land):
 - One commit per sub-item, e.g.

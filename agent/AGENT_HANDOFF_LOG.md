@@ -1896,23 +1896,64 @@ Sub-items (each can become its own follow-up entry when worked):
    `target_profit_pct = 0.008` is the minimum profitable trade given
    these costs, and being off by 0.05 on commission alone meaningfully
    changes that.
-7. **IBKR live L2 subscription budget** (user-action only, no code).
-   Two independent costs gate live `reqMktDepth`:
-   - **Exchange depth entitlements**: ~$1.50/mo per exchange, non-pro.
-     The 50-symbol universe is mostly NASDAQ + NYSE primary listings,
-     so the relevant entitlements are **NASDAQ TotalView (Network C /
-     UTP)** and **NYSE OpenBook (Network A / CTA)**. Without these
-     entitlements, `reqMktDepth` cannot return depth for symbols on
-     the respective exchange regardless of any other quota.
-   - **Quote Booster Packs**: ~$30/mo per +3 concurrent depth
-     subscriptions, stackable. Default 3 concurrent depth subs are
-     included with the account once the entitlements above are in
-     place. `max_open_symbols=3` was chosen to fit the default cap,
-     so the strategy can run live without a Booster Pack. Booster
-     Packs are needed only if `max_open_symbols` grows beyond 3.
-   Confirm both items in IBKR Account Management before enabling live
-   L2 routing. Estimated total live L2 spend for the current config:
-   ~$3-5/month (entitlements only, no Booster Pack).
+7. **IBKR live market-data subscription budget** (user-action only,
+   no code). Verified against the actual catalog 2026-05-21; this is
+   the canonical list for the 50-symbol universe.
+
+   Full coverage requires 5 line items (3 L1 prereqs + 2 L2 depth):
+
+   ```
+   NYSE (Network A/CTA) (NP,L1)                          USD  1.50/mo
+   NYSE American/BATS/ARCA/IEX (Network B) (NP,L1)       USD  1.50/mo
+   NASDAQ (Network C/UTP) (NP,L1)                        USD  1.50/mo
+   NASDAQ TotalView-OpenView (NP,L2)                     USD 16.50/mo
+   NYSE OpenBook (NP,L2)                                 USD 25.00/mo
+                                                         ────────────
+                                                   Total USD 46.00/mo
+   ```
+
+   - The three L1 lines are a hard prerequisite. Every NASDAQ/NYSE
+     L2 line in IBKR's catalog says: "the user must already be
+     subscribed to NYSE (Network A/CTA), AMEX (Network B/CTA), and
+     NASDAQ (Network C/UTP)". L2s are greyed-out until all three
+     L1s are active.
+   - **NASDAQ TotalView** covers depth for NASDAQ-primary symbols
+     (~30 of 50: AAPL, AMD, INTC, NVDA, CSCO, CDNS, KLAC, SNPS,
+     LRCX, ARM, AMAT, CEG, MKSI, MU, QCOM, ASML, ENTG, SMCI, KEYS,
+     GFS, AMKR, OKLO, IMOS, STX, SNDK, WDC, TSEM, GSM, NIO, ...).
+   - **NYSE OpenBook** covers depth for NYSE-primary symbols
+     (~20 of 50: HPE, HPQ, DD, IBM, RTX, LMT, NOC, LIN, APD, AWK,
+     DELL, LEA, HWM, NOK, ASX, TSM, TTE, UMC, VST, XPEV, PSTG).
+   - Budget alternative (NASDAQ-only L2): drop NYSE OpenBook ->
+     ~$21/mo. NYSE-primary symbols then have no L2; their sell-side
+     `compute_execution_score` degenerates and the strategy effectively
+     skips them.
+   - DO NOT subscribe to: Cboe One, Cboe BZX Depth, NASDAQ BX
+     TotalView, NYSE ArcaBook, OPRA, any futures/Canadian/Mexican/
+     OTC lines, or Quote Booster Pack (last one only matters if
+     `max_open_symbols > 3`, which we don't have).
+   - The free "US Real-Time Non Consolidated Streaming Quotes"
+     that comes with every account is L1-only and not consolidated
+     NBBO. Sufficient for L1-only paper testing (buy-side ranking
+     works, sell-side L2 path degenerates).
+
+   **Equity gating gotcha**: IBKR enforces a minimum account equity
+   before allowing paid market-data activation. Per-subscription
+   thresholds vary; the L2 lines typically require USD 500 - 2000
+   in Net Liquidation Value, sometimes more. Newly funded accounts
+   may need 1-4 business days for deposits to settle before counting
+   toward equity. If a subscription returns "Your account does not
+   meet the minimum equity requirement", check Reports -> Account
+   Balances for current NLV and the per-subscription minimum on the
+   catalog page.
+
+   **Funding state as of 2026-05-21**: user has ~EUR 100 deposited in
+   IBKR (insufficient for L2 lines, possibly enough for the three L1
+   lines). The user's main trading capital is on a different broker
+   (XTB). Paper trading is L1-only until this is resolved, which
+   means sub-items 8/9/10 of this umbrella can proceed but the
+   sell-side L2 integration cannot be validated yet. See option B
+   of the paper-readiness review notes for the L1-only path.
 8. **IBKRClient code-path audit for paper trading** (added 2026-05-21).
    The engine has only been exercised end-to-end through
    `DatabentoBacktestBroker`. Before paper trading we need to verify

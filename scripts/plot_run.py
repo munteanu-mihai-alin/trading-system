@@ -534,8 +534,14 @@ def main(argv: List[str]) -> int:
     cfg = read_config(run_dir)
 
     target_profit_pct = float(cfg.get("target_profit_pct", 0.008))
-    commission_per_share = float(cfg.get("commission_per_share", 0.005))
-    min_per_order = float(cfg.get("min_per_order", 1.0))
+    # IBKR Pro Tiered defaults (matches the C++ AppConfig defaults from
+    # 2026-05-21). The config key the engine actually reads is
+    # `commission_min_per_order`; we accept the older `min_per_order` too
+    # as a fallback so any pre-existing manifests still load cleanly.
+    commission_per_share = float(cfg.get("commission_per_share", 0.0035))
+    min_per_order = float(
+        cfg.get("commission_min_per_order", cfg.get("min_per_order", 0.35))
+    )
     account_budget = float(cfg.get("account_budget", 1500.0))
 
     trips = derive_round_trips(orders, commission_per_share, min_per_order)

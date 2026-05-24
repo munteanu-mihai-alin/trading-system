@@ -25,6 +25,39 @@ HFT_TEST(test_transaction_cost_nonnegative) {
   hft::test::require(c >= 0.0, "cost must be non-negative");
 }
 
+HFT_TEST(test_transaction_cost_min_per_order_floor_applied_for_small_qty) {
+  // IBKR Pro Tiered: $0.0035/share, $0.35 min per order.
+  // For 10 shares: per-share = 10 * 0.0035 = $0.035; min kicks in at $0.35.
+  InstitutionalTransactionCostModel m(0.0035, 0.35, 0.0, 0.0);
+  const double c = m.estimateCost(0, 10, 50.0, 1'000'000);
+  hft::test::require(c >= 0.35 - 1e-9,
+                     "Tiered floor should dominate for small qty");
+  hft::test::require(c <= 0.35 + 1e-9,
+                     "Tiered floor should equal exactly the min when "
+                     "per-share is well below it");
+}
+
+HFT_TEST(test_transaction_cost_per_share_dominates_for_large_qty) {
+  // 200 shares: per-share = 200 * 0.0035 = $0.70 > $0.35 floor.
+  InstitutionalTransactionCostModel m(0.0035, 0.35, 0.0, 0.0);
+  const double c = m.estimateCost(0, 200, 50.0, 1'000'000);
+  hft::test::require(c >= 0.70 - 1e-9,
+                     "Per-share should dominate when qty exceeds the floor");
+  hft::test::require(c <= 0.70 + 1e-9,
+                     "Per-share should equal exactly tradeSize*rate when "
+                     "above the floor");
+}
+
+HFT_TEST(test_transaction_cost_3arg_constructor_unchanged_no_floor) {
+  // Legacy 3-arg constructor: no per-order floor (commissionMin = 0).
+  // For 10 shares at $0.005/share = $0.05 (would have been $1.00 floored
+  // if floor was applied). Asserts back-compat.
+  InstitutionalTransactionCostModel m(0.005, 0.0, 0.0);
+  const double c = m.estimateCost(0, 10, 50.0, 1'000'000);
+  hft::test::require(c >= 0.05 - 1e-9 && c <= 0.05 + 1e-9,
+                     "3-arg constructor must NOT apply a min floor");
+}
+
 HFT_TEST(test_slippage_moves_price_for_buy) {
   MarketImpactSlippageModel m(0.0005, 0.1);
   const double px = m.adjustExecutionPrice(100.0, true, 0.01);

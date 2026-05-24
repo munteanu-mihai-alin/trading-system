@@ -155,6 +155,11 @@ struct AppConfig {
   double target_profit_pct = 0.008;
   double min_sell_execution_score = 0.0;
   double commission_per_share = 0.005;
+  // Per-order commission floor in dollars. IBKR Pro Fixed = $1.00; IBKR Pro
+  // Tiered = $0.35. Default 1.0 preserves prior Fixed behaviour for
+  // configs that don't explicitly set this. The cost model applies
+  // max(commission_per_share * qty, commission_min_per_order) per leg.
+  double commission_min_per_order = 1.0;
   double half_spread_cost = 0.0005;
   double impact_coefficient = 0.1;
   double assumed_daily_volume = 1'000'000.0;

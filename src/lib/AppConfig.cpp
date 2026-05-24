@@ -136,6 +136,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.min_sell_execution_score = std::stod(val);
       } else if (key == "commission_per_share") {
         cfg.commission_per_share = std::stod(val);
+      } else if (key == "commission_min_per_order") {
+        cfg.commission_min_per_order = std::stod(val);
       } else if (key == "half_spread_cost") {
         cfg.half_spread_cost = std::stod(val);
       } else if (key == "impact_coefficient") {

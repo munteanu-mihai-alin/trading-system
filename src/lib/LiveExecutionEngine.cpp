@@ -540,9 +540,9 @@ double LiveExecutionEngine::estimate_round_trip_cost_per_share(
   if (qty <= 0.0)
     return 0.0;
 
-  InstitutionalTransactionCostModel costs(cfg_.app.commission_per_share,
-                                          cfg_.app.half_spread_cost,
-                                          cfg_.app.impact_coefficient);
+  InstitutionalTransactionCostModel costs(
+      cfg_.app.commission_per_share, cfg_.app.commission_min_per_order,
+      cfg_.app.half_spread_cost, cfg_.app.impact_coefficient);
   const double daily_volume = std::max(cfg_.app.assumed_daily_volume, qty);
   const double buy_cost =
       costs.estimateCost(0.0, qty, entry_price, daily_volume);

@@ -86,6 +86,13 @@ class LiveExecutionEngine {
   [[nodiscard]] double estimate_round_trip_cost_per_share(
       double qty, double entry_price, double sell_price_estimate) const;
   void ensure_depth_subscription(const std::string& symbol, int ticker_id);
+  // Rebuild open_positions_ from broker->query_positions() at startup so
+  // an existing IBKR position (carried over from a prior session) isn't
+  // orphaned. sell_limit and sell_order_id start at 0; route_exit_orders
+  // populates them on the next step from the configured target. Returns
+  // the number of positions recovered (0 when the broker has no positions
+  // or when query_positions() is the IBroker default empty implementation).
+  int reconcile_open_positions_from_broker();
   void refresh_order_state();
   void route_exit_orders();
   // Per-step drain of broker trade prints into Stock::hawkes, gated on

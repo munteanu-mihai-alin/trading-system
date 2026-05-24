@@ -59,6 +59,19 @@ struct OrderUpdate {
   double avg_fill_price = 0.0;
 };
 
+// One open position held in the broker's account state. Returned by
+// IBroker::query_positions() at engine startup so the engine can recover
+// open_positions_ across restarts rather than starting from an empty map.
+//
+// avg_cost is IBKR's "average cost" semantics: total cost basis / qty,
+// already including commissions on entry. The engine treats it as the
+// entry price for sell-target calculations.
+struct BrokerPosition {
+  std::string symbol;
+  double qty = 0.0;
+  double avg_cost = 0.0;
+};
+
 class IBroker {
  public:
   virtual ~IBroker() = default;
@@ -109,6 +122,19 @@ class IBroker {
   // freeze and the strategy is making decisions on stale prices).
   // Default 0 means "no limit reported"; live brokers should keep this.
   [[nodiscard]] virtual int max_replay_steps() const { return 0; }
+
+  // Snapshot of positions currently held in the broker's account. Used by
+  // LiveExecutionEngine::start() to rebuild open_positions_ across
+  // restarts so an existing IBKR position isn't orphaned (engine wouldn't
+  // try to sell it, wouldn't honor the budget gate against it, and
+  // max_open_symbols accounting would be wrong).
+  //
+  // Default returns empty - backtest brokers don't carry forward state
+  // across runs, and unwired live brokers degrade to today's behaviour
+  // (fresh empty positions map) rather than crashing.
+  [[nodiscard]] virtual std::vector<BrokerPosition> query_positions() {
+    return {};
+  }
 };
 
 }  // namespace hft

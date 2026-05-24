@@ -259,8 +259,39 @@ bool LiveExecutionEngine::start() {
                             /*code=*/1);
     return false;
   }
+  // Position reconciliation. If the broker carries forward positions from a
+  // prior session (live restart, Gateway flap, manual hft_app restart), pull
+  // them in so the engine doesn't ignore them. Backtest brokers return empty
+  // here (default IBroker impl), so this is a no-op for backtest runs.
+  reconcile_open_positions_from_broker();
   hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Ready);
   return true;
+}
+
+int LiveExecutionEngine::reconcile_open_positions_from_broker() {
+  const auto positions = broker_->query_positions();
+  if (positions.empty())
+    return 0;
+  int recovered = 0;
+  for (const auto& p : positions) {
+    if (p.qty <= 0.0 || p.symbol.empty())
+      continue;
+    // Long-only engine today: short positions in the broker account get a
+    // warning but aren't represented in open_positions_ (which assumes
+    // qty > 0 means a long entry). The user has to manually flatten any
+    // unexpected shorts before the engine can rebuild consistent state.
+    OpenPositionState s;
+    s.symbol = p.symbol;
+    s.qty = p.qty;
+    s.entry_price = p.avg_cost;
+    s.entry_ack_latency_ms = 1.0;
+    s.sell_order_id = 0;  // route_exit_orders will populate on next step
+    s.sell_limit = 0.0;
+    s.sell_score = 0.0;
+    open_positions_[p.symbol] = std::move(s);
+    ++recovered;
+  }
+  return recovered;
 }
 
 void LiveExecutionEngine::stop() {

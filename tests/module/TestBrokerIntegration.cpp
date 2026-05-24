@@ -75,6 +75,33 @@ class FilledDepthBroker final : public IBroker {
   [[nodiscard]] double ack_latency_ms(int) const override { return 1.0; }
 };
 
+// Fake broker that returns a fixed set of pre-existing positions, used to
+// exercise the position-reconciliation path at engine startup.
+class PrePositionedBroker final : public IBroker {
+  bool connected_ = false;
+  std::vector<BrokerPosition> seeded_;
+
+ public:
+  explicit PrePositionedBroker(std::vector<BrokerPosition> positions)
+      : seeded_(std::move(positions)) {}
+
+  bool connect(const std::string&, int, int) override {
+    connected_ = true;
+    return true;
+  }
+  void disconnect() override { connected_ = false; }
+  bool is_connected() const override { return connected_; }
+  void place_limit_order(const OrderRequest&) override {}
+  void cancel_order(int) override {}
+  void start_event_loop() override {}
+  void stop_event_loop() override {}
+  void subscribe_market_depth(const MarketDepthRequest&) override {}
+
+  [[nodiscard]] std::vector<BrokerPosition> query_positions() override {
+    return seeded_;
+  }
+};
+
 }  // namespace
 
 HFT_TEST(test_paper_broker_receives_orders) {
@@ -723,6 +750,69 @@ HFT_TEST(test_live_execution_engine_live_mode_uses_ibkr_stub) {
   eng.initialize_universe(3);
   eng.subscribe_live_books({"AAPL", "MSFT", "NVDA"});
   eng.step(0);
+  eng.stop();
+}
+
+HFT_TEST(
+    test_live_execution_engine_rebuilds_open_positions_from_broker_at_start) {
+  AppConfig cfg;
+  cfg.mode = BrokerMode::Paper;
+  cfg.top_k = 3;
+
+  // Seed the broker with two pre-existing positions the engine has never
+  // seen before. After start() the engine should populate open_positions_
+  // from broker->query_positions().
+  std::vector<BrokerPosition> seed = {
+      BrokerPosition{"AAPL", 5.0, 250.0},
+      BrokerPosition{"NOK", 100.0, 9.50},
+  };
+  auto broker = std::make_unique<PrePositionedBroker>(std::move(seed));
+  LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
+
+  hft::test::require(eng.start(), "pre-positioned broker should connect");
+
+  const auto& positions = eng.open_positions();
+  hft::test::require(positions.size() == 2,
+                     "engine should recover 2 positions from broker state");
+
+  const auto aapl = positions.find("AAPL");
+  hft::test::require(aapl != positions.end(),
+                     "AAPL position should be recovered");
+  hft::test::require(aapl->second.qty == 5.0,
+                     "AAPL qty should match broker state");
+  hft::test::require_close(aapl->second.entry_price, 250.0, 1e-9,
+                           "AAPL entry_price should equal broker avg_cost");
+  hft::test::require(
+      aapl->second.sell_limit == 0.0,
+      "sell_limit starts at 0; route_exit_orders sets it next step");
+  hft::test::require(aapl->second.sell_order_id == 0,
+                     "sell_order_id starts at 0");
+
+  const auto nok = positions.find("NOK");
+  hft::test::require(nok != positions.end(),
+                     "NOK position should be recovered");
+  hft::test::require(nok->second.qty == 100.0,
+                     "NOK qty should match broker state");
+  hft::test::require_close(nok->second.entry_price, 9.50, 1e-9,
+                           "NOK entry_price should equal broker avg_cost");
+  eng.stop();
+}
+
+HFT_TEST(test_live_execution_engine_empty_position_set_leaves_engine_empty) {
+  // Default IBroker::query_positions() returns empty -> open_positions_
+  // should be empty after start(). Regression test ensuring backtest brokers
+  // (and unwired live brokers) don't accidentally pick up stale state.
+  AppConfig cfg;
+  cfg.mode = BrokerMode::Paper;
+
+  auto broker =
+      std::make_unique<PrePositionedBroker>(std::vector<BrokerPosition>{});
+  LiveExecutionEngine eng(LiveTradingConfig::from_app(cfg), std::move(broker));
+
+  hft::test::require(eng.start(), "empty-position broker should connect");
+  hft::test::require(eng.open_positions().empty(),
+                     "engine should start with empty open_positions when "
+                     "broker reports none");
   eng.stop();
 }
 

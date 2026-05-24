@@ -409,12 +409,21 @@ bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
     // if that source is still legacy (no ts_event), re-invoking the script
     // will just produce another legacy file and the broker falls back to
     // step-clamped behavior on load.
+    //
+    // End-bound tolerance: the cached file's last ts_event is the last
+    // *actual* L1 event from the source, which may be a few seconds shy of
+    // the requested midnight cutoff (no quotes update once the market is
+    // closed). Allow up to kCacheEndToleranceNs gap before forcing a
+    // re-download - covers after-hours and weekend gaps where no extra data
+    // would be available even if we did re-download.
+    constexpr std::int64_t kCacheEndToleranceNs =
+        24LL * 60 * 60 * 1'000'000'000LL;
     const auto cached = read_cache_ts_range(out);
     if (!cached) {
       need_download = true;
     } else if (req_start && cached->start_ns > *req_start) {
       need_download = true;
-    } else if (req_end && cached->end_ns < *req_end) {
+    } else if (req_end && cached->end_ns < *req_end - kCacheEndToleranceNs) {
       need_download = true;
     }
   }
@@ -460,12 +469,22 @@ bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
     // Only consider the cache reusable when both the cached file carries a
     // ts_event range AND the requested window fits inside it. Either side
     // missing -> re-download to guarantee the replay covers the request.
+    //
+    // End-bound tolerance: same rationale as ensure_l1_symbol_loaded. L2
+    // events stop firing once the market closes, so the cache's last
+    // ts_event is typically a few seconds before the requested midnight
+    // cutoff. A strict bound caused full re-downloads for caches that
+    // already covered every available row (~$50-100 wasted Databento
+    // spend per universe-run). 24h tolerance handles after-hours +
+    // weekend gaps without masking genuine window-extension requests.
+    constexpr std::int64_t kCacheEndToleranceNs =
+        24LL * 60 * 60 * 1'000'000'000LL;
     const auto cached = read_cache_ts_range(out);
     if (!cached) {
       need_download = true;  // legacy schema or empty
     } else if (req_start && cached->start_ns > *req_start) {
       need_download = true;
-    } else if (req_end && cached->end_ns < *req_end) {
+    } else if (req_end && cached->end_ns < *req_end - kCacheEndToleranceNs) {
       need_download = true;
     }
   }

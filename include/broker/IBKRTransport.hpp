@@ -33,6 +33,17 @@ class IBKRTransport {
   // EClientSocket::reqTickByTickData(..., "AllLast", ...).
   virtual void subscribe_trades(const TopOfBookRequest& /*req*/) {}
 
+  // Begin streaming account positions. Each position fires through
+  // IBKRCallbacks::on_position; the initial snapshot terminates with
+  // IBKRCallbacks::on_position_end (after which IBKR keeps streaming live
+  // updates until cancel_positions_stream). Default no-op so transport
+  // doubles keep compiling; the real transport calls
+  // EClientSocket::reqPositions().
+  virtual void request_positions() {}
+  // Stop streaming positions. Pairs with request_positions; safe to call
+  // even if no stream is active. Default no-op.
+  virtual void cancel_positions_stream() {}
+
   // Block (with an internal timeout, typically ~2s) waiting for inbound
   // traffic from the broker, then dispatch one batch of decoded messages
   // through the registered IBKRCallbacks. Returns when at least one cycle

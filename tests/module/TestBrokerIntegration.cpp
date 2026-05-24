@@ -798,6 +798,47 @@ HFT_TEST(
   eng.stop();
 }
 
+HFT_TEST(test_ibkr_client_query_positions_flushes_seeded_via_fake_transport) {
+  // Reqs the IBKRClient -> FakeIBKRTransport -> on_position* -> condvar
+  // -> query_positions return path. Fake flushes synchronously inside
+  // request_positions, so the IBKRClient's wait_for predicate is already
+  // satisfied when wait_for runs and the call returns immediately.
+  auto transport = std::make_unique<hft::test::FakeIBKRTransport>();
+  auto* raw = transport.get();
+  raw->seed_positions({
+      hft::test::SimulatedPosition{"AAPL", 5.0, 250.0},
+      hft::test::SimulatedPosition{"NOK", 100.0, 9.50},
+  });
+
+  IBKRClient client(std::move(transport));
+  hft::test::require(client.connect("127.0.0.1", 4002, 1),
+                     "fake transport connect should succeed");
+
+  const auto positions = client.query_positions();
+  hft::test::require(positions.size() == 2,
+                     "IBKRClient should return both seeded positions");
+  hft::test::require(positions[0].symbol == "AAPL",
+                     "first position should be AAPL (insertion order)");
+  hft::test::require_close(positions[0].qty, 5.0, 1e-9,
+                           "AAPL qty should match seed");
+  hft::test::require_close(positions[0].avg_cost, 250.0, 1e-9,
+                           "AAPL avg_cost should match seed");
+  hft::test::require(positions[1].symbol == "NOK",
+                     "second position should be NOK");
+  hft::test::require(raw->cancel_positions_count() == 1,
+                     "query_positions must cancel the stream after returning");
+
+  // Second call: clean state (no leftover positions from prior call).
+  raw->seed_positions({});
+  const auto empty = client.query_positions();
+  hft::test::require(empty.empty(),
+                     "subsequent query with empty seed should return empty");
+  hft::test::require(raw->cancel_positions_count() == 2,
+                     "second query_positions should cancel the stream too");
+
+  client.disconnect();
+}
+
 HFT_TEST(test_live_execution_engine_empty_position_set_leaves_engine_empty) {
   // Default IBroker::query_positions() returns empty -> open_positions_
   // should be empty after start(). Regression test ensuring backtest brokers

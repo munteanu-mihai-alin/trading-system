@@ -127,6 +127,15 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
     client_.reqTickByTickData(req.ticker_id, contract, "AllLast", 0, false);
   }
 
+  void request_positions() override {
+    // Streams positions for ALL accounts the client is subscribed to. The
+    // initial snapshot ends with positionEnd(); after that IBKR keeps
+    // pushing live updates until cancelPositions().
+    client_.reqPositions();
+  }
+
+  void cancel_positions_stream() override { client_.cancelPositions(); }
+
   void pump_once() override {
     if (!connected_)
       return;
@@ -247,9 +256,18 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   void tickSnapshotEnd(int) override {}
   void marketDataType(TickerId, int) override {}
   void commissionAndFeesReport(const CommissionAndFeesReport&) override {}
-  void position(const std::string&, const Contract&, Decimal, double) override {
+  void position(const std::string& /*account*/, const Contract& contract,
+                Decimal pos, double avg_cost) override {
+    if (callbacks_ == nullptr)
+      return;
+    callbacks_->on_position(contract.symbol,
+                            DecimalFunctions::decimalToDouble(pos), avg_cost);
   }
-  void positionEnd() override {}
+  void positionEnd() override {
+    if (callbacks_ != nullptr) {
+      callbacks_->on_position_end();
+    }
+  }
   void accountSummary(int, const std::string&, const std::string&,
                       const std::string&, const std::string&) override {}
   void accountSummaryEnd(int) override {}

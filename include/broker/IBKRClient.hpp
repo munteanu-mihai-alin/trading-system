@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -44,6 +45,15 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   std::atomic<bool> reader_running_{false};
   std::thread reader_thread_;
 
+  // Position-stream state. query_positions() blocks on positions_cv_ until
+  // on_position_end() flips positions_stream_done_, then snapshots
+  // pending_positions_ and cancels the stream. All three are guarded by
+  // positions_mutex_.
+  mutable std::mutex positions_mutex_;
+  std::condition_variable positions_cv_;
+  std::vector<BrokerPosition> pending_positions_;
+  bool positions_stream_done_ = false;
+
  public:
   IBKRClient();
   explicit IBKRClient(std::unique_ptr<IBKRTransport> transport);
@@ -60,6 +70,7 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   void subscribe_market_depth(const MarketDepthRequest& req) override;
   void subscribe_trades(const TopOfBookRequest& req) override;
   [[nodiscard]] std::vector<TradeEvent> drain_trades(int ticker_id) override;
+  [[nodiscard]] std::vector<BrokerPosition> query_positions() override;
   void start_production_event_loop();
   void pump_once();
   bool reconnect_once();
@@ -87,6 +98,9 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
                 std::int64_t exch_ts_ns) override;
   void on_next_valid_id(int order_id) override;
   void on_error(const IBKRError& error) override;
+  void on_position(const std::string& symbol, double qty,
+                   double avg_cost) override;
+  void on_position_end() override;
   void on_connection_closed() override;
 };
 

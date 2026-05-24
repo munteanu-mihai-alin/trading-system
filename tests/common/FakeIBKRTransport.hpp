@@ -10,10 +10,20 @@
 // "a working transport".
 
 #include <string>
+#include <vector>
 
+#include "broker/IBKRCallbacks.hpp"
 #include "broker/IBKRTransport.hpp"
 
 namespace hft::test {
+
+// Holds one simulated position the fake should flush through on_position
+// when the IBKRClient calls request_positions().
+struct SimulatedPosition {
+  std::string symbol;
+  double qty = 0.0;
+  double avg_cost = 0.0;
+};
 
 class FakeIBKRTransport final : public IBKRTransport {
  public:
@@ -33,10 +43,37 @@ class FakeIBKRTransport final : public IBKRTransport {
   void subscribe_market_depth(const MarketDepthRequest& /*req*/) override {}
   void subscribe_trades(const TopOfBookRequest& /*req*/) override {}
   void pump_once() override {}
-  void set_callbacks(IBKRCallbacks* /*cb*/) override {}
+  void set_callbacks(IBKRCallbacks* cb) override { callbacks_ = cb; }
+
+  // Seeds the positions the fake will deliver on the next
+  // request_positions() call. Test helper; not part of the IBKRTransport
+  // interface.
+  void seed_positions(std::vector<SimulatedPosition> positions) {
+    simulated_positions_ = std::move(positions);
+  }
+
+  void request_positions() override {
+    if (callbacks_ == nullptr)
+      return;
+    // Flush synchronously: each position then position_end. The IBKRClient
+    // wait_for predicate is satisfied before it ever has to block.
+    for (const auto& p : simulated_positions_) {
+      callbacks_->on_position(p.symbol, p.qty, p.avg_cost);
+    }
+    callbacks_->on_position_end();
+  }
+
+  void cancel_positions_stream() override { ++cancel_positions_count_; }
+
+  [[nodiscard]] int cancel_positions_count() const {
+    return cancel_positions_count_;
+  }
 
  private:
   bool connected_ = false;
+  IBKRCallbacks* callbacks_ = nullptr;
+  std::vector<SimulatedPosition> simulated_positions_;
+  int cancel_positions_count_ = 0;
 };
 
 }  // namespace hft::test

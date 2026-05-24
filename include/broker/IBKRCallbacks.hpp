@@ -43,6 +43,18 @@ class IBKRCallbacks {
   virtual void on_next_valid_id(int order_id) {}
   virtual void on_error(const IBKRError&) {}
 
+  // One position from a reqPositions stream. Symbol comes from the TWS
+  // Contract.symbol; qty is signed (negative for shorts); avg_cost is the
+  // broker's average cost (cost basis / qty), already including entry-side
+  // commissions. Default no-op so callbacks that don't care about positions
+  // don't have to override.
+  virtual void on_position(const std::string& /*symbol*/, double /*qty*/,
+                           double /*avg_cost*/) {}
+  // Signal that reqPositions has delivered all currently-known positions.
+  // After this fires the broker will keep streaming live updates until
+  // cancelPositions is called.
+  virtual void on_position_end() {}
+
   virtual void on_connection_closed() = 0;
 };
 

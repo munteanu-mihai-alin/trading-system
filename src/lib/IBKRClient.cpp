@@ -118,6 +118,34 @@ std::vector<TradeEvent> IBKRClient::drain_trades(int ticker_id) {
   return out;
 }
 
+std::vector<BrokerPosition> IBKRClient::query_positions() {
+  // Clear any stale state from a prior call, then kick off the stream.
+  {
+    std::lock_guard<std::mutex> lock(positions_mutex_);
+    pending_positions_.clear();
+    positions_stream_done_ = false;
+  }
+  transport_->request_positions();
+
+  // Block until on_position_end fires, with a 5s timeout so a misbehaving
+  // broker can't hang the engine's start() path. Test fakes that flush
+  // synchronously during request_positions() satisfy the predicate before
+  // wait_for runs and return immediately.
+  std::vector<BrokerPosition> out;
+  {
+    std::unique_lock<std::mutex> lock(positions_mutex_);
+    positions_cv_.wait_for(lock, std::chrono::seconds(5),
+                           [this]() { return positions_stream_done_; });
+    out.swap(pending_positions_);
+  }
+
+  // Cancel the streaming subscription so IBKR stops pushing live updates;
+  // the next reconciliation will re-issue request_positions for a fresh
+  // snapshot.
+  transport_->cancel_positions_stream();
+  return out;
+}
+
 TopOfBook IBKRClient::snapshot_top_of_book(int ticker_id) const {
   std::lock_guard<std::mutex> lock(books_mutex_);
   const auto it = top_books_.find(ticker_id);
@@ -267,6 +295,20 @@ void IBKRClient::on_next_valid_id(int order_id) {
 void IBKRClient::on_error(const IBKRError& error) {
   std::lock_guard<std::mutex> lock(event_mutex_);
   errors_.push_back(error);
+}
+
+void IBKRClient::on_position(const std::string& symbol, double qty,
+                             double avg_cost) {
+  std::lock_guard<std::mutex> lock(positions_mutex_);
+  pending_positions_.push_back(BrokerPosition{symbol, qty, avg_cost});
+}
+
+void IBKRClient::on_position_end() {
+  {
+    std::lock_guard<std::mutex> lock(positions_mutex_);
+    positions_stream_done_ = true;
+  }
+  positions_cv_.notify_one();
 }
 
 void IBKRClient::on_connection_closed() {

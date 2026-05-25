@@ -11,13 +11,14 @@ report.html with:
   - Open positions table (one row per still-open position at end)
   - Equity curve, per-trade PnL, and every per-symbol plot
     (base64-embedded, so the HTML is portable as a single file)
-  - Full orders.csv, decisions.csv, l2_trace.csv as data tables
-  - step_trace.csv: head + tail sample only (the full file is too large
-    to embed without making the HTML > 50 MB)
-
-The "don't exclude anything" principle: every artifact in the run
-folder is referenced in the HTML, either embedded directly or with a
-visible note explaining where to find it.
+  - Full orders.csv as a data table (lifecycle events: placed / filled /
+    cancelled / rejected for both buys and sells)
+  - decisions.csv, l2_trace.csv, step_trace.csv are NOT embedded - they
+    are raw debug streams that don't add insight beyond what the plots +
+    metrics already show, and they bloat the HTML. The plots already
+    visualise the meaningful slice of decisions and L2 state; the raw
+    CSVs are on disk next to this report if someone needs to drill in.
+    The report's "Raw artifacts" footer lists them with their sizes.
 
 Usage:
   python scripts/generate_html_report.py reports/runs/<run_id>
@@ -46,10 +47,6 @@ import pandas as pd
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 import plot_run  # type: ignore  # noqa: E402
-
-STEP_TRACE_SAMPLE_HEAD = 50
-STEP_TRACE_SAMPLE_TAIL = 50
-
 
 def b64_image(path: Path) -> str:
     data = path.read_bytes()
@@ -405,9 +402,11 @@ def generate_report(run_dir: Path, l1_dir: Path) -> Path:
     cfg = read_config(run_dir)
 
     orders = read_csv_skipping_comments(run_dir / "orders.csv")
-    decisions = read_csv_skipping_comments(run_dir / "decisions.csv")
-    l2_trace = read_csv_skipping_comments(run_dir / "l2_trace.csv")
-    step_trace = read_csv_skipping_comments(run_dir / "step_trace.csv")
+    # decisions.csv, l2_trace.csv, step_trace.csv: raw debug streams. NOT
+    # embedded in the report - the plots + headline metrics already capture
+    # the signal, and the raw rows just bloat the HTML without adding
+    # interpretation. They're still on disk alongside the report for
+    # drill-down; we show their sizes in the "Raw artifacts" footer.
 
     commission_per_share = float(cfg.get("commission_per_share", 0.0035))
     min_per_order = float(
@@ -442,9 +441,31 @@ def generate_report(run_dir: Path, l1_dir: Path) -> Path:
     ended = manifest.get("ended_at", "?") if manifest else "?"
     window = f"{cfg.get('databento_start', '?')} -> {cfg.get('databento_end', '?')}"
 
-    # step_trace note: too large to embed fully.
-    step_trace_kb = (run_dir / "step_trace.csv").stat().st_size // 1024 \
-        if (run_dir / "step_trace.csv").exists() else 0
+    # Raw-artifact size + row-count summary for the footer (so the report
+    # tells the reader exactly where to look when they need raw rows).
+    # Counting lines via the OS is cheaper than re-parsing 20 MB through
+    # pandas for the step_trace row count.
+    def _kb(name: str) -> int:
+        p = run_dir / name
+        return (p.stat().st_size // 1024) if p.exists() else 0
+
+    def _line_count(name: str) -> int:
+        p = run_dir / name
+        if not p.exists():
+            return 0
+        # Subtract one for the CSV header. session_start / session_end
+        # comment lines stay in the count - good enough for "is this file
+        # tiny or huge?".
+        with p.open("rb") as f:
+            n = sum(1 for _ in f)
+        return max(n - 1, 0)
+
+    decisions_kb = _kb("decisions.csv")
+    decisions_rows = _line_count("decisions.csv")
+    l2_trace_kb = _kb("l2_trace.csv")
+    l2_trace_rows = _line_count("l2_trace.csv")
+    step_trace_kb = _kb("step_trace.csv")
+    step_trace_rows = _line_count("step_trace.csv")
 
     # Build the HTML.
     html_doc = f"""<!doctype html>
@@ -476,11 +497,9 @@ def generate_report(run_dir: Path, l1_dir: Path) -> Path:
   <a href="#per-trade">Per-trade PnL</a>
   <a href="#per-symbol">Per-symbol plots</a>
   <a href="#orders">Orders</a>
-  <a href="#decisions">Decisions</a>
-  <a href="#l2-trace">L2 trace</a>
-  <a href="#step-trace">Step trace</a>
   <a href="#manifest">Manifest</a>
   <a href="#config">Config</a>
+  <a href="#raw-artifacts">Raw artifacts</a>
 </div>
 
 <h2 id="metrics">Headline metrics</h2>
@@ -501,21 +520,9 @@ def generate_report(run_dir: Path, l1_dir: Path) -> Path:
 <h2 id="per-symbol">Per-symbol plots</h2>
 {"".join(symbol_plots) if symbol_plots else "<p class='subtle'>No symbol plots (no closed trades).</p>"}
 
-<h2 id="orders">Orders (full)</h2>
-<p class="subtle">{len(orders)} rows from orders.csv.</p>
+<h2 id="orders">Orders (full lifecycle)</h2>
+<p class="subtle">{len(orders)} rows from orders.csv - placed / filled / cancelled / rejected events for every buy and sell. Sequence-level detail behind the round-trips table above.</p>
 {render_dataframe(orders, "orders", max_rows=None)}
-
-<h2 id="decisions">Decisions (full)</h2>
-<p class="subtle">{len(decisions)} rows from decisions.csv (per-buy ranking snapshots).</p>
-{render_dataframe(decisions, "decisions", max_rows=None)}
-
-<h2 id="l2-trace">L2 trace (full)</h2>
-<p class="subtle">{len(l2_trace)} rows from l2_trace.csv (per-step L2 snapshot when a sell is being scored).</p>
-{render_dataframe(l2_trace, "l2_trace", max_rows=None)}
-
-<h2 id="step-trace">Step trace (sample)</h2>
-<p class="subtle">{len(step_trace)} rows, {step_trace_kb} KB. Showing first {STEP_TRACE_SAMPLE_HEAD} and last {STEP_TRACE_SAMPLE_TAIL} rows; the full file is at step_trace.csv next to this report.</p>
-{render_dataframe(step_trace, "step_trace", max_rows=STEP_TRACE_SAMPLE_HEAD + STEP_TRACE_SAMPLE_TAIL, note="Sampled - full file embedded would push this HTML above 50 MB.")}
 
 <h2 id="manifest">Manifest</h2>
 <pre>{html.escape(json.dumps(manifest, indent=2, sort_keys=True) if manifest else "(no manifest.json)")}</pre>
@@ -523,8 +530,19 @@ def generate_report(run_dir: Path, l1_dir: Path) -> Path:
 <h2 id="config">Config</h2>
 <pre>{html.escape(read_text_safe(run_dir / "config.ini") or "(no config.ini)")}</pre>
 
+<h2 id="raw-artifacts">Raw artifacts (not embedded)</h2>
+<p class="subtle">Debug streams kept on disk next to this report. They don't add insight beyond the plots and headline metrics, so we don't embed them - but they're available if you need to drill into a specific tick or ranking decision.</p>
+<table>
+  <thead><tr><th>File</th><th>Rows</th><th>Size</th><th>What it captures</th></tr></thead>
+  <tbody>
+    <tr><td><code>decisions.csv</code></td><td>{decisions_rows}</td><td>{decisions_kb} KB</td><td>Per-buy ranking snapshot of all universe symbols (score + tilt + Hawkes + OU + gate). Useful for "why did we pick X over Y here".</td></tr>
+    <tr><td><code>l2_trace.csv</code></td><td>{l2_trace_rows}</td><td>{l2_trace_kb} KB</td><td>Per-step L2 microstructure snapshot when a sell is being scored (best bid/ask, microprice, top-10 volumes, sell_limit, sell_score). Useful for "why didn't this sell fire".</td></tr>
+    <tr><td><code>step_trace.csv</code></td><td>{step_trace_rows}</td><td>{step_trace_kb} KB</td><td>Per-engine-step ranking snapshot for every universe symbol. Heaviest file - most useful as a time-series for one symbol's score evolution.</td></tr>
+  </tbody>
+</table>
+
 <p class="subtle" style="margin-top: 40px; text-align: center;">
-Generated by scripts/generate_html_report.py - all plots embedded as base64; this file is self-contained.
+Generated by scripts/generate_html_report.py - plots embedded as base64; orders + manifest + config inlined; raw debug streams listed but not embedded.
 </p>
 
 </body>

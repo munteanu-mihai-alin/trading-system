@@ -10,17 +10,23 @@
 | n_round_trips_closed | 12 |
 | n_positions_open_at_end | 3 |
 | realized_pnl_net | 49.55 |
-| unrealized_pnl_mark_to_market | 0.0 |
+| unrealized_pnl_mark_to_market | -41.805 |
+| net_pnl_realized_plus_unrealized | 7.745 |
 | win_rate | 1.0 |
 | avg_win | 4.1292 |
 | avg_loss | 0.0 |
 | gross_profit | 49.55 |
 | gross_loss | 0.0 |
+| deepest_drawdown_pct_any_position | -9.5479 |
+| avg_pct_time_below_entry | 69.43 |
+| n_stalled_open_positions | 3 |
+| opportunity_cost_dollars | 0.0 |
+| capital_efficiency_ratio | 0.2314 |
 | profit_factor | None |
-| max_drawdown_dollars | 0.0 |
+| max_drawdown_dollars | -53.21 |
 | sharpe_ratio_annualized | 18.7795 |
-| sortino_ratio_annualized | 0.0 |
-| calmar_ratio | 0.0 |
+| sortino_ratio_annualized | 0.6475 |
+| calmar_ratio | 3.4792 |
 | avg_holding_minutes | 1942.67 |
 
 ## Round-trips (closed)

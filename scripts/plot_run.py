@@ -245,17 +245,185 @@ def build_equity_curve(
     return df
 
 
+def _l1_mid(l1_df: pd.DataFrame) -> pd.Series:
+    """Returns the mid series indexed by ts_event (ns int64), or empty."""
+    if l1_df is None or l1_df.empty:
+        return pd.Series(dtype=float)
+    mid = 0.5 * (l1_df["bid_price"] + l1_df["ask_price"])
+    return pd.Series(mid.values, index=l1_df["ts_event"].astype("int64").values)
+
+
+def compute_holding_analytics(
+    trips: List[RoundTrip],
+    l1_by_symbol: Dict[str, pd.DataFrame],
+) -> List[Dict[str, Any]]:
+    """For each trip (open or closed): how deep underwater did it go and what
+    fraction of holding time was the price below entry. These are the only
+    losses the engine can produce given the current always-win sell logic."""
+    out: List[Dict[str, Any]] = []
+    for t in trips:
+        l1 = l1_by_symbol.get(t.symbol)
+        if l1 is None or l1.empty or t.buy_market_ts_ns is None:
+            out.append({
+                "symbol": t.symbol, "max_drawdown_pct": None,
+                "pct_time_below_entry": None, "days_held_market": None,
+                "open_at_end": t.open_at_end,
+            })
+            continue
+        mid = _l1_mid(l1)
+        # Holding window: buy ts -> sell ts (closed) OR buy ts -> last L1 ts (open)
+        start_ns = t.buy_market_ts_ns
+        end_ns = (t.sell_market_ts_ns if t.sell_market_ts_ns is not None
+                  else int(l1["ts_event"].max()))
+        window_mid = mid[(mid.index >= start_ns) & (mid.index <= end_ns)]
+        if window_mid.empty:
+            out.append({
+                "symbol": t.symbol, "max_drawdown_pct": None,
+                "pct_time_below_entry": None, "days_held_market": None,
+                "open_at_end": t.open_at_end,
+            })
+            continue
+        min_mid = float(window_mid.min())
+        max_dd_pct = (min_mid - t.entry_price) / t.entry_price * 100.0
+        pct_under = float((window_mid < t.entry_price).mean()) * 100.0
+        days_held = (end_ns - start_ns) / 86_400_000_000_000.0  # ns -> days
+        out.append({
+            "symbol": t.symbol,
+            "max_drawdown_pct": round(max_dd_pct, 4),
+            "pct_time_below_entry": round(pct_under, 2),
+            "days_held_market": round(days_held, 2),
+            "open_at_end": t.open_at_end,
+        })
+    return out
+
+
+def compute_unrealized_pnl(
+    trips: List[RoundTrip],
+    l1_by_symbol: Dict[str, pd.DataFrame],
+) -> float:
+    """Mark-to-market unrealized PnL on positions open at end of run."""
+    total = 0.0
+    for t in trips:
+        if not t.open_at_end:
+            continue
+        l1 = l1_by_symbol.get(t.symbol)
+        if l1 is None or l1.empty:
+            continue
+        last_mid = 0.5 * (l1["bid_price"].iat[-1] + l1["ask_price"].iat[-1])
+        total += (last_mid - t.entry_price) * t.qty
+    return total
+
+
+def compute_time_weighted_equity(
+    trips: List[RoundTrip],
+    net_pnl: List[float],
+    l1_by_symbol: Dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """Builds a 1-minute-bar equity curve over the union of all held-symbol
+    L1 timestamps. Each row: ts (market wall-clock), realized PnL up to and
+    including any trades closed by ts, sum of mark-to-market unrealized PnL
+    over positions held at ts. The total column (realized + unrealized) is
+    what Sortino / Calmar / max-drawdown are computed against. Returns an
+    empty frame when no L1 data is available."""
+    held_symbols = sorted({t.symbol for t in trips})
+    if not held_symbols:
+        return pd.DataFrame()
+    # Build a master ts index from all held symbols' L1.
+    ts_pieces = []
+    for sym in held_symbols:
+        l1 = l1_by_symbol.get(sym)
+        if l1 is None or l1.empty or "ts_event" not in l1.columns:
+            continue
+        ts_pieces.append(l1["ts_event"].astype("int64"))
+    if not ts_pieces:
+        return pd.DataFrame()
+    master_ts = pd.Index(sorted(set(pd.concat(ts_pieces, ignore_index=True))))
+    if master_ts.empty:
+        return pd.DataFrame()
+
+    # Per-symbol mid series indexed by ts.
+    mid_by_symbol = {
+        sym: _l1_mid(l1_by_symbol[sym]) for sym in held_symbols
+        if sym in l1_by_symbol and not l1_by_symbol[sym].empty
+    }
+
+    # Realised PnL timeline.
+    closed_events = []
+    for t, pnl in zip(trips, net_pnl):
+        if t.open_at_end:
+            continue
+        ts = t.sell_market_ts_ns if t.sell_market_ts_ns is not None else t.sell_ts_ns
+        if ts is None:
+            continue
+        closed_events.append((ts, pnl))
+    closed_events.sort()
+    closed_ts = pd.Series(
+        [e[1] for e in closed_events],
+        index=[e[0] for e in closed_events],
+    ).cumsum() if closed_events else pd.Series(dtype=float)
+
+    rows = []
+    for ts in master_ts:
+        # Realised cumulative at ts: largest closed event <= ts.
+        if not closed_ts.empty:
+            realized = float(closed_ts.loc[:ts].iloc[-1]) \
+                if (closed_ts.index <= ts).any() else 0.0
+        else:
+            realized = 0.0
+
+        # Unrealized: sum of (mid_at_ts - entry) * qty for positions currently
+        # open at ts (buy_ts <= ts AND (no sell yet OR sell_ts > ts)).
+        unreal = 0.0
+        for t in trips:
+            buy_ts = t.buy_market_ts_ns
+            sell_ts = t.sell_market_ts_ns
+            if buy_ts is None or buy_ts > ts:
+                continue
+            if sell_ts is not None and sell_ts <= ts:
+                continue
+            mid_s = mid_by_symbol.get(t.symbol)
+            if mid_s is None or mid_s.empty:
+                continue
+            # Latest mid at-or-before ts.
+            mask = mid_s.index <= ts
+            if not mask.any():
+                continue
+            mid_at_ts = float(mid_s.values[mask.argmax() if False else int(mask.sum()) - 1])
+            unreal += (mid_at_ts - t.entry_price) * t.qty
+        rows.append({"ts_ns": int(ts), "realized": realized,
+                     "unrealized": unreal, "total": realized + unreal})
+    df = pd.DataFrame(rows)
+    df["ts"] = pd.to_datetime(df["ts_ns"], unit="ns", utc=True)
+    return df
+
+
 def compute_metrics(
     trips: List[RoundTrip],
     net_pnl: List[float],
     equity: pd.DataFrame,
     account_budget: float,
+    *,
+    l1_by_symbol: Optional[Dict[str, pd.DataFrame]] = None,
+    daily_inflation_cost: float = 0.0,
 ) -> Dict[str, Any]:
+    l1_by_symbol = l1_by_symbol or {}
     closed = [(t, pnl) for t, pnl in zip(trips, net_pnl) if not t.open_at_end]
     open_trips = [(t, pnl) for t, pnl in zip(trips, net_pnl) if t.open_at_end]
 
     realized = sum(pnl for _, pnl in closed)
-    unrealized = 0.0  # filled in below from L1 mark-to-market if available
+
+    # Mark-to-market unrealized loss on positions still open at end of run.
+    # This is the honest "bag-holding" cost the per-trade win-rate hides.
+    unrealized = compute_unrealized_pnl(trips, l1_by_symbol)
+    unrealized_loss_only = compute_unrealized_pnl(
+        [t for t in trips if t.open_at_end and t.entry_price > 0
+         and (l1_by_symbol.get(t.symbol) is not None
+              and not l1_by_symbol[t.symbol].empty
+              and 0.5 * (l1_by_symbol[t.symbol]["bid_price"].iat[-1]
+                          + l1_by_symbol[t.symbol]["ask_price"].iat[-1])
+              < t.entry_price)],
+        l1_by_symbol,
+    )
 
     n_closed = len(closed)
     n_open = len(open_trips)
@@ -283,55 +451,103 @@ def compute_metrics(
         sum(holding_min(t) for t, _ in closed) / n_closed if n_closed else 0.0
     )
 
-    # Returns series for Sharpe/Sortino: per-trade return as % of account_budget.
+    # Per-trade Sharpe (kept for back-compat). Sortino/Calmar are recomputed
+    # below from the time-weighted equity curve, which actually contains
+    # negative excursions (mark-to-market drawdowns on open positions and
+    # underwater stretches on closed trades).
     if account_budget > 0 and n_closed:
         rets = [pnl / account_budget for _, pnl in closed]
         mean_r = sum(rets) / len(rets)
         var_r = sum((r - mean_r) ** 2 for r in rets) / len(rets)
         std_r = math.sqrt(var_r)
-        downside = [r for r in rets if r < 0]
-        if downside:
-            dmean = 0.0  # MAR = 0 baseline
-            dvar = sum((r - dmean) ** 2 for r in downside) / len(downside)
-            dstd = math.sqrt(dvar)
-        else:
-            dstd = 0.0
-
-        # Annualisation: trades-per-year approximation. With holding_minutes,
-        # trades-per-year ~= MINUTES_PER_YEAR / max(avg_holding_min, 1).
         trades_per_year = MINUTES_PER_YEAR / max(avg_holding_min, 1.0)
         sharpe = (mean_r / std_r) * math.sqrt(trades_per_year) if std_r > 0 else 0.0
-        sortino = (mean_r / dstd) * math.sqrt(trades_per_year) if dstd > 0 else 0.0
     else:
         sharpe = 0.0
-        sortino = 0.0
 
-    # Max drawdown on the equity curve.
-    if not equity.empty:
-        cummax = equity["pnl_cum"].cummax()
-        drawdown = equity["pnl_cum"] - cummax
-        max_dd_dollars = float(drawdown.min())
+    # Time-weighted equity curve including mark-to-market unrealized.
+    # This is the "honest" equity. max-drawdown, Sortino, Calmar use this.
+    tw_equity = compute_time_weighted_equity(trips, net_pnl, l1_by_symbol)
+    if not tw_equity.empty and account_budget > 0:
+        total = tw_equity["total"].astype(float)
+        cummax = total.cummax()
+        drawdown_dollars = float((total - cummax).min())
+        # Per-minute returns (in $) -> normalise by budget for ratio metrics.
+        rets_eq = total.diff().dropna() / account_budget
+        if len(rets_eq) > 1:
+            mean_r = float(rets_eq.mean())
+            std_r = float(rets_eq.std())
+            downside = rets_eq[rets_eq < 0]
+            dstd = float(downside.std()) if len(downside) > 1 else 0.0
+            sortino = ((mean_r / dstd) * math.sqrt(MINUTES_PER_YEAR)
+                       if dstd > 0 else 0.0)
+            # Time-window total return as % of budget, annualised.
+            window_days = (tw_equity["ts_ns"].iat[-1]
+                           - tw_equity["ts_ns"].iat[0]) / 86_400_000_000_000.0
+            if window_days > 0 and drawdown_dollars < 0:
+                ann_return = ((realized + unrealized) / account_budget) \
+                    * (365.0 / window_days)
+                calmar = ann_return / (abs(drawdown_dollars) / account_budget)
+            else:
+                calmar = 0.0
+        else:
+            sortino = 0.0
+            calmar = 0.0
+        max_dd_dollars = drawdown_dollars
     else:
+        sortino = 0.0
+        calmar = 0.0
         max_dd_dollars = 0.0
 
-    # Calmar: annualised return / abs(max DD), both in dollars / budget.
-    if account_budget > 0 and avg_holding_min > 0 and max_dd_dollars < 0:
-        trades_per_year = MINUTES_PER_YEAR / max(avg_holding_min, 1.0)
-        ann_return = (realized / account_budget) * (trades_per_year / max(n_closed, 1))
-        calmar = ann_return / (abs(max_dd_dollars) / account_budget)
+    # Holding-analytics aggregates (per-trip max underwater + time below entry).
+    holding = compute_holding_analytics(trips, l1_by_symbol)
+    underwater_pcts = [h["max_drawdown_pct"] for h in holding
+                       if h["max_drawdown_pct"] is not None]
+    time_under_pcts = [h["pct_time_below_entry"] for h in holding
+                       if h["pct_time_below_entry"] is not None]
+    deepest_underwater = min(underwater_pcts) if underwater_pcts else 0.0
+    avg_time_under = (sum(time_under_pcts) / len(time_under_pcts)
+                      if time_under_pcts else 0.0)
+    n_stalled_open = sum(
+        1 for h in holding if h["open_at_end"]
+        and h["pct_time_below_entry"] is not None
+        and h["pct_time_below_entry"] >= 50.0
+    )
+
+    # Opportunity cost: capital tied up for the run window. account_budget
+    # × daily_inflation_cost (from AppConfig.costs) × days_in_window. Falls
+    # back to 0 when no inflation cost configured.
+    if not tw_equity.empty:
+        days_window = (tw_equity["ts_ns"].iat[-1]
+                       - tw_equity["ts_ns"].iat[0]) / 86_400_000_000_000.0
     else:
-        calmar = 0.0
+        days_window = 0.0
+    opportunity_cost = account_budget * daily_inflation_cost * days_window
+
+    # Capital efficiency: total notional traded / (account_budget * days).
+    # Anything below 1.0 means our capital is sitting more than it's working.
+    total_notional = sum(t.qty * t.entry_price for t in trips)
+    if account_budget > 0 and days_window > 0:
+        capital_efficiency = total_notional / (account_budget * days_window)
+    else:
+        capital_efficiency = 0.0
 
     return {
         "n_round_trips_closed": n_closed,
         "n_positions_open_at_end": n_open,
         "realized_pnl_net": round(realized, 4),
         "unrealized_pnl_mark_to_market": round(unrealized, 4),
+        "net_pnl_realized_plus_unrealized": round(realized + unrealized, 4),
         "win_rate": round(win_rate, 4) if not math.isnan(win_rate) else None,
         "avg_win": round(avg_win, 4),
         "avg_loss": round(avg_loss, 4),
         "gross_profit": round(gross_profit, 4),
         "gross_loss": round(gross_loss, 4),
+        "deepest_drawdown_pct_any_position": round(deepest_underwater, 4),
+        "avg_pct_time_below_entry": round(avg_time_under, 2),
+        "n_stalled_open_positions": n_stalled_open,
+        "opportunity_cost_dollars": round(opportunity_cost, 4),
+        "capital_efficiency_ratio": round(capital_efficiency, 4),
         "profit_factor": (
             round(profit_factor, 4) if math.isfinite(profit_factor) else None
         ),
@@ -543,6 +759,9 @@ def main(argv: List[str]) -> int:
         cfg.get("commission_min_per_order", cfg.get("min_per_order", 0.35))
     )
     account_budget = float(cfg.get("account_budget", 1500.0))
+    # Daily inflation cost from AppConfig.costs (0 by default = the metric
+    # is off). Used in opportunity_cost = budget * rate * days_in_window.
+    daily_inflation_cost = float(cfg.get("daily_inflation_cost", 0.0))
 
     trips = derive_round_trips(orders, commission_per_share, min_per_order)
     if not trips:
@@ -550,7 +769,8 @@ def main(argv: List[str]) -> int:
         return 0
 
     # Preload per-symbol L1 frames once; reused for marker timestamps AND
-    # per-symbol plotting.
+    # per-symbol plotting AND the new mark-to-market / holding-analytics
+    # path (need full L1 mid trajectory across each holding window).
     symbols = sorted({t.symbol for t in trips})
     l1_by_symbol: Dict[str, pd.DataFrame] = {}
     for sym in symbols:
@@ -562,7 +782,11 @@ def main(argv: List[str]) -> int:
 
     net_pnl = apply_commissions(trips, commission_per_share, min_per_order)
     equity = build_equity_curve(trips, net_pnl)
-    metrics = compute_metrics(trips, net_pnl, equity, account_budget)
+    metrics = compute_metrics(
+        trips, net_pnl, equity, account_budget,
+        l1_by_symbol=l1_by_symbol,
+        daily_inflation_cost=daily_inflation_cost,
+    )
 
     # Plots.
     render_equity_curve(equity, plots_dir / "equity_curve.png")

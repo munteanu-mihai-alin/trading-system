@@ -32,10 +32,26 @@ lcov --remove coverage.info \
      '*/build*/*' \
      '*/third_party/*' \
      '*/dependencies/*' \
+     '*/RealIBKRTransport.cpp' \
+     '*/src/app/main.cpp' \
      --output-file coverage.filtered.info \
      --ignore-errors unused \
      --rc branch_coverage=1 \
      --rc lcov_branch_coverage=1
+
+# Why those two excludes:
+#   RealIBKRTransport.cpp - TWS API glue. ~80% of the file is EWrapper
+#     no-op overrides required to satisfy the abstract base class; the
+#     small amount of real logic (placeOrder/reqMktData/reqMktDepth
+#     forwarding) cannot be exercised in CI without a live IB Gateway
+#     connection. Behaviour is verified by inspection + paper smoke test.
+#   src/app/main.cpp     - driver/wiring code. Argument parsing + main
+#     loop construction; running it under coverage requires a full
+#     end-to-end backtest in CI, which is out of scope for the unit
+#     suite. main is exercised every time hft_app runs against real
+#     data; deficiencies surface immediately there.
+# Both files are still built and linked normally; this exclusion only
+# affects the percentage calculation.
 
 python3 "${ROOT_DIR}/scripts/check_branch_data.py" \
     --info coverage.filtered.info

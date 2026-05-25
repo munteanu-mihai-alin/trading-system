@@ -24,6 +24,7 @@ set(LIB_SOURCES
   src/lib/IBKRClient.cpp
   src/lib/LiveExecutionEngine.cpp
   src/lib/RealIBKRTransport.cpp
+  src/lib/SymbolUniverse.cpp
 )
 
 add_library(hft_lib ${LIB_SOURCES})

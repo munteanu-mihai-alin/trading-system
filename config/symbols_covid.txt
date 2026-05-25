@@ -1,0 +1,64 @@
+# Symbol universe for the COVID-acute adversarial backtest
+# (databento_start=2020-03-09T13:30:00Z, databento_end=2020-03-23T00:00:00Z).
+#
+# Same companies as the default kSymbolCompanyList in
+# include/models/symbol_universe.hpp, minus the 5 symbols that did not
+# trade publicly in March 2020:
+#
+#   ARM    - Cambridge IPO 2023-09-14
+#   OKLO   - SPAC merge 2024-05-10
+#   SNDK   - Spun off from WDC 2025-02-21
+#   XPEV   - IPO 2020-08-27 (post-window)
+#   HWM    - Arconic split into HWM + ARNC 2020-04-01 (post-window)
+#
+# Net universe size: 45.
+#
+# Format: symbol[,company]   (one per line; '#' comments and blanks skipped)
+# Used via AppConfig.symbol_universe_path; loaded by
+# hft::load_symbol_universe_from_file in src/lib/SymbolUniverse.cpp.
+
+AAPL,Apple
+AMAT,Applied Materials
+AMD,AMD
+AMKR,Amkor Technology
+APD,Air Products
+ASML,ASML
+ASX,ASE Technology
+AWK,American Water Works
+CDNS,Cadence
+CEG,Constellation Energy
+CSCO,Cisco
+DD,DuPont
+DELL,Dell
+ENTG,Entegris
+GFS,GlobalFoundries
+GSM,Ferroglobe
+HPE,Hewlett Packard Enterprise
+HPQ,HP Inc
+IBM,IBM
+IMOS,ChipMOS
+INTC,Intel
+KEYS,Keysight
+KLAC,KLA
+LEA,Lear
+LIN,Linde
+LMT,Lockheed Martin
+LRCX,Lam Research
+MKSI,MKS Instruments
+MU,Micron
+NIO,Nio
+NOC,Northrop Grumman
+NOK,Nokia ADR
+NVDA,NVIDIA
+PSTG,Pure Storage
+QCOM,Qualcomm
+RTX,Raytheon Technologies
+SMCI,Super Micro Computer
+SNPS,Synopsys
+STX,Seagate
+TSEM,Tower Semiconductor
+TSM,TSMC ADR
+TTE,TotalEnergies ADR
+UMC,United Microelectronics
+VST,Vistra Energy
+WDC,Western Digital

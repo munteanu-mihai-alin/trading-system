@@ -5,6 +5,7 @@
 #include "log/logging_state.hpp"
 #include "models/l2_book.hpp"
 #include "models/micro.hpp"
+#include "models/symbol_universe.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -307,7 +308,25 @@ void LiveExecutionEngine::stop() {
 void LiveExecutionEngine::initialize_universe(int n_stocks) {
   hl::set_component_state(hl::ComponentId::Universe,
                           hl::ComponentState::Starting);
-  ranking.initialize(n_stocks);
+  // If the config points to a symbol-universe file, load from it and pass
+  // through to ranking.initialize(list, n). Otherwise fall back to the
+  // hard-coded kSymbolCompanyList (legacy behaviour). Lets adversarial
+  // backtests (e.g. COVID 2020-03 with pre-IPO symbols dropped) swap the
+  // universe without recompiling. Missing/unreadable file -> empty list
+  // -> empty portfolio; we surface that as a warning so silent universe
+  // loss is visible.
+  if (!cfg_.app.symbol_universe_path.empty()) {
+    const auto list =
+        load_symbol_universe_from_file(cfg_.app.symbol_universe_path);
+    if (list.empty()) {
+      hl::raise_warning(hl::ComponentId::Universe, /*code=*/0,
+                        "symbol_universe_path resolved to an empty list - "
+                        "check the path exists and contains non-comment lines");
+    }
+    ranking.initialize(list, n_stocks);
+  } else {
+    ranking.initialize(n_stocks);
+  }
   hl::set_component_state(hl::ComponentId::Universe, hl::ComponentState::Ready);
 }
 

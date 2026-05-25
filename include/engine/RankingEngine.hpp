@@ -61,6 +61,15 @@ class RankingEngine {
   }
 
   void initialize(int n_stocks);
+  // Initialise the portfolio from an explicit (symbol, company) list
+  // instead of the hard-coded kSymbolCompanyList. The first n_stocks
+  // entries (or all entries if the list is shorter) are loaded. Used
+  // by LiveExecutionEngine when AppConfig::symbol_universe_path is set,
+  // so adversarial-window backtests can swap the universe at config
+  // time without recompiling. The default initialize(int) above keeps
+  // the legacy behaviour.
+  void initialize(const std::vector<std::pair<std::string, std::string>>& list,
+                  int n_stocks);
   void step(int t);
 };
 

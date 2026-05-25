@@ -62,6 +62,7 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_TRUE(cfg.l2_trace_log_path.empty());
   EXPECT_FALSE(cfg.log_append_mode);
   EXPECT_TRUE(cfg.run_label.empty());
+  EXPECT_TRUE(cfg.symbol_universe_path.empty());
   EXPECT_FALSE(cfg.shadow_enabled);
   EXPECT_TRUE(cfg.synthetic_fill_model);
   EXPECT_EQ(cfg.entry_limit_mode, "mid");
@@ -147,6 +148,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "l2_trace_log_path=tmp/l2_trace.csv\n"
       "log_append_mode=true\n"
       "run_label=morning_smoke\n"
+      "symbol_universe_path=config/symbols_covid.txt\n"
       "shadow_enabled=true\n"
       "synthetic_fill_model=false\n"
       "entry_limit_mode=ask\n"
@@ -207,6 +209,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_EQ(cfg.l2_trace_log_path, "tmp/l2_trace.csv");
   EXPECT_TRUE(cfg.log_append_mode);
   EXPECT_EQ(cfg.run_label, "morning_smoke");
+  EXPECT_EQ(cfg.symbol_universe_path, "config/symbols_covid.txt");
   EXPECT_TRUE(cfg.shadow_enabled);
   EXPECT_FALSE(cfg.synthetic_fill_model);
   EXPECT_EQ(cfg.entry_limit_mode, "ask");

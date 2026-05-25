@@ -166,4 +166,18 @@ inline const std::vector<std::pair<std::string, std::string>>
                           {"TTE", "TotalEnergies ADR"},
                           {"NOK", "Nokia ADR"}};
 
+// Loads a (symbol, company) list from a text file. Format: one symbol
+// per line, optionally followed by ",company name". Lines that are
+// empty or start with '#' are skipped. Trailing whitespace is stripped.
+//
+// Returns the parsed list. If the file is missing or unreadable, returns
+// an empty vector; callers (typically LiveExecutionEngine::initialize_universe
+// or main.cpp) decide whether that triggers a fallback to the hard-coded
+// kSymbolCompanyList above.
+//
+// Implemented in src/lib/SymbolUniverse.cpp to keep this header
+// dependency-free.
+std::vector<std::pair<std::string, std::string>> load_symbol_universe_from_file(
+    const std::string& path);
+
 }  // namespace hft

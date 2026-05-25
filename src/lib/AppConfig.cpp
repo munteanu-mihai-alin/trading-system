@@ -102,6 +102,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.log_append_mode = parse_bool(val);
       } else if (key == "run_label") {
         cfg.run_label = val;
+      } else if (key == "symbol_universe_path") {
+        cfg.symbol_universe_path = val;
       } else if (key == "shadow_enabled") {
         cfg.shadow_enabled = parse_bool(val);
       } else if (key == "synthetic_fill_model") {

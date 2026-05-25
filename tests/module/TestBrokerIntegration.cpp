@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <fstream>
 #include <optional>
 #include <utility>
 
@@ -1057,4 +1058,81 @@ HFT_TEST(test_cache_covers_window_start_just_past_tolerance_redownloads) {
       mk_range(cached_start, kReqEndNs), kReqStartNs, kReqEndNs);
   hft::test::require(!ok,
                      "cache start 1 s past tolerance must trigger re-download");
+}
+
+// ===== load_symbol_universe_from_file =====
+
+namespace {
+
+// Writes `content` to a fresh temp file under the current dir and returns
+// the path. The HFT_TEST harness runs from build dir; temp files there are
+// fine and get cleaned up on next coverage run.
+[[nodiscard]] std::string write_temp_universe(const std::string& name,
+                                              const std::string& content) {
+  const std::string path = "tmp_universe_" + name + ".txt";
+  std::ofstream out(path, std::ios::trunc);
+  out << content;
+  out.close();
+  return path;
+}
+
+}  // namespace
+
+HFT_TEST(test_load_symbol_universe_parses_well_formed_file) {
+  const auto path = write_temp_universe("basic",
+                                        "AAPL,Apple\n"
+                                        "MSFT,Microsoft\n"
+                                        "NVDA,NVIDIA Corporation\n");
+  const auto list = hft::load_symbol_universe_from_file(path);
+  hft::test::require(list.size() == 3, "expected 3 entries");
+  hft::test::require(list[0].first == "AAPL" && list[0].second == "Apple",
+                     "first entry should be AAPL");
+  hft::test::require(list[2].second == "NVIDIA Corporation",
+                     "trailing company name should be preserved verbatim");
+}
+
+HFT_TEST(test_load_symbol_universe_strips_blanks_and_comments) {
+  const auto path = write_temp_universe("comments",
+                                        "# Header comment\n"
+                                        "\n"
+                                        "AAPL,Apple\n"
+                                        "   \n"
+                                        "# AMD has been delisted, skip\n"
+                                        "NVDA,NVIDIA\n");
+  const auto list = hft::load_symbol_universe_from_file(path);
+  hft::test::require(list.size() == 2, "should skip blanks and # comments");
+  hft::test::require(list[0].first == "AAPL" && list[1].first == "NVDA",
+                     "remaining symbols should be AAPL, NVDA in order");
+}
+
+HFT_TEST(test_load_symbol_universe_handles_symbol_only_lines) {
+  const auto path = write_temp_universe("symonly",
+                                        "AAPL\n"
+                                        "MSFT,Microsoft\n"
+                                        "NVDA\n");
+  const auto list = hft::load_symbol_universe_from_file(path);
+  hft::test::require(list.size() == 3, "expected 3 entries");
+  hft::test::require(list[0].first == "AAPL" && list[0].second.empty(),
+                     "symbol-only line should leave company empty");
+  hft::test::require(list[1].second == "Microsoft",
+                     "comma-separated company should be parsed");
+}
+
+HFT_TEST(test_load_symbol_universe_trims_whitespace) {
+  const auto path = write_temp_universe("ws",
+                                        "  AAPL  ,  Apple  \n"
+                                        "\tMSFT\t,\tMicrosoft\t\n");
+  const auto list = hft::load_symbol_universe_from_file(path);
+  hft::test::require(list.size() == 2, "expected 2 entries");
+  hft::test::require(list[0].first == "AAPL" && list[0].second == "Apple",
+                     "should trim spaces around symbol + company");
+  hft::test::require(list[1].first == "MSFT" && list[1].second == "Microsoft",
+                     "should trim tabs around symbol + company");
+}
+
+HFT_TEST(test_load_symbol_universe_missing_file_returns_empty) {
+  const auto list = hft::load_symbol_universe_from_file(
+      "no_such_file_in_universe_universe.txt");
+  hft::test::require(list.empty(),
+                     "missing file should return empty, not throw");
 }

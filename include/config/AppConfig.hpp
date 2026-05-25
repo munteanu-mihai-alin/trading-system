@@ -92,6 +92,16 @@ struct AppConfig {
   // name. Useful when running multiple sessions per day and you want
   // to tag them ("morning_paper_smoke", "second_attempt_after_fix", ...).
   std::string run_label;
+  // Optional override for the symbol universe. When non-empty, the
+  // engine reads symbols (and optional company labels) from this file
+  // at initialise() time INSTEAD of the hard-coded kSymbolCompanyList
+  // in include/models/symbol_universe.hpp. File format: one symbol
+  // per line, optional ",company" suffix. Blanks and lines starting
+  // with '#' are skipped. Empty (default) keeps the legacy behaviour
+  // of using kSymbolCompanyList. Useful for adversarial-window
+  // backtests where the universe needs to drop symbols that didn't
+  // exist yet (ARM, OKLO, SNDK, XPEV, HWM for pre-2024 windows).
+  std::string symbol_universe_path;
   // Shadow-portfolio simulation in RankingEngine. When true, the engine
   // marks the next `shadow_top_k` symbols as `shadow_active` after the
   // top-k active ones, records synthetic per-step PnL for both real and

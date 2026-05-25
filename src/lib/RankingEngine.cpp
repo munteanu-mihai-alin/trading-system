@@ -23,13 +23,18 @@ RankingEngine::RankingEngine(int top_k, const std::string& csv_path,
 }
 
 void RankingEngine::initialize(int n_stocks) {
+  initialize(kSymbolCompanyList, n_stocks);
+}
+
+void RankingEngine::initialize(
+    const std::vector<std::pair<std::string, std::string>>& list,
+    int n_stocks) {
   portfolio.items.clear();
-  const int count =
-      std::min<int>(n_stocks, static_cast<int>(kSymbolCompanyList.size()));
+  const int count = std::min<int>(n_stocks, static_cast<int>(list.size()));
   for (int i = 0; i < count; ++i) {
     Stock s;
-    s.symbol = kSymbolCompanyList[i].first;
-    s.company = kSymbolCompanyList[i].second;
+    s.symbol = list[i].first;
+    s.company = list[i].second;
     s.mid = 100.0 + 0.05 * static_cast<double>(i);
     portfolio.items.push_back(s);
   }

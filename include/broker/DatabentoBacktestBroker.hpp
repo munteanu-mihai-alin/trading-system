@@ -91,6 +91,30 @@ class DatabentoBacktestBroker : public IBroker {
   [[nodiscard]] L2Book snapshot_book(int ticker_id) const override;
   [[nodiscard]] const OrderLifecycleBook* order_lifecycle() const override;
   [[nodiscard]] int max_replay_steps() const override;
+
+  // Decides whether a dated L1/L2 cache file covers the requested window
+  // well enough to reuse. Returns true when the cache can be reused as-is
+  // (caller's load step will filter rows by ts_event), false when the
+  // broker should re-download.
+  //
+  // Both bounds are tolerant by design:
+  //   - Start: 1 minute. The first L1/L2 event of a session always arrives
+  //     a few hundred ms after market open; strict cached_start > req_start
+  //     would force pointless re-downloads.
+  //   - End:   24 hours. The cached file's last ts_event is the last actual
+  //     event from the source - often seconds shy of the requested midnight
+  //     cutoff (markets are closed). Strict cached_end < req_end was
+  //     burning ~$50-100 of Databento per universe-run before this method
+  //     existed.
+  //
+  // Either bound passed as std::nullopt is treated as "no constraint on
+  // that side". cached_range = std::nullopt (legacy schema or empty file)
+  // returns false (force re-download). Public + static so the test fixture
+  // can exercise the decision without standing up the broker.
+  [[nodiscard]] static bool cache_covers_window(
+      const std::optional<std::pair<std::int64_t, std::int64_t>>& cached_range,
+      const std::optional<std::int64_t>& req_start,
+      const std::optional<std::int64_t>& req_end);
 };
 
 }  // namespace hft

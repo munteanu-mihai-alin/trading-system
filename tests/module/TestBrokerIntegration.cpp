@@ -6,7 +6,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include <optional>
+#include <utility>
+
 #include "broker/ConnectionSupervisor.hpp"
+#include "broker/DatabentoBacktestBroker.hpp"
 #include "broker/IBKRClient.hpp"
 #include "broker/LocalSimBroker.hpp"
 #include "broker/OrderLifecycle.hpp"
@@ -940,4 +944,117 @@ HFT_TEST(
   hft::test::require(shadow_marked == 10,
                      "shadow names should remain local-only and marked");
   eng.stop();
+}
+
+// ===== DatabentoBacktestBroker::cache_covers_window =====
+//
+// Regression coverage for the two strict-bound bugs that bit Runs #4 and #5:
+//  - end-strict: cached file's last ts_event was 2 seconds shy of req_end
+//    because L2 events stop at market close (b8af8c8 fix)
+//  - start-strict: cached file's first ts_event was 110 ms after req_start
+//    because the first quote update of a session arrives slightly after
+//    market open (2f7a537 fix)
+//
+// Both would have been caught by these tests had the broker had a test
+// fixture before. Helpers below build representative ts_event_ns values
+// for a clean window (Apr 13 to Apr 29, 2026 UTC).
+
+namespace {
+
+constexpr std::int64_t kReqStartNs =
+    1776087000LL * 1'000'000'000LL;  // 2026-04-13 13:30:00 UTC
+constexpr std::int64_t kReqEndNs =
+    1777420800LL * 1'000'000'000LL;  // 2026-04-29 00:00:00 UTC
+
+[[nodiscard]] std::optional<std::pair<std::int64_t, std::int64_t>> mk_range(
+    std::int64_t start_ns, std::int64_t end_ns) {
+  return std::make_pair(start_ns, end_ns);
+}
+
+}  // namespace
+
+HFT_TEST(test_cache_covers_window_clean_match_reuses) {
+  // Cache exactly matches req_start/req_end -> reuse.
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(kReqStartNs, kReqEndNs), kReqStartNs, kReqEndNs);
+  hft::test::require(ok, "exact-match cache must be reused");
+}
+
+HFT_TEST(test_cache_covers_window_first_event_within_start_tolerance_reuses) {
+  // Regression for the start-strict bug (Run #5). HPE's actual data:
+  // first event at req_start + 110 ms. Must reuse, not redownload.
+  const std::int64_t cached_start =
+      kReqStartNs + 110LL * 1'000'000LL;                              // +110 ms
+  const std::int64_t cached_end = kReqEndNs - 2LL * 1'000'000'000LL;  // -2 s
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(cached_start, cached_end), kReqStartNs, kReqEndNs);
+  hft::test::require(ok,
+                     "cache whose first event is 110 ms after req_start must "
+                     "be reused (first-quote-after-open is not a real gap)");
+}
+
+HFT_TEST(test_cache_covers_window_last_event_within_end_tolerance_reuses) {
+  // Regression for the end-strict bug (Run #4). Cache ends 2 seconds shy
+  // of req_end because markets are closed by then. Must reuse.
+  const std::int64_t cached_end = kReqEndNs - 2LL * 1'000'000'000LL;
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(kReqStartNs, cached_end), kReqStartNs, kReqEndNs);
+  hft::test::require(
+      ok, "cache ending 2 s before req_end must be reused (post-close gap)");
+}
+
+HFT_TEST(test_cache_covers_window_start_two_hours_late_redownloads) {
+  // Genuine gap: cache misses the first 2 hours of the window. Must
+  // re-download (the load-side filter would otherwise silently truncate).
+  const std::int64_t cached_start =
+      kReqStartNs + 2LL * 60 * 60 * 1'000'000'000LL;  // +2 h
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(cached_start, kReqEndNs), kReqStartNs, kReqEndNs);
+  hft::test::require(
+      !ok, "cache starting 2 hours after req_start must trigger re-download");
+}
+
+HFT_TEST(test_cache_covers_window_end_two_days_early_redownloads) {
+  // Genuine gap: cache stops 2 days before req_end. Must re-download.
+  const std::int64_t cached_end =
+      kReqEndNs - 2LL * 24 * 60 * 60 * 1'000'000'000LL;  // -2 d
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(kReqStartNs, cached_end), kReqStartNs, kReqEndNs);
+  hft::test::require(
+      !ok, "cache ending 2 days before req_end must trigger re-download");
+}
+
+HFT_TEST(test_cache_covers_window_no_cache_redownloads) {
+  // std::nullopt range = legacy schema or empty file -> always re-download.
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      std::nullopt, kReqStartNs, kReqEndNs);
+  hft::test::require(!ok, "missing/legacy cache must trigger re-download");
+}
+
+HFT_TEST(test_cache_covers_window_unbounded_request_accepts_any_cache) {
+  // No req_start / req_end constraints -> any cache reuses.
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(kReqStartNs, kReqEndNs), std::nullopt, std::nullopt);
+  hft::test::require(
+      ok, "no-bound request must accept any cache (downstream filter applies)");
+}
+
+HFT_TEST(test_cache_covers_window_start_within_tolerance_exact_boundary) {
+  // Cache start = req_start + 60 s exactly = tolerance boundary. Should
+  // pass (the check uses strict > with tolerance added on the right).
+  const std::int64_t cached_start = kReqStartNs + 60LL * 1'000'000'000LL;
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(cached_start, kReqEndNs), kReqStartNs, kReqEndNs);
+  hft::test::require(ok,
+                     "cache start at exact +60 s tolerance must still reuse");
+}
+
+HFT_TEST(test_cache_covers_window_start_just_past_tolerance_redownloads) {
+  // Cache start = req_start + 61 s = just past tolerance. Should
+  // re-download.
+  const std::int64_t cached_start = kReqStartNs + 61LL * 1'000'000'000LL;
+  const bool ok = DatabentoBacktestBroker::cache_covers_window(
+      mk_range(cached_start, kReqEndNs), kReqStartNs, kReqEndNs);
+  hft::test::require(!ok,
+                     "cache start 1 s past tolerance must trigger re-download");
 }

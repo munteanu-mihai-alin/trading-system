@@ -203,6 +203,28 @@ struct CacheTsRange {
 
 }  // namespace
 
+bool DatabentoBacktestBroker::cache_covers_window(
+    const std::optional<std::pair<std::int64_t, std::int64_t>>& cached_range,
+    const std::optional<std::int64_t>& req_start,
+    const std::optional<std::int64_t>& req_end) {
+  // Both tolerances live here so the broker call sites stay one-liners and
+  // future agents see the rationale in one place (and the test fixture
+  // covers it).
+  constexpr std::int64_t kCacheStartToleranceNs = 60LL * 1'000'000'000LL;
+  constexpr std::int64_t kCacheEndToleranceNs =
+      24LL * 60 * 60 * 1'000'000'000LL;
+
+  if (!cached_range)
+    return false;
+  if (req_start && cached_range->first > *req_start + kCacheStartToleranceNs) {
+    return false;
+  }
+  if (req_end && cached_range->second < *req_end - kCacheEndToleranceNs) {
+    return false;
+  }
+  return true;
+}
+
 DatabentoBacktestBroker::DatabentoBacktestBroker(AppConfig cfg)
     : cfg_(std::move(cfg)) {}
 
@@ -410,28 +432,14 @@ bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
     // will just produce another legacy file and the broker falls back to
     // step-clamped behavior on load.
     //
-    // Tolerances on both sides of the requested window:
-    //  - Start: the first L1 event of a session always arrives a few ms
-    //    after market open (first quote update has to happen). Strict
-    //    cached.start > req_start fires for that ~100 ms gap and forces
-    //    re-download. 1 minute is wide enough to cover any realistic
-    //    first-event delay, narrow enough that a cache genuinely missing
-    //    the first hour of the window still triggers re-download.
-    //  - End: the cached file's last ts_event is the last *actual* event
-    //    from the source - may be seconds shy of the requested midnight
-    //    cutoff (no quotes update once the market is closed). 24 h covers
-    //    after-hours and weekend gaps where no extra data would be
-    //    available even if we did re-download.
-    constexpr std::int64_t kCacheStartToleranceNs = 60LL * 1'000'000'000LL;
-    constexpr std::int64_t kCacheEndToleranceNs =
-        24LL * 60 * 60 * 1'000'000'000LL;
+    // Decision lives in cache_covers_window (testable static). It applies
+    // a 1-min start tolerance (first-event-after-open) and a 24-h end
+    // tolerance (post-close gap). See its doc comment in the header.
     const auto cached = read_cache_ts_range(out);
-    if (!cached) {
-      need_download = true;
-    } else if (req_start &&
-               cached->start_ns > *req_start + kCacheStartToleranceNs) {
-      need_download = true;
-    } else if (req_end && cached->end_ns < *req_end - kCacheEndToleranceNs) {
+    std::optional<std::pair<std::int64_t, std::int64_t>> range;
+    if (cached)
+      range = std::make_pair(cached->start_ns, cached->end_ns);
+    if (!cache_covers_window(range, req_start, req_end)) {
       need_download = true;
     }
   }
@@ -478,28 +486,13 @@ bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
     // ts_event range AND the requested window fits inside it. Either side
     // missing -> re-download to guarantee the replay covers the request.
     //
-    // Both-sided tolerance: same rationale as ensure_l1_symbol_loaded.
-    //  - Start (1 min): the first L2 event of a session always arrives
-    //    a few ms after the requested start (first quote update has to
-    //    happen). Without tolerance the strict cached.start > req_start
-    //    fires on that ~100 ms gap and forces re-download.
-    //  - End (24 h): L2 events stop firing once the market closes, so
-    //    the cache's last ts_event is typically a few seconds before the
-    //    requested midnight cutoff. A strict bound caused full
-    //    re-downloads for caches that already covered every available
-    //    row (~$50-100 wasted Databento spend per universe-run).
-    //    24 h tolerance handles after-hours + weekend gaps without
-    //    masking genuine window-extension requests.
-    constexpr std::int64_t kCacheStartToleranceNs = 60LL * 1'000'000'000LL;
-    constexpr std::int64_t kCacheEndToleranceNs =
-        24LL * 60 * 60 * 1'000'000'000LL;
+    // Decision lives in cache_covers_window (testable static). Same logic
+    // and tolerances as the L1 path; see header doc.
     const auto cached = read_cache_ts_range(out);
-    if (!cached) {
-      need_download = true;  // legacy schema or empty
-    } else if (req_start &&
-               cached->start_ns > *req_start + kCacheStartToleranceNs) {
-      need_download = true;
-    } else if (req_end && cached->end_ns < *req_end - kCacheEndToleranceNs) {
+    std::optional<std::pair<std::int64_t, std::int64_t>> range;
+    if (cached)
+      range = std::make_pair(cached->start_ns, cached->end_ns);
+    if (!cache_covers_window(range, req_start, req_end)) {
       need_download = true;
     }
   }

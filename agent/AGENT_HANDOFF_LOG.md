@@ -4,6 +4,91 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-25] - Bring CI coverage back to 70% line / 50% branch #todo
+
+Source state:
+- `main` at `f1f1efb ci(coverage): exclude RealIBKRTransport.cpp and
+  main.cpp from coverage` and successor commits.
+
+Context:
+- CI coverage threshold was 70% line / 50% branch in
+  `scripts/run_coverage_ci.sh`. After the IBKR-side additions
+  (BrokerPosition + IBroker::query_positions, IBKRClient::query_positions
+  via reqPositions/positionEnd, LiveExecutionEngine position
+  reconciliation, the DatabentoBacktestBroker cache-coverage refactor)
+  line coverage dropped to 61.30% on the pushed branch.
+- Excluding `RealIBKRTransport.cpp` (TWS-API glue, ~80% empty
+  EWrapper overrides, untestable in CI without a Gateway) and
+  `src/app/main.cpp` (driver/wiring code, exercised end-to-end on
+  every real run) lifted it to 67.77% line / 43.54% branch - still
+  under the 70/50 mark.
+- Threshold lowered to 65% line / 40% branch on 2026-05-25 to keep
+  CI green; the goal is to climb back to 70/50 by adding targeted
+  unit tests.
+
+Concrete coverage gaps worth attacking (rough order of effort/return):
+
+1. **`AppConfig::load_from_ini` branches** - each `else if (key == "...")`
+   parse case has multiple branches (validation + conversion). The test
+   suite has `AppConfigTest.cpp` already; extending it to cover every
+   recently-added key (commission_min_per_order, hawkes_mid_change_bps,
+   entry_limit_mode, steps_auto_from_broker, log_append_mode,
+   run_label, the four log-path knobs, the hit-count knobs) is
+   mechanical and cheap. Probably +20-30 lines, +50-80 branches.
+
+2. **`DatabentoBacktestBroker` parser + loader helpers**:
+   `parse_iso8601_to_ns`, `parse_top_row`, `parse_level_row`,
+   `read_cache_ts_range`, `load_top_books_from_csv`,
+   `load_books_from_csv`. Currently in an anonymous namespace
+   inside the .cpp. To test directly we'd need to either expose
+   them as static members on the class (like cache_covers_window
+   already is) or write integration tests that write small
+   temp-dir CSVs and call ensure_l1/l2_symbol_loaded with a synthetic
+   override that skips std::system. Probably +60-100 lines.
+
+3. **`LiveExecutionEngine` ranking + sizing helpers**:
+   `compute_per_symbol_notional` (equal vs score_weighted branches),
+   `size_entry_qty` (the various caps), `can_route_order` (multiple
+   gates), `committed_notional`. Each has 2-4 branches. The
+   FilledDepthBroker / LocalSimBroker test fixtures could exercise
+   them with carefully constructed Stock states. Probably +40-60
+   lines, +30-50 branches.
+
+4. **`IBKRClient` error and reconnect paths**: today only the
+   happy-path connect, subscribe, place_limit_order, and query_positions
+   are tested via FakeIBKRTransport. The reconnect_once,
+   start_production_event_loop, on_error, on_connection_closed
+   paths need a FakeIBKRTransport extension that simulates
+   transient drops. Probably +30-40 lines.
+
+5. **`LiveExecutionEngine::refresh_order_state`** - the lifecycle
+   branch handling (Filled / Cancelled / Rejected / PartiallyFilled)
+   for both entry and exit orders is mostly untested. Needs a
+   FilledDepthBroker variant that lets the test push lifecycle
+   transitions in. Probably +30-40 lines.
+
+Validation performed:
+- None; investigation note only.
+
+Known risks / follow-up:
+- `#todo`. Surface to user, get approval before working on it.
+- Coverage threshold is a soft signal; the real check is that
+  changes don't regress observed backtest behaviour. The reduction
+  to 65/40 is bounded - do NOT lower further without first picking
+  off the easy wins above.
+
+Suggested commits (one per area):
+```bash
+git commit -m "test(config): extend AppConfigTest to cover all parse keys"
+git commit -m "test(broker): cover Databento parser + cache loader helpers"
+git commit -m "test(engine): cover sizing + budget gating branches"
+git commit -m "test(ibkr): cover reconnect + error callback paths"
+git commit -m "test(engine): cover order lifecycle branches in refresh_order_state"
+```
+
+After each lands, raise the threshold in run_coverage_ci.sh by the
+matching delta so we ratchet toward 70/50.
+
 ## [2026-05-21] - QuantStats integration in plot_run.py for industry-standard tearsheet #todo
 
 Model / agent:

@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    "config.ini",
+    "decisions.csv",
+    "l2_trace.csv",
+    "manifest.json",
+    "metrics.json",
+    "metrics.md",
+    "orders.csv",
+    "plots/",
+    "step_trace.csv",
+    "stdout.log"
+  ],
+  "ended_at": "2026-05-25T02:50:15Z",
+  "harness": "cpp_hft_app",
+  "label": "C++ 10-day backtest, cache-fix v2 + Tiered costs + reqPositions wiring",
+  "latency_line": "see stdout.log",
+  "mode_line": "Mode: databento_backtest",
+  "notes": "Run on top of 2f7a537 + 8cee293 (start/end cache tolerance fix + 9 regression tests) and 93b03a6 (reqPositions wiring). 15 orders placed, 12 round-trips closed (100% win rate, +$49.55 net realized PnL), 3 open at end. Major cache reuse: AWK, HPE, HPQ, ARM, LRCX, AMKR, DELL, WDC, NOK, GFS, TTE, CDNS, CEG, VST all reused from prior runs. Only CSCO (partial from Run #5 abort), TSEM (truncated by Run #3's BentoServerError 504), IBM + AMAT (new symbols held this run) downloaded fresh. Wall time ~1h 7m vs Run #3's 4h 23m thanks to cache reuse fix. Run shows the engine + cache stack working end-to-end with no waste.",
+  "open_notional": 0,
+  "open_positions": 3,
+  "orders_placed": 15,
+  "outcome": "completed",
+  "realized_pnl_net": 49.55,
+  "run_id": "2026-05-25T0442_cpp_backtest_10day_v6_cachefix2",
+  "started_at": "2026-05-25T01:42:46Z",
+  "validation_line": "see stdout.log"
+}

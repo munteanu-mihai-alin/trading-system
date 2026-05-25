@@ -20,7 +20,8 @@
 | deepest_drawdown_pct_any_position | -9.5479 |
 | avg_pct_time_below_entry | 69.43 |
 | n_stalled_open_positions | 3 |
-| opportunity_cost_dollars | 0.0 |
+| opportunity_cost_dollars | 2.2905 |
+| net_pnl_after_opportunity_cost | 5.4545 |
 | capital_efficiency_ratio | 0.2314 |
 | profit_factor | None |
 | max_drawdown_dollars | -53.21 |

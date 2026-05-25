@@ -514,15 +514,20 @@ def compute_metrics(
         and h["pct_time_below_entry"] >= 50.0
     )
 
-    # Opportunity cost: capital tied up for the run window. account_budget
-    # × daily_inflation_cost (from AppConfig.costs) × days_in_window. Falls
-    # back to 0 when no inflation cost configured.
+    # Opportunity / inflation drag. AppConfig.daily_inflation_cost is an
+    # ABSOLUTE dollars-per-day number (the C++ side adds it into
+    # allocated_daily_cost_per_share unconditionally), not a rate. Scale
+    # it up if account_budget grows: e.g. $0.15/day models ~3.7% annual on
+    # a $1500 budget; $1.50/day for a $15000 budget. Zero (default) means
+    # "off". We compute it as `daily_inflation_cost * days_window` so the
+    # number reported here matches what the C++ cost model is already
+    # accumulating per share.
     if not tw_equity.empty:
         days_window = (tw_equity["ts_ns"].iat[-1]
                        - tw_equity["ts_ns"].iat[0]) / 86_400_000_000_000.0
     else:
         days_window = 0.0
-    opportunity_cost = account_budget * daily_inflation_cost * days_window
+    opportunity_cost = daily_inflation_cost * days_window
 
     # Capital efficiency: total notional traded / (account_budget * days).
     # Anything below 1.0 means our capital is sitting more than it's working.
@@ -547,6 +552,13 @@ def compute_metrics(
         "avg_pct_time_below_entry": round(avg_time_under, 2),
         "n_stalled_open_positions": n_stalled_open,
         "opportunity_cost_dollars": round(opportunity_cost, 4),
+        # The bottom-line "did this run actually create value?" number:
+        # realized closed PnL + mark-to-market unrealized PnL - the cost
+        # of the capital sitting idle over the window. Anything <= 0
+        # means the strategy did not beat T-bills / inflation.
+        "net_pnl_after_opportunity_cost": round(
+            realized + unrealized - opportunity_cost, 4
+        ),
         "capital_efficiency_ratio": round(capital_efficiency, 4),
         "profit_factor": (
             round(profit_factor, 4) if math.isfinite(profit_factor) else None

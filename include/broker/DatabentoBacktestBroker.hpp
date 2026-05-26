@@ -57,22 +57,59 @@ class DatabentoBacktestBroker : public IBroker {
       cache::Kind kind, std::int64_t req_start_ns,
       std::int64_t req_end_ns) const;
 
-  // Walks `root` recursively, looking for any file matching
-  // <SAFE_SYM>_<startISO>_<endISO>.mbpN.csv whose [start, end] covers the
-  // requested window via cache_covers_window. Returns the first match
-  // found (iteration order is filesystem-dependent; for our use case
-  // any covering file is equivalent). Returns nullopt if root does not
-  // exist or no covering file is present.
-  [[nodiscard]] std::optional<std::filesystem::path> find_covering_file(
+ public:
+  // Coverage plan for a single symbol: existing files to reuse + any
+  // missing windows to download. The planner picks a minimal set of
+  // existing files that, together with the gap downloads, cover
+  // [req_start_ns, req_end_ns]. Public so unit tests can construct one
+  // without standing up the broker.
+  struct CoveragePlan {
+    // Paths to existing cached files that contribute to coverage.
+    // Sorted by start_ns at plan-build time so a downstream concat is
+    // already in time order.
+    std::vector<std::filesystem::path> reuse_paths;
+    // (start_ns, end_ns) for each missing chunk. Each gap becomes a
+    // separate download call. The downloader writes a new dated file
+    // per gap; the engine reads existing + gap files together.
+    std::vector<std::pair<std::int64_t, std::int64_t>> gap_ranges;
+  };
+
+  // Plan computation given a pre-collected candidate list. Pure
+  // function: no I/O, no broker state. Public + static so unit tests
+  // can exercise the planning logic without standing up the broker or
+  // touching the filesystem.
+  //
+  // Each candidate is (path, start_ns, end_ns). Candidates may arrive
+  // in any order; the planner sorts internally. Files that are fully
+  // covered by an earlier-selected file are skipped (no duplicate
+  // load). Interior gaps shorter than ~5 min are treated as no-gap
+  // (small boundary fuzz, e.g. when two downloads bracket the same
+  // off-hours minute).
+  [[nodiscard]] static CoveragePlan plan_coverage_from_candidates(
+      std::vector<std::tuple<std::filesystem::path, std::int64_t, std::int64_t>>
+          candidates,
+      std::int64_t req_start_ns, std::int64_t req_end_ns);
+
+ private:
+  // I/O wrapper: globs <root>/**/<SAFE_SYM>_*.<ext> for the symbol,
+  // parses each filename via cache::parse_filename, then delegates to
+  // plan_coverage_from_candidates.
+  [[nodiscard]] CoveragePlan compute_coverage_plan(
       const std::filesystem::path& root, const std::string& safe_symbol,
       cache::Kind kind, std::int64_t req_start_ns,
       std::int64_t req_end_ns) const;
 
+  // Downloader command builders. Each takes an EXPLICIT [start_ns,
+  // end_ns] - the broker passes the gap range for a stitched download
+  // or the full config window for a fresh download. Format is ISO-8601
+  // extended (with colons), which the downloader scripts already
+  // accept on the --start/--end flags.
   [[nodiscard]] std::string l1_downloader_command(
-      const std::string& symbol, const std::filesystem::path& out) const;
-  [[nodiscard]] std::string l2_downloader_command(
       const std::string& symbol, const std::filesystem::path& out,
-      int depth) const;
+      std::int64_t start_ns, std::int64_t end_ns) const;
+  [[nodiscard]] std::string l2_downloader_command(
+      const std::string& symbol, const std::filesystem::path& out, int depth,
+      std::int64_t start_ns, std::int64_t end_ns) const;
   bool ensure_l1_symbol_loaded(const TopOfBookRequest& req);
   bool ensure_l2_symbol_loaded(const MarketDepthRequest& req);
   bool download_if_missing(const std::filesystem::path& out,
@@ -90,6 +127,21 @@ class DatabentoBacktestBroker : public IBroker {
       std::optional<std::int64_t> start_ns = std::nullopt,
       std::optional<std::int64_t> end_ns = std::nullopt,
       std::vector<std::int64_t>* out_ts_events = nullptr) const;
+
+  // Multi-file variants: load each file in order with the same window
+  // filter, concatenate rows into a single time-ordered output. Callers
+  // pass paths sorted by start_ns (the coverage planner does this).
+  // Assumes minimal overlap between files (planner skips redundant
+  // ones); any small overlap inside [start_ns, end_ns] produces dup
+  // rows that the engine tolerates (last-row-wins on book state).
+  [[nodiscard]] std::vector<TopOfBook> load_top_books_from_csvs(
+      const std::vector<std::filesystem::path>& paths,
+      std::optional<std::int64_t> start_ns, std::optional<std::int64_t> end_ns,
+      std::vector<std::int64_t>* out_ts_events) const;
+  [[nodiscard]] std::vector<L2Book> load_books_from_csvs(
+      const std::vector<std::filesystem::path>& paths,
+      std::optional<std::int64_t> start_ns, std::optional<std::int64_t> end_ns,
+      std::vector<std::int64_t>* out_ts_events) const;
   [[nodiscard]] TopOfBook top_for_symbol(const std::string& symbol) const;
   [[nodiscard]] L2Book depth_for_symbol(const std::string& symbol) const;
   void fill_crossed_orders();

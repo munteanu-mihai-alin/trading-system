@@ -1060,6 +1060,164 @@ HFT_TEST(test_cache_covers_window_start_just_past_tolerance_redownloads) {
                      "cache start 1 s past tolerance must trigger re-download");
 }
 
+// ===== plan_coverage_from_candidates =====
+//
+// Pure-function planner: given a (path, start_ns, end_ns) list of
+// candidate cache files, return which ones to reuse + any gap windows
+// to download. Tested without filesystem I/O.
+
+namespace {
+
+using Candidate = std::tuple<std::filesystem::path, std::int64_t, std::int64_t>;
+using Plan = DatabentoBacktestBroker::CoveragePlan;
+
+// Minute and hour helpers in ns.
+constexpr std::int64_t kMinNs = 60LL * 1'000'000'000LL;
+constexpr std::int64_t kHourNs = 60LL * kMinNs;
+
+}  // namespace
+
+HFT_TEST(test_plan_coverage_no_candidates_emits_one_gap) {
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      {}, kReqStartNs, kReqEndNs);
+  hft::test::require(plan.reuse_paths.empty(),
+                     "no candidates -> nothing to reuse");
+  hft::test::require(plan.gap_ranges.size() == 1,
+                     "no candidates -> one gap covering the whole window");
+  hft::test::require(plan.gap_ranges[0].first == kReqStartNs &&
+                         plan.gap_ranges[0].second == kReqEndNs,
+                     "single gap must span the full request");
+}
+
+HFT_TEST(test_plan_coverage_single_file_full_cover_no_gaps) {
+  std::vector<Candidate> c = {{"full.csv", kReqStartNs, kReqEndNs}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(
+      plan.reuse_paths.size() == 1 && plan.reuse_paths[0] == "full.csv",
+      "single covering file must be reused");
+  hft::test::require(plan.gap_ranges.empty(),
+                     "single covering file -> no gaps");
+}
+
+HFT_TEST(test_plan_coverage_single_file_subset_two_gaps_around_it) {
+  // File covers the middle of the request only; planner emits a prefix
+  // gap and a suffix gap.
+  const std::int64_t f_start = kReqStartNs + 2 * kHourNs;
+  const std::int64_t f_end = kReqEndNs - 2 * kHourNs;
+  std::vector<Candidate> c = {{"middle.csv", f_start, f_end}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(
+      plan.reuse_paths.size() == 1 && plan.reuse_paths[0] == "middle.csv",
+      "middle file must be reused");
+  hft::test::require(plan.gap_ranges.size() == 2,
+                     "subset cover -> prefix + suffix gaps");
+  hft::test::require(plan.gap_ranges[0].first == kReqStartNs &&
+                         plan.gap_ranges[0].second == f_start,
+                     "first gap must be the prefix");
+  hft::test::require(plan.gap_ranges[1].first == f_end &&
+                         plan.gap_ranges[1].second == kReqEndNs,
+                     "second gap must be the suffix");
+}
+
+HFT_TEST(test_plan_coverage_two_files_back_to_back_no_gap) {
+  // Files tile the window with zero gap: [start..mid] + [mid..end].
+  const std::int64_t mid = kReqStartNs + 6 * kHourNs;
+  std::vector<Candidate> c = {{"a.csv", kReqStartNs, mid},
+                              {"b.csv", mid, kReqEndNs}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(plan.reuse_paths.size() == 2,
+                     "both files used to tile the window");
+  hft::test::require(plan.gap_ranges.empty(), "perfect tile -> no gaps");
+}
+
+HFT_TEST(test_plan_coverage_two_files_with_small_gap_inside_tolerance) {
+  // Files leave a 2-min interior gap. Below the 5-min interior
+  // tolerance -> treated as no gap.
+  const std::int64_t a_end = kReqStartNs + 6 * kHourNs;
+  const std::int64_t b_start = a_end + 2 * kMinNs;
+  std::vector<Candidate> c = {{"a.csv", kReqStartNs, a_end},
+                              {"b.csv", b_start, kReqEndNs}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(plan.reuse_paths.size() == 2,
+                     "both files reused even with a 2-min interior gap");
+  hft::test::require(plan.gap_ranges.empty(),
+                     "interior gap <5 min must not trigger a download");
+}
+
+HFT_TEST(test_plan_coverage_two_files_with_large_gap_emits_one_download) {
+  // Files leave a 1-hour interior gap. Well above the tolerance ->
+  // emit a gap for download.
+  const std::int64_t a_end = kReqStartNs + 6 * kHourNs;
+  const std::int64_t b_start = a_end + 1 * kHourNs;
+  std::vector<Candidate> c = {{"a.csv", kReqStartNs, a_end},
+                              {"b.csv", b_start, kReqEndNs}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(plan.reuse_paths.size() == 2, "both files reused");
+  hft::test::require(plan.gap_ranges.size() == 1,
+                     "1-hour interior gap -> one gap download");
+  hft::test::require(
+      plan.gap_ranges[0].first == a_end && plan.gap_ranges[0].second == b_start,
+      "gap must span the uncovered middle");
+}
+
+HFT_TEST(test_plan_coverage_redundant_file_skipped) {
+  // A.csv covers everything; B.csv is a strict subset of A. Planner
+  // picks A and skips B.
+  std::vector<Candidate> c = {
+      {"wide.csv", kReqStartNs, kReqEndNs},
+      {"narrow.csv", kReqStartNs + kHourNs, kReqEndNs - kHourNs}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(
+      plan.reuse_paths.size() == 1 && plan.reuse_paths[0] == "wide.csv",
+      "only the wider covering file is used");
+  hft::test::require(plan.gap_ranges.empty(), "wide file covers -> no gap");
+}
+
+HFT_TEST(test_plan_coverage_out_of_order_candidates_sorted_internally) {
+  // Input order shouldn't matter; planner sorts.
+  const std::int64_t mid = kReqStartNs + 6 * kHourNs;
+  std::vector<Candidate> c = {
+      {"second.csv", mid, kReqEndNs},  // listed first but starts later
+      {"first.csv", kReqStartNs, mid}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(plan.reuse_paths.size() == 2,
+                     "both files used after internal sort");
+  hft::test::require(
+      plan.reuse_paths[0] == "first.csv" && plan.reuse_paths[1] == "second.csv",
+      "reuse_paths must come out in start_ns order regardless of input order");
+}
+
+HFT_TEST(test_plan_coverage_request_completely_before_any_file) {
+  // Files exist for a different window entirely; planner must download
+  // the whole request.
+  std::vector<Candidate> c = {
+      {"future.csv", kReqEndNs + 24 * kHourNs, kReqEndNs + 48 * kHourNs}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, kReqEndNs);
+  hft::test::require(plan.reuse_paths.empty(),
+                     "no relevant file -> nothing to reuse");
+  hft::test::require(plan.gap_ranges.size() == 1 &&
+                         plan.gap_ranges[0].first == kReqStartNs &&
+                         plan.gap_ranges[0].second == kReqEndNs,
+                     "must download the whole request");
+}
+
+HFT_TEST(test_plan_coverage_inverted_request_returns_empty) {
+  // req_end <= req_start is a sanity-fail; planner returns empty
+  // (no reuse, no gaps).
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      {}, kReqEndNs, kReqStartNs);
+  hft::test::require(plan.reuse_paths.empty() && plan.gap_ranges.empty(),
+                     "inverted [end <= start] window must produce empty plan");
+}
+
 // ===== load_symbol_universe_from_file =====
 
 namespace {

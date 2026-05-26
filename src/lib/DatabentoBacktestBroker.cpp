@@ -381,15 +381,78 @@ std::filesystem::path DatabentoBacktestBroker::new_download_path_for_symbol(
                                 req_end_ns, kind);
 }
 
-std::optional<std::filesystem::path>
-DatabentoBacktestBroker::find_covering_file(const std::filesystem::path& root,
-                                            const std::string& safe_symbol,
-                                            cache::Kind kind,
-                                            std::int64_t req_start_ns,
-                                            std::int64_t req_end_ns) const {
+DatabentoBacktestBroker::CoveragePlan
+DatabentoBacktestBroker::plan_coverage_from_candidates(
+    std::vector<std::tuple<std::filesystem::path, std::int64_t, std::int64_t>>
+        candidates,
+    std::int64_t req_start_ns, std::int64_t req_end_ns) {
+  // Interior gap tolerance: treat sub-5-min gaps between adjacent files
+  // as "no gap" so we don't trigger a download for a few seconds of
+  // post-close inactivity between e.g. one day's last event and the
+  // next day's open. Tuned conservatively - smaller than the smallest
+  // off-hours interval (~17.5 h overnight) and large enough to swallow
+  // typical boundary-second misalignment.
+  constexpr std::int64_t kInteriorGapToleranceNs = 5LL * 60 * 1'000'000'000LL;
+
+  CoveragePlan out;
+  if (req_end_ns <= req_start_ns)
+    return out;
+
+  // Sort by start ascending; ties broken by end descending so the
+  // widest file at a given start wins (covers more, fewer files used).
+  std::sort(candidates.begin(), candidates.end(),
+            [](const auto& a, const auto& b) {
+              if (std::get<1>(a) != std::get<1>(b))
+                return std::get<1>(a) < std::get<1>(b);
+              return std::get<2>(a) > std::get<2>(b);
+            });
+
+  std::int64_t covered_until = req_start_ns;
+  for (const auto& cand : candidates) {
+    const auto& path = std::get<0>(cand);
+    const auto c_start = std::get<1>(cand);
+    const auto c_end = std::get<2>(cand);
+
+    if (c_end <= covered_until)
+      continue;  // redundant with already-selected coverage
+    if (c_start >= req_end_ns)
+      break;  // past the request, sorted so the rest also too far
+
+    if (c_start > covered_until + kInteriorGapToleranceNs) {
+      const auto gap_end = std::min(c_start, req_end_ns);
+      out.gap_ranges.emplace_back(covered_until, gap_end);
+      if (gap_end >= req_end_ns) {
+        covered_until = req_end_ns;
+        break;
+      }
+      covered_until = gap_end;
+    }
+
+    out.reuse_paths.push_back(path);
+    covered_until = std::max(covered_until, c_end);
+    if (covered_until >= req_end_ns)
+      break;
+  }
+
+  if (covered_until < req_end_ns) {
+    out.gap_ranges.emplace_back(covered_until, req_end_ns);
+  }
+
+  return out;
+}
+
+DatabentoBacktestBroker::CoveragePlan
+DatabentoBacktestBroker::compute_coverage_plan(
+    const std::filesystem::path& root, const std::string& safe_symbol,
+    cache::Kind kind, std::int64_t req_start_ns,
+    std::int64_t req_end_ns) const {
+  std::vector<std::tuple<std::filesystem::path, std::int64_t, std::int64_t>>
+      candidates;
   std::error_code ec;
-  if (!std::filesystem::exists(root, ec) || ec)
-    return std::nullopt;
+  if (!std::filesystem::exists(root, ec) || ec) {
+    return plan_coverage_from_candidates(std::move(candidates), req_start_ns,
+                                         req_end_ns);
+  }
 
   const std::string prefix = safe_symbol + "_";
   for (const auto& entry :
@@ -400,9 +463,8 @@ DatabentoBacktestBroker::find_covering_file(const std::filesystem::path& root,
       continue;
     const auto name = entry.path().filename().string();
     // Cheap prefix filter to skip files for other symbols before the full
-    // parser runs. Embedded underscores in the symbol survive the parse
-    // (anchored at the right), but a SAFE_SYM_OTHER_... line would prefix-
-    // match here - the post-parse symbol equality check catches that.
+    // parser runs. The post-parse symbol equality check below catches the
+    // case where SAFE_SYM is a prefix of some other symbol's safe form.
     if (name.size() <= prefix.size())
       continue;
     if (name.compare(0, prefix.size(), prefix) != 0)
@@ -416,48 +478,72 @@ DatabentoBacktestBroker::find_covering_file(const std::filesystem::path& root,
     if (parsed->symbol != safe_symbol)
       continue;
 
-    if (cache_covers_window(std::make_optional(std::make_pair(parsed->start_ns,
-                                                              parsed->end_ns)),
-                            req_start_ns, req_end_ns)) {
-      return entry.path();
-    }
+    candidates.emplace_back(entry.path(), parsed->start_ns, parsed->end_ns);
   }
-  return std::nullopt;
+  return plan_coverage_from_candidates(std::move(candidates), req_start_ns,
+                                       req_end_ns);
 }
 
 std::string DatabentoBacktestBroker::l1_downloader_command(
-    const std::string& symbol, const std::filesystem::path& out) const {
+    const std::string& symbol, const std::filesystem::path& out,
+    std::int64_t start_ns, std::int64_t end_ns) const {
+  // Formats an absolute ns timestamp as ISO-8601 extended (with
+  // dashes/colons) for passing to the downloader scripts on the
+  // --start/--end flags. The scripts parse this via the standard
+  // datetime fromisoformat path.
+  auto fmt_iso_ext = [](std::int64_t ts_ns) {
+    const std::time_t t = static_cast<std::time_t>(ts_ns / 1'000'000'000LL);
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                  tm.tm_min, tm.tm_sec);
+    return std::string(buf);
+  };
+
   std::string cmd = shell_quote(cfg_.databento_python) + " " +
                     shell_quote(cfg_.databento_l1_download_script) +
                     " --symbol " + shell_quote(symbol) + " --dataset " +
                     shell_quote(cfg_.databento_l1_dataset) + " --schema " +
                     shell_quote(cfg_.databento_l1_schema) + " --output " +
-                    shell_quote(out.string());
-  if (!cfg_.databento_start.empty()) {
-    cmd += " --start " + shell_quote(cfg_.databento_start);
-  }
-  if (!cfg_.databento_end.empty()) {
-    cmd += " --end " + shell_quote(cfg_.databento_end);
-  }
+                    shell_quote(out.string()) + " --start " +
+                    shell_quote(fmt_iso_ext(start_ns)) + " --end " +
+                    shell_quote(fmt_iso_ext(end_ns));
   return cmd;
 }
 
 std::string DatabentoBacktestBroker::l2_downloader_command(
-    const std::string& symbol, const std::filesystem::path& out,
-    int depth) const {
+    const std::string& symbol, const std::filesystem::path& out, int depth,
+    std::int64_t start_ns, std::int64_t end_ns) const {
+  auto fmt_iso_ext = [](std::int64_t ts_ns) {
+    const std::time_t t = static_cast<std::time_t>(ts_ns / 1'000'000'000LL);
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                  tm.tm_min, tm.tm_sec);
+    return std::string(buf);
+  };
+
   std::string cmd = shell_quote(cfg_.databento_python) + " " +
                     shell_quote(cfg_.databento_l2_download_script) +
                     " --symbol " + shell_quote(symbol) + " --dataset " +
                     shell_quote(cfg_.databento_l2_dataset) + " --schema " +
                     shell_quote(cfg_.databento_l2_schema) + " --output " +
                     shell_quote(out.string()) + " --depth " +
-                    std::to_string(std::max(depth, 1));
-  if (!cfg_.databento_start.empty()) {
-    cmd += " --start " + shell_quote(cfg_.databento_start);
-  }
-  if (!cfg_.databento_end.empty()) {
-    cmd += " --end " + shell_quote(cfg_.databento_end);
-  }
+                    std::to_string(std::max(depth, 1)) + " --start " +
+                    shell_quote(fmt_iso_ext(start_ns)) + " --end " +
+                    shell_quote(fmt_iso_ext(end_ns));
   return cmd;
 }
 
@@ -471,32 +557,46 @@ bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
   const std::filesystem::path root = cfg_.databento_l1_dataset;
   const auto safe = safe_symbol_filename(req.symbol);
 
-  // First try cross-folder cover lookup: any file under root whose filename
-  // range covers [req_start, req_end] is reusable as-is. The load step
-  // below filters by ts_event to trim a wider file to the requested window.
-  auto path =
-      find_covering_file(root, safe, cache::Kind::L1, *req_start, *req_end);
+  // Coverage planner: returns a minimal set of existing files + any
+  // missing windows. A single file fully covering the request gives
+  // {reuse: [it], gaps: []}; no existing coverage gives {reuse: [],
+  // gaps: [(req_start, req_end)]}; partial coverage gives a mix.
+  auto plan =
+      compute_coverage_plan(root, safe, cache::Kind::L1, *req_start, *req_end);
 
-  if (!path) {
-    // No covering file - download fresh into the dated path. Folder
-    // reflects the requested window (not the actual data span), which keeps
-    // the path predictable across runs that ask for the same window.
+  // Download each gap separately. Each download lands in its own dated
+  // file in the new layout so a future run with the same gap will reuse
+  // it via the same planner.
+  for (const auto& gap : plan.gap_ranges) {
     const auto out = new_download_path_for_symbol(
-        root, req.symbol, cache::Kind::L1, *req_start, *req_end);
+        root, req.symbol, cache::Kind::L1, gap.first, gap.second);
     std::filesystem::create_directories(out.parent_path());
     std::error_code ec;
     if (std::filesystem::exists(out)) {
       std::filesystem::remove(out, ec);
     }
-    const auto cmd = l1_downloader_command(req.symbol, out);
+    const auto cmd =
+        l1_downloader_command(req.symbol, out, gap.first, gap.second);
     const int rc = std::system(cmd.c_str());
     if (rc != 0 || !std::filesystem::exists(out))
       return false;
-    path = out;
+    plan.reuse_paths.push_back(out);
   }
 
+  // Re-sort reuse_paths so newly-downloaded gap files merge into the
+  // correct time order against any existing reused files.
+  std::sort(plan.reuse_paths.begin(), plan.reuse_paths.end(),
+            [](const std::filesystem::path& a, const std::filesystem::path& b) {
+              const auto pa = cache::parse_filename(a.filename().string());
+              const auto pb = cache::parse_filename(b.filename().string());
+              if (!pa || !pb)
+                return false;
+              return pa->start_ns < pb->start_ns;
+            });
+
   std::vector<std::int64_t> ts_events;
-  auto books = load_top_books_from_csv(*path, req_start, req_end, &ts_events);
+  auto books = load_top_books_from_csvs(plan.reuse_paths, req_start, req_end,
+                                        &ts_events);
   if (books.empty())
     return false;
 
@@ -523,26 +623,37 @@ bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
   const std::filesystem::path root = cfg_.databento_cache_dir;
   const auto safe = safe_symbol_filename(req.symbol);
 
-  auto path =
-      find_covering_file(root, safe, cache::Kind::L2, *req_start, *req_end);
+  auto plan =
+      compute_coverage_plan(root, safe, cache::Kind::L2, *req_start, *req_end);
 
-  if (!path) {
+  for (const auto& gap : plan.gap_ranges) {
     const auto out = new_download_path_for_symbol(
-        root, req.symbol, cache::Kind::L2, *req_start, *req_end);
+        root, req.symbol, cache::Kind::L2, gap.first, gap.second);
     std::filesystem::create_directories(out.parent_path());
     std::error_code ec;
     if (std::filesystem::exists(out)) {
       std::filesystem::remove(out, ec);
     }
-    const auto cmd = l2_downloader_command(req.symbol, out, req.depth);
+    const auto cmd = l2_downloader_command(req.symbol, out, req.depth,
+                                           gap.first, gap.second);
     const int rc = std::system(cmd.c_str());
     if (rc != 0 || !std::filesystem::exists(out))
       return false;
-    path = out;
+    plan.reuse_paths.push_back(out);
   }
 
+  std::sort(plan.reuse_paths.begin(), plan.reuse_paths.end(),
+            [](const std::filesystem::path& a, const std::filesystem::path& b) {
+              const auto pa = cache::parse_filename(a.filename().string());
+              const auto pb = cache::parse_filename(b.filename().string());
+              if (!pa || !pb)
+                return false;
+              return pa->start_ns < pb->start_ns;
+            });
+
   std::vector<std::int64_t> ts_events;
-  auto books = load_books_from_csv(*path, req_start, req_end, &ts_events);
+  auto books =
+      load_books_from_csvs(plan.reuse_paths, req_start, req_end, &ts_events);
   if (books.empty())
     return false;
 
@@ -697,6 +808,57 @@ std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csv(
     }
   }
   return books;
+}
+
+std::vector<TopOfBook> DatabentoBacktestBroker::load_top_books_from_csvs(
+    const std::vector<std::filesystem::path>& paths,
+    std::optional<std::int64_t> start_ns, std::optional<std::int64_t> end_ns,
+    std::vector<std::int64_t>* out_ts_events) const {
+  // Concatenate per-file loads in caller-supplied order (planner sorts
+  // by start_ns). Each per-file load already filters by [start, end];
+  // we append the kept rows linearly. Step numbering becomes global
+  // (0..N over the concatenated stream); the engine treats step as a
+  // row index into books, not as a wall-clock marker.
+  std::vector<TopOfBook> out;
+  if (out_ts_events)
+    out_ts_events->clear();
+  for (const auto& p : paths) {
+    std::vector<std::int64_t> per_file_ts;
+    auto per_file = load_top_books_from_csv(p, start_ns, end_ns, &per_file_ts);
+    if (per_file.empty())
+      continue;
+    out.reserve(out.size() + per_file.size());
+    for (std::size_t i = 0; i < per_file.size(); ++i) {
+      out.push_back(per_file[i]);
+      if (out_ts_events) {
+        out_ts_events->push_back(i < per_file_ts.size() ? per_file_ts[i] : 0LL);
+      }
+    }
+  }
+  return out;
+}
+
+std::vector<L2Book> DatabentoBacktestBroker::load_books_from_csvs(
+    const std::vector<std::filesystem::path>& paths,
+    std::optional<std::int64_t> start_ns, std::optional<std::int64_t> end_ns,
+    std::vector<std::int64_t>* out_ts_events) const {
+  std::vector<L2Book> out;
+  if (out_ts_events)
+    out_ts_events->clear();
+  for (const auto& p : paths) {
+    std::vector<std::int64_t> per_file_ts;
+    auto per_file = load_books_from_csv(p, start_ns, end_ns, &per_file_ts);
+    if (per_file.empty())
+      continue;
+    out.reserve(out.size() + per_file.size());
+    for (std::size_t i = 0; i < per_file.size(); ++i) {
+      out.push_back(per_file[i]);
+      if (out_ts_events) {
+        out_ts_events->push_back(i < per_file_ts.size() ? per_file_ts[i] : 0LL);
+      }
+    }
+  }
+  return out;
 }
 
 TopOfBook DatabentoBacktestBroker::top_for_symbol(

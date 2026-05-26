@@ -152,12 +152,51 @@ TEST(CacheFilename, RejectsEmptySymbol) {
 }
 
 TEST(CacheFilename, RejectsBadIsoCalendar) {
-  EXPECT_FALSE(
-      parse_iso8601_compact("20200230T133000Z").has_value());  // Feb 30
+  // Range failures - month/hour out of bounds are caught by the simple
+  // range check.
   EXPECT_FALSE(
       parse_iso8601_compact("20201301T133000Z").has_value());  // month 13
   EXPECT_FALSE(
       parse_iso8601_compact("20200309T253000Z").has_value());  // hour 25
+  // Per-month-day failures - need the explicit max_day_for_month check
+  // because Linux timegm silently normalises (e.g. Feb 30 -> Mar 2) and
+  // would otherwise return a valid time_t.
+  EXPECT_FALSE(
+      parse_iso8601_compact("20200230T133000Z").has_value());  // Feb 30
+  EXPECT_FALSE(parse_iso8601_compact("20210229T133000Z")
+                   .has_value());  // Feb 29 non-leap
+  EXPECT_FALSE(
+      parse_iso8601_compact("20200431T133000Z").has_value());  // Apr 31
+  EXPECT_FALSE(
+      parse_iso8601_compact("20231132T133000Z").has_value());  // Nov 32
+}
+
+TEST(CacheFilename, AcceptsLeapDayInLeapYears) {
+  // 2020 is divisible by 4, not by 100 - leap year. Feb 29 must parse.
+  EXPECT_TRUE(parse_iso8601_compact("20200229T133000Z").has_value());
+  // 2000 is divisible by 400 - leap year despite being century. Feb 29 OK.
+  EXPECT_TRUE(parse_iso8601_compact("20000229T133000Z").has_value());
+  // 2100 is divisible by 100 but not 400 - NOT leap. Feb 29 must reject.
+  EXPECT_FALSE(parse_iso8601_compact("21000229T133000Z").has_value());
+}
+
+TEST(CacheFilename, AcceptsLastDayOfEveryMonth) {
+  // Sanity: every month's last legitimate day round-trips. Catches an
+  // off-by-one if max_day_for_month ever flips a month into a wrong
+  // bucket.
+  EXPECT_TRUE(parse_iso8601_compact("20240131T000000Z").has_value());
+  EXPECT_TRUE(
+      parse_iso8601_compact("20240229T000000Z").has_value());  // 2024 leap
+  EXPECT_TRUE(parse_iso8601_compact("20240331T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20240430T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20240531T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20240630T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20240731T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20240831T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20240930T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20241031T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20241130T000000Z").has_value());
+  EXPECT_TRUE(parse_iso8601_compact("20241231T000000Z").has_value());
 }
 
 TEST(CacheFilename, FormatDateKnownValue) {

@@ -72,6 +72,22 @@ struct ParsedFilename {
       hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60) {
     return std::nullopt;
   }
+  // Per-month day check. Linux timegm silently normalises overflow (Feb 30
+  // becomes Mar 2 and returns a valid time_t); Windows _mkgmtime returns
+  // -1. Without this explicit check, the platform-difference would let
+  // bogus calendar dates round-trip cleanly on Linux only. We reject any
+  // day > the max for that month (leap year handled for Feb).
+  auto max_day_for_month = [](int y, int m) -> int {
+    if (m == 2) {
+      const bool leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+      return leap ? 29 : 28;
+    }
+    if (m == 4 || m == 6 || m == 9 || m == 11)
+      return 30;
+    return 31;
+  };
+  if (day > max_day_for_month(year, mon))
+    return std::nullopt;
 
   std::tm tm{};
   tm.tm_year = year - 1900;

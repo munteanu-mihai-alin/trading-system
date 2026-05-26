@@ -4,6 +4,56 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-26] - DatabentoBacktestBroker has no simulated exchange latency, slippage, or queue-time-to-fill realism #todo
+
+Source state:
+- `main` at `7863253 feat(configs): adversarial COVID + Yen backtest configs and Yen symbol universe` and successor commits.
+
+Context: surfaced while answering "do we use the hftbacktest library?". We don't - the backtest path is custom C++ via `DatabentoBacktestBroker`. The broker reads cached MBP-1 (top-of-book) + MBP-10 (depth) CSVs and replays them against the engine. **The fill model is "marketable limit always fills instantly at the visible best".** Concretely:
+
+1. **No simulated submit -> ack latency.** `place_limit_order` calls `fill_crossed_orders` synchronously in the same tick the engine asks. A real broker would have order-routing + network latency in the 100us-10ms range (more if the route goes through a smart-router). Our buy decisions face zero penalty for being slow.
+
+2. **No slippage past best on entry.** `fill_crossed_orders` checks `req.is_buy && req.limit >= best_ask` and fills exactly at `best_ask`, regardless of order size vs ask size. A 51-share buy of NOK at ask=$9.77 with `ask_size=23` would actually walk the book and pay $9.78+ for the remaining 28 shares in real life. We pay $9.77 for all 51.
+
+3. **No queue-time-to-fill on resting limits.** A passive sell at +0.8% target sits in our `working_orders_` map and fills at the first L2 step where `best_bid >= req.limit`. Real-world queue position means: if you posted late at this price, you wait behind all earlier orders at the same price until the queue drains. We get an instant fill the moment the best bid touches the price.
+
+4. **The `latency_ms` parameter in `compute_execution_score` is config-set, not measured.** `execution/score.hpp` does include `effective_queue = queue + lambda * (latency_ms / 1000.0)` - which IS a queue-time-to-fill model on the sell-scoring side. But `latency_ms` comes from a config constant, and the BACKTEST doesn't honour it on the actual fill decision (only on the scoring decision that gates whether to place the sell at all). So the score is fuzzy-realistic, the fill is not.
+
+What's right today:
+- The fill check uses real L2 data (best_bid / best_ask from MBP-10), not synthetic.
+- Buy-side sizing (`floor(trade_notional / s.ask_price)`) is realistic given the synthetic instant-fill assumption.
+- Order lifecycle (placed/filled/cancelled) is emitted in the engine logs with real wall-clock timestamps.
+
+What's missing - the gap to close before live trading would surprise nobody:
+
+| Aspect | Today | Realistic | Suggested implementation |
+|---|---|---|---|
+| Submit->ack latency | 0 ms | 1-50 ms typical, p99 100-500 ms on a routed order | Add `cfg_.app.simulated_submit_latency_ms` (default 5, p50). Delay the call into `fill_crossed_orders` by N "steps" worth of advancement; the next `on_step` checks if the simulated ack time has been reached. |
+| Slippage past best | None | Walks book until size filled | In `fill_crossed_orders`, walk `book.asks[i]` (buy) until cumulative size >= req.qty; weighted-average price. |
+| Queue-time-to-fill on passive | Instant on best-touch | Wait for queue drain | When placed, snapshot `queue_ahead_at_level(req.limit)`. On each step, debit by `traded_at_level` (need to derive from MBP-10 trade events - separate gap). Fill only when queue_ahead <= 0. |
+| `latency_ms` in score vs fill | Only affects score | Should affect both | After above three are wired, the constant `latency_ms` becomes redundant - the actual delays come from the simulator. Or keep it as the "engine think time" component. |
+
+Implementation order I'd suggest:
+
+1. **Submit latency** first - smallest, easiest to A/B against existing run results. ~50 LOC + 2-3 tests.
+2. **Slippage past best** - changes fill prices in a way the user notices. ~30 LOC, needs `book.asks[]` iteration. Tests with synthetic L2 ladders.
+3. **Queue-time-to-fill** - largest piece. Need to (a) extend MBP-10 download to keep trade events (we currently keep only ladder snapshots), (b) track `traded_at_level` per resting order, (c) decrement on each step. ~150 LOC + tests + downloader change. Possibly defer behind a separate `#todo` since it adds a Databento schema dependency.
+
+What it'd cost the strategy: existing Run #6 results showed 12/12 win rate. With realistic fills:
+- Slippage of ~0.5 bps on buys would shave ~$0.02-0.05 per round-trip (small at $500 notional).
+- Submit latency would mostly affect timing of buys at step 0 (rank-0 picks fire then; latency might push them past the L1 ask, missing the fill).
+- Queue-time-to-fill is the big one. Passive sells at +0.8% target would fill less often. Probably moves the 12/12 win rate to maybe 4-6/12, with the unfilled ones becoming open-at-end (which honest-loss metrics already track as bag-holds).
+
+In short: the existing backtest is OPTIMISTIC about fills in a structured way. Worth fixing before treating any backtest number as a live-trading edge prediction.
+
+Suggested commit-message handle when the resolver lands:
+`feat(broker): simulated submit latency + slippage past best in DatabentoBacktestBroker`
+
+Sub-items that could be split off if they become their own `#todo`s:
+- Trade-events-from-MBP-10 in databento_download_l2.py (prerequisite for queue-time-to-fill realism)
+- IBKR live-side latency calibration: read tick-time delta from order placement to first orderStatus, feed into `simulated_submit_latency_ms` for backtest realism
+
+
 ## [2026-05-25] - Bring CI coverage back to 70% line / 50% branch #todo
 
 Source state:

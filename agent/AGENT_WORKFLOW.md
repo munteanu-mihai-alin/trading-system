@@ -87,8 +87,91 @@ ts_ns,step,order_id,symbol,...
 
 When a run is on the Hetzner VPS, also `scp -r hetzner:/mnt/.../reports/
 runs/. reports/runs/` so the local mirror stays in sync. The heavy L2
-caches stay under `data/databento/` and are deliberately NOT copied into
-per-run folders.
+caches stay under `data/l2/<window>/` and are deliberately NOT copied
+into per-run folders.
+
+## Backtest launch workflow
+
+Prefer the shell scripts at `scripts/hft_*.sh` over manually composed
+`ssh hetzner '...'` strings. They encode the steps below in one place,
+are idempotent, and save a lot of round-tripping. All three are intended
+to be run from the local UCRT64 shell (they handle the `ssh`/`scp`
+themselves).
+
+### End-to-end backtest
+
+```bash
+# Rerun the last backtest window with a different target:
+scripts/hft_backtest.sh --target 0.012 --label v8_target012
+
+# Run the COVID adversarial scenario (uses its own config file):
+scripts/hft_backtest.sh --config config.databento_backtest.covid.ini
+
+# Launch only; come back to it later via scripts/hft_postmortem.sh:
+scripts/hft_backtest.sh --target 0.005 --label v_partial --no-archive --no-sync --no-plot
+```
+
+`scripts/hft_backtest.sh` does, in order: SCP the config (if `--config`
+points to a local file) -> apply `sed` overrides in-place on the remote
+config -> clear stale flat `reports/*.csv` -> `nohup` launch -> wait for
+the engine to exit (poll every 30 s) -> archive the flat outputs into
+`reports/runs/<YYYY-MM-DDTHHMM>_<label>/` on Hetzner -> SCP that folder
+back locally -> run `scripts/plot_run.py` against it -> print the
+generated `metrics.md`.
+
+Useful flags: `--start <iso>` / `--end <iso>` override the window;
+`--symbols <file>` overrides `symbol_universe_path`; `--kill-first`
+terminates any in-flight `hft_app` before launching; `--no-wait`,
+`--no-archive`, `--no-sync`, `--no-plot` make the script stop earlier;
+`--dry-run` echoes commands without running them.
+
+### IBKR L1 backfill (local)
+
+```bash
+# Backfill Yen window (49 symbols, ~4 h IBKR-rate-limited):
+scripts/hft_l1_backfill.sh yen
+
+# Backfill the 10-day window with custom symbols file:
+scripts/hft_l1_backfill.sh 10day --symbols config/symbols_yen.txt
+
+# Backfill COVID window:
+scripts/hft_l1_backfill.sh covid
+```
+
+Three presets baked in (`yen`, `covid`, `10day`). Each writes directly
+into the dated layout `data/l1/<startDate>_<endDate>/<SYMBOL>_<startISO>_<endISO>.mbp1.csv`
+(see `include/broker/cache_filename.hpp`), checks IB Gateway reachability
+on port 4002 first, runs sequentially because IBKR pacing makes parallel
+no faster, and at the end `scp`'s the new files to Hetzner's
+`data/l1/<window>/` so a subsequent `scripts/hft_backtest.sh` finds
+them. Pass `--no-sync` to skip the upload.
+
+### Situational awareness
+
+```bash
+scripts/hft_status.sh           # one-shot snapshot of Hetzner + local
+scripts/hft_status.sh --kill    # also terminate any running hft_app +
+                                # orphan Python downloaders on Hetzner
+scripts/hft_status.sh --tail    # print the full latest log tail
+```
+
+Shows the current `hft_app` PIDs, latest log tail (HEALTH lines
+filtered), recent order placements, newest L2 cache entries, free RAM,
+and the count of files in each local `data/l1/<window>/`. Useful between
+turns to confirm whether a run is still in progress without paying ssh
+latency for each individual field.
+
+### When to fall back to manual ssh
+
+The scripts cover the 95% case. Reach for hand-composed `ssh` when:
+- you need to inspect a specific raw L1/L2 cache file's contents,
+- you're triaging a partial run mid-flight and need bespoke greps over
+  the running log,
+- the binary has changed in a way the scripts don't yet account for
+  (e.g. new mandatory config knob).
+
+If the same hand-composed command shows up twice in a session, fold it
+into one of the scripts above and document it here.
 
 ## Required handoff behavior
 

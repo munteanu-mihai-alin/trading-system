@@ -91,6 +91,10 @@ struct ParsedFilename {
 }
 
 // 1583760600000000000 -> "20200309T133000Z". Truncates sub-second precision.
+// Buffer is oversized vs the 17-byte output so GCC -Wformat-truncation does
+// not flag the theoretical worst case (it can't prove tm.tm_year + 1900
+// fits in 4 digits; runtime gmtime always produces a 4-digit year for the
+// time_t range we use).
 [[nodiscard]] inline std::string format_iso8601_compact(std::int64_t ts_ns) {
   const std::time_t t = static_cast<std::time_t>(ts_ns / 1'000'000'000LL);
   std::tm tm{};
@@ -99,7 +103,7 @@ struct ParsedFilename {
 #else
   gmtime_r(&t, &tm);
 #endif
-  char buf[17];
+  char buf[64];
   std::snprintf(buf, sizeof(buf), "%04d%02d%02dT%02d%02d%02dZ",
                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
                 tm.tm_min, tm.tm_sec);
@@ -115,7 +119,7 @@ struct ParsedFilename {
 #else
   gmtime_r(&t, &tm);
 #endif
-  char buf[11];
+  char buf[32];
   std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d", tm.tm_year + 1900,
                 tm.tm_mon + 1, tm.tm_mday);
   return std::string(buf);

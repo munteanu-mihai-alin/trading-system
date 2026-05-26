@@ -42,15 +42,20 @@ TEST(CacheFilename, FormatIso8601CompactKnownValue) {
 TEST(CacheFilename, IsoCompactRoundTripsForManyTimestamps) {
   // A spread of historically interesting moments; checks DST-free UTC
   // handling and various month/day boundaries.
-  for (
-      const std::int64_t ts : {
-          kCovidStartNs,
-          kCovidEndNs,
-          1722556200000000000LL,  // 2024-08-02T00:30:00Z (Yen unwind start-ish)
-          1723219200000000000LL,  // 2024-08-09T16:00:00Z
-          0LL,                    // 1970-01-01T00:00:00Z
-          1735689600000000000LL,  // 2025-01-01T00:00:00Z (year boundary)
-      }) {
+  //
+  // std::vector<std::int64_t> rather than std::initializer_list so the
+  // literal LL suffixes (long long) convert to std::int64_t (long on
+  // 64-bit Linux, long long on Windows) without `auto` deduction
+  // tripping on the mixed types.
+  const std::vector<std::int64_t> samples = {
+      kCovidStartNs,
+      kCovidEndNs,
+      1722556200000000000LL,  // 2024-08-02T00:30:00Z (Yen unwind start-ish)
+      1723219200000000000LL,  // 2024-08-09T16:00:00Z
+      0LL,                    // 1970-01-01T00:00:00Z
+      1735689600000000000LL,  // 2025-01-01T00:00:00Z (year boundary)
+  };
+  for (const std::int64_t ts : samples) {
     const auto formatted = format_iso8601_compact(ts);
     const auto reparsed = parse_iso8601_compact(formatted);
     ASSERT_TRUE(reparsed.has_value()) << "round-trip failed for " << ts;

@@ -393,6 +393,14 @@ DatabentoBacktestBroker::plan_coverage_from_candidates(
   // off-hours interval (~17.5 h overnight) and large enough to swallow
   // typical boundary-second misalignment.
   constexpr std::int64_t kInteriorGapToleranceNs = 5LL * 60 * 1'000'000'000LL;
+  // Trailing edge tolerance: must match cache_covers_window's end
+  // tolerance so single-file cover and multi-file stitching agree on
+  // what "covered enough" means. Without this, a file ending at
+  // 19:59Z would pass the single-file check (covers [_, midnight Z]
+  // within 24 h slack) but the planner's tail-gap branch would
+  // wrongly emit a 4-hour download, which then fails because the L1
+  // downloader script doesn't know about the dated layout.
+  constexpr std::int64_t kEndToleranceNs = 24LL * 60 * 60 * 1'000'000'000LL;
 
   CoveragePlan out;
   if (req_end_ns <= req_start_ns)
@@ -430,11 +438,11 @@ DatabentoBacktestBroker::plan_coverage_from_candidates(
 
     out.reuse_paths.push_back(path);
     covered_until = std::max(covered_until, c_end);
-    if (covered_until >= req_end_ns)
+    if (covered_until >= req_end_ns - kEndToleranceNs)
       break;
   }
 
-  if (covered_until < req_end_ns) {
+  if (covered_until < req_end_ns - kEndToleranceNs) {
     out.gap_ranges.emplace_back(covered_until, req_end_ns);
   }
 

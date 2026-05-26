@@ -1100,9 +1100,14 @@ HFT_TEST(test_plan_coverage_single_file_full_cover_no_gaps) {
                      "single covering file -> no gaps");
 }
 
-HFT_TEST(test_plan_coverage_single_file_subset_two_gaps_around_it) {
-  // File covers the middle of the request only; planner emits a prefix
-  // gap and a suffix gap.
+HFT_TEST(test_plan_coverage_subset_with_short_suffix_only_one_gap) {
+  // File covers the middle of the request only. The 2-hour suffix is
+  // within the 24-h tail tolerance (matches cache_covers_window's end
+  // tolerance), so planner emits only the prefix gap. This keeps the
+  // planner and cache_covers_window consistent on what "covers" means
+  // - without it, an L1 file ending at 19:59Z passes single-file cover
+  // but the planner wrongly downloads the 4-hour gap to midnight,
+  // which fails because the L1 downloader doesn't know the new layout.
   const std::int64_t f_start = kReqStartNs + 2 * kHourNs;
   const std::int64_t f_end = kReqEndNs - 2 * kHourNs;
   std::vector<Candidate> c = {{"middle.csv", f_start, f_end}};
@@ -1111,14 +1116,33 @@ HFT_TEST(test_plan_coverage_single_file_subset_two_gaps_around_it) {
   hft::test::require(
       plan.reuse_paths.size() == 1 && plan.reuse_paths[0] == "middle.csv",
       "middle file must be reused");
-  hft::test::require(plan.gap_ranges.size() == 2,
-                     "subset cover -> prefix + suffix gaps");
+  hft::test::require(plan.gap_ranges.size() == 1,
+                     "2-hour suffix is within tolerance -> prefix only");
   hft::test::require(plan.gap_ranges[0].first == kReqStartNs &&
                          plan.gap_ranges[0].second == f_start,
-                     "first gap must be the prefix");
+                     "the single gap must be the prefix");
+}
+
+HFT_TEST(test_plan_coverage_subset_with_wide_suffix_emits_tail_gap) {
+  // 48-hour suffix is well past the 24-h tail tolerance -> planner
+  // emits both a prefix and a tail gap. This is the case the user
+  // hits when extending an existing window forward by multiple days.
+  const std::int64_t f_start = kReqStartNs + 2 * kHourNs;
+  const std::int64_t req_end_extended = kReqEndNs + 48 * kHourNs;
+  const std::int64_t f_end = req_end_extended - 48 * kHourNs;  // = kReqEndNs
+  std::vector<Candidate> c = {{"middle.csv", f_start, f_end}};
+  Plan plan = DatabentoBacktestBroker::plan_coverage_from_candidates(
+      std::move(c), kReqStartNs, req_end_extended);
+  hft::test::require(plan.reuse_paths.size() == 1,
+                     "middle file still reused even with wide tail gap");
+  hft::test::require(plan.gap_ranges.size() == 2,
+                     "48-h suffix exceeds tolerance -> prefix + tail gaps");
+  hft::test::require(plan.gap_ranges[0].first == kReqStartNs &&
+                         plan.gap_ranges[0].second == f_start,
+                     "first gap is the prefix");
   hft::test::require(plan.gap_ranges[1].first == f_end &&
-                         plan.gap_ranges[1].second == kReqEndNs,
-                     "second gap must be the suffix");
+                         plan.gap_ranges[1].second == req_end_extended,
+                     "second gap covers the 48-h tail");
 }
 
 HFT_TEST(test_plan_coverage_two_files_back_to_back_no_gap) {

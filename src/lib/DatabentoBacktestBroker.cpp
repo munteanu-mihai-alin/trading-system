@@ -9,9 +9,11 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#include "broker/cache_filename.hpp"
 #include "log/logging_state.hpp"
 
 namespace hft {
@@ -370,16 +372,57 @@ int DatabentoBacktestBroker::max_replay_steps() const {
   return static_cast<int>(out);
 }
 
-std::filesystem::path DatabentoBacktestBroker::l1_cache_path_for_symbol(
-    const std::string& symbol) const {
-  return std::filesystem::path(cfg_.databento_cache_dir) /
-         (safe_symbol_filename(symbol) + ".mbp1.csv");
+std::filesystem::path DatabentoBacktestBroker::new_download_path_for_symbol(
+    const std::filesystem::path& root, const std::string& symbol,
+    cache::Kind kind, std::int64_t req_start_ns,
+    std::int64_t req_end_ns) const {
+  return root / cache::format_folder_name(req_start_ns, req_end_ns) /
+         cache::format_filename(safe_symbol_filename(symbol), req_start_ns,
+                                req_end_ns, kind);
 }
 
-std::filesystem::path DatabentoBacktestBroker::l2_cache_path_for_symbol(
-    const std::string& symbol) const {
-  return std::filesystem::path(cfg_.databento_cache_dir) /
-         (safe_symbol_filename(symbol) + ".mbp10.csv");
+std::optional<std::filesystem::path>
+DatabentoBacktestBroker::find_covering_file(const std::filesystem::path& root,
+                                            const std::string& safe_symbol,
+                                            cache::Kind kind,
+                                            std::int64_t req_start_ns,
+                                            std::int64_t req_end_ns) const {
+  std::error_code ec;
+  if (!std::filesystem::exists(root, ec) || ec)
+    return std::nullopt;
+
+  const std::string prefix = safe_symbol + "_";
+  for (const auto& entry :
+       std::filesystem::recursive_directory_iterator(root, ec)) {
+    if (ec)
+      break;
+    if (!entry.is_regular_file(ec))
+      continue;
+    const auto name = entry.path().filename().string();
+    // Cheap prefix filter to skip files for other symbols before the full
+    // parser runs. Embedded underscores in the symbol survive the parse
+    // (anchored at the right), but a SAFE_SYM_OTHER_... line would prefix-
+    // match here - the post-parse symbol equality check catches that.
+    if (name.size() <= prefix.size())
+      continue;
+    if (name.compare(0, prefix.size(), prefix) != 0)
+      continue;
+
+    const auto parsed = cache::parse_filename(name);
+    if (!parsed)
+      continue;
+    if (parsed->kind != kind)
+      continue;
+    if (parsed->symbol != safe_symbol)
+      continue;
+
+    if (cache_covers_window(std::make_optional(std::make_pair(parsed->start_ns,
+                                                              parsed->end_ns)),
+                            req_start_ns, req_end_ns)) {
+      return entry.path();
+    }
+  }
+  return std::nullopt;
 }
 
 std::string DatabentoBacktestBroker::l1_downloader_command(
@@ -420,44 +463,40 @@ std::string DatabentoBacktestBroker::l2_downloader_command(
 
 bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
     const TopOfBookRequest& req) {
-  const auto out = l1_cache_path_for_symbol(req.symbol);
   const auto req_start = parse_iso8601_to_ns(cfg_.databento_start);
   const auto req_end = parse_iso8601_to_ns(cfg_.databento_end);
+  if (!req_start || !req_end)
+    return false;  // dated layout needs a window
 
-  bool need_download = !std::filesystem::exists(out);
-  if (!need_download) {
-    // Reuse only when the cache carries ts_event AND covers the requested
-    // window. local_l1_csv_provider.py copies from data/l1/<SYM>.mbp1.csv;
-    // if that source is still legacy (no ts_event), re-invoking the script
-    // will just produce another legacy file and the broker falls back to
-    // step-clamped behavior on load.
-    //
-    // Decision lives in cache_covers_window (testable static). It applies
-    // a 1-min start tolerance (first-event-after-open) and a 24-h end
-    // tolerance (post-close gap). See its doc comment in the header.
-    const auto cached = read_cache_ts_range(out);
-    std::optional<std::pair<std::int64_t, std::int64_t>> range;
-    if (cached)
-      range = std::make_pair(cached->start_ns, cached->end_ns);
-    if (!cache_covers_window(range, req_start, req_end)) {
-      need_download = true;
-    }
-  }
+  const std::filesystem::path root = cfg_.databento_l1_dataset;
+  const auto safe = safe_symbol_filename(req.symbol);
 
-  if (need_download) {
+  // First try cross-folder cover lookup: any file under root whose filename
+  // range covers [req_start, req_end] is reusable as-is. The load step
+  // below filters by ts_event to trim a wider file to the requested window.
+  auto path =
+      find_covering_file(root, safe, cache::Kind::L1, *req_start, *req_end);
+
+  if (!path) {
+    // No covering file - download fresh into the dated path. Folder
+    // reflects the requested window (not the actual data span), which keeps
+    // the path predictable across runs that ask for the same window.
+    const auto out = new_download_path_for_symbol(
+        root, req.symbol, cache::Kind::L1, *req_start, *req_end);
     std::filesystem::create_directories(out.parent_path());
+    std::error_code ec;
     if (std::filesystem::exists(out)) {
-      std::error_code ec;
       std::filesystem::remove(out, ec);
     }
     const auto cmd = l1_downloader_command(req.symbol, out);
     const int rc = std::system(cmd.c_str());
     if (rc != 0 || !std::filesystem::exists(out))
       return false;
+    path = out;
   }
 
   std::vector<std::int64_t> ts_events;
-  auto books = load_top_books_from_csv(out, req_start, req_end, &ts_events);
+  auto books = load_top_books_from_csv(*path, req_start, req_end, &ts_events);
   if (books.empty())
     return false;
 
@@ -476,41 +515,34 @@ bool DatabentoBacktestBroker::ensure_l1_symbol_loaded(
 
 bool DatabentoBacktestBroker::ensure_l2_symbol_loaded(
     const MarketDepthRequest& req) {
-  const auto out = l2_cache_path_for_symbol(req.symbol);
   const auto req_start = parse_iso8601_to_ns(cfg_.databento_start);
   const auto req_end = parse_iso8601_to_ns(cfg_.databento_end);
+  if (!req_start || !req_end)
+    return false;  // dated layout needs a window
 
-  bool need_download = !std::filesystem::exists(out);
-  if (!need_download) {
-    // Only consider the cache reusable when both the cached file carries a
-    // ts_event range AND the requested window fits inside it. Either side
-    // missing -> re-download to guarantee the replay covers the request.
-    //
-    // Decision lives in cache_covers_window (testable static). Same logic
-    // and tolerances as the L1 path; see header doc.
-    const auto cached = read_cache_ts_range(out);
-    std::optional<std::pair<std::int64_t, std::int64_t>> range;
-    if (cached)
-      range = std::make_pair(cached->start_ns, cached->end_ns);
-    if (!cache_covers_window(range, req_start, req_end)) {
-      need_download = true;
-    }
-  }
+  const std::filesystem::path root = cfg_.databento_cache_dir;
+  const auto safe = safe_symbol_filename(req.symbol);
 
-  if (need_download) {
+  auto path =
+      find_covering_file(root, safe, cache::Kind::L2, *req_start, *req_end);
+
+  if (!path) {
+    const auto out = new_download_path_for_symbol(
+        root, req.symbol, cache::Kind::L2, *req_start, *req_end);
     std::filesystem::create_directories(out.parent_path());
+    std::error_code ec;
     if (std::filesystem::exists(out)) {
-      std::error_code ec;
       std::filesystem::remove(out, ec);
     }
     const auto cmd = l2_downloader_command(req.symbol, out, req.depth);
     const int rc = std::system(cmd.c_str());
     if (rc != 0 || !std::filesystem::exists(out))
       return false;
+    path = out;
   }
 
   std::vector<std::int64_t> ts_events;
-  auto books = load_books_from_csv(out, req_start, req_end, &ts_events);
+  auto books = load_books_from_csv(*path, req_start, req_end, &ts_events);
   if (books.empty())
     return false;
 

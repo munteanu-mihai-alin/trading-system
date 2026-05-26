@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "broker/IBroker.hpp"
+#include "broker/cache_filename.hpp"
 #include "config/AppConfig.hpp"
 
 namespace hft {
@@ -43,10 +44,30 @@ class DatabentoBacktestBroker : public IBroker {
   std::unordered_map<int, ReplaySeries> replay_by_ticker_;
   std::unordered_map<int, OrderRequest> working_orders_;
 
-  [[nodiscard]] std::filesystem::path l1_cache_path_for_symbol(
-      const std::string& symbol) const;
-  [[nodiscard]] std::filesystem::path l2_cache_path_for_symbol(
-      const std::string& symbol) const;
+  // New dated-cache layout helpers (see include/broker/cache_filename.hpp).
+  //
+  // Path of the file the broker WOULD write if a download were necessary
+  // right now, given the configured window. The filename encodes the
+  // REQUESTED range (cfg_.databento_start / databento_end) - downloading
+  // produces a file whose actual data fits within that range, possibly
+  // slightly shorter at the boundaries (handled by cache_covers_window
+  // tolerances on future lookups).
+  [[nodiscard]] std::filesystem::path new_download_path_for_symbol(
+      const std::filesystem::path& root, const std::string& symbol,
+      cache::Kind kind, std::int64_t req_start_ns,
+      std::int64_t req_end_ns) const;
+
+  // Walks `root` recursively, looking for any file matching
+  // <SAFE_SYM>_<startISO>_<endISO>.mbpN.csv whose [start, end] covers the
+  // requested window via cache_covers_window. Returns the first match
+  // found (iteration order is filesystem-dependent; for our use case
+  // any covering file is equivalent). Returns nullopt if root does not
+  // exist or no covering file is present.
+  [[nodiscard]] std::optional<std::filesystem::path> find_covering_file(
+      const std::filesystem::path& root, const std::string& safe_symbol,
+      cache::Kind kind, std::int64_t req_start_ns,
+      std::int64_t req_end_ns) const;
+
   [[nodiscard]] std::string l1_downloader_command(
       const std::string& symbol, const std::filesystem::path& out) const;
   [[nodiscard]] std::string l2_downloader_command(

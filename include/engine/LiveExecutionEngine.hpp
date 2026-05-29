@@ -85,6 +85,16 @@ class LiveExecutionEngine {
   double realized_pnl_ = 0.0;
   bool kill_alert_raised_ = false;
 
+  // ---- User-triggered manual kill (AppConfig::kill_switch_trigger_path) ----
+  // Polled at every step(): if the configured file exists, the engine
+  // cancels every open entry + exit order and refuses to place new
+  // orders for the rest of the session. Unlike kill_alert_raised_,
+  // this IS destructive - it's the operator's explicit "stop trading
+  // now" button. Reset by start() so tests can re-trigger between
+  // runs, but the trigger FILE is NOT removed by the engine; the
+  // operator owns its lifecycle.
+  bool kill_switch_triggered_by_user_ = false;
+
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
   [[nodiscard]] int open_exposure_symbol_count() const;
@@ -181,6 +191,19 @@ class LiveExecutionEngine {
   // session breached".
   void reset_daily_loss_kill_alert_file();
 
+  // Poll the user-kill trigger path; if the file exists, run the
+  // destructive kill (cancel orders, set the flag, log). Cheap
+  // (one filesystem::exists call) so it's fine to call every step.
+  // No-op when kill_switch_trigger_path is empty or the flag is
+  // already set.
+  void check_user_kill_switch();
+  // Execute the manual-kill action. Reads the first line of the
+  // trigger file (if any) for an operator-supplied reason, logs it,
+  // cancels every entry + exit order in flight, and sets
+  // kill_switch_triggered_by_user_. Idempotent - re-calls are
+  // no-ops once the flag is set.
+  void trigger_user_kill_switch();
+
  public:
   RankingEngine ranking;
 
@@ -217,6 +240,9 @@ class LiveExecutionEngine {
   // never resets within a session.
   [[nodiscard]] double realized_pnl() const { return realized_pnl_; }
   [[nodiscard]] bool kill_alert_raised() const { return kill_alert_raised_; }
+  [[nodiscard]] bool kill_switch_triggered_by_user() const {
+    return kill_switch_triggered_by_user_;
+  }
 
   // Test-only seam. Lets unit tests drive the kill-alert logic without
   // having to fake a full broker fill path to populate realized_pnl_.
@@ -226,6 +252,8 @@ class LiveExecutionEngine {
   // Force one round of the kill-alert evaluation against current state.
   // Equivalent to what step() does just after refresh_order_state.
   void check_daily_loss_kill_alert_for_test() { check_daily_loss_kill_alert(); }
+  // Force one round of the user-kill poll. Test-only seam.
+  void check_user_kill_switch_for_test() { check_user_kill_switch(); }
 };
 
 }  // namespace hft

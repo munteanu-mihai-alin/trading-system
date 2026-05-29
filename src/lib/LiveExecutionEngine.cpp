@@ -263,6 +263,11 @@ bool LiveExecutionEngine::start() {
   realized_pnl_ = 0.0;
   kill_alert_raised_ = false;
   reset_daily_loss_kill_alert_file();
+  // The user-kill trigger FILE is operator-owned, so we deliberately
+  // do NOT remove it here. But the in-process flag must reset so a
+  // restart can re-trigger off the same file (or off a freshly
+  // created one) without inheriting last session's state.
+  kill_switch_triggered_by_user_ = false;
   const bool ok =
       broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id);
   if (!ok) {
@@ -355,6 +360,12 @@ void LiveExecutionEngine::step(int t) {
   // orders, or move the Engine component to Error. The engine continues
   // operating normally and the operator decides whether to intervene.
   check_daily_loss_kill_alert();
+  // User-triggered manual kill. Polls the configured trigger file
+  // (no-op when not configured). Distinct from the loss-alert above:
+  // this IS destructive - if the operator dropped the kill file
+  // in place, we cancel everything and refuse new orders for the
+  // rest of the session.
+  check_user_kill_switch();
   ranking.step(t);
 
   // Per-step ranking snapshot to the step-trace file (separate from the
@@ -374,6 +385,18 @@ void LiveExecutionEngine::step(int t) {
   }
 
   if (!sync_next_order_id_from_broker()) {
+    if ((t % 100) == 0) {
+      hl::heartbeat(hl::ComponentId::Engine);
+    }
+    return;
+  }
+
+  // User kill triggered earlier this step (or any prior step). Skip
+  // ALL order routing - both new entries and exit-order maintenance.
+  // refresh_order_state still drains terminal statuses for the
+  // cancels we issued inside trigger_user_kill_switch.
+  if (kill_switch_triggered_by_user_) {
+    refresh_order_state();
     if ((t % 100) == 0) {
       hl::heartbeat(hl::ComponentId::Engine);
     }
@@ -898,6 +921,74 @@ void LiveExecutionEngine::check_daily_loss_kill_alert() {
   const double session_pnl = compute_session_pnl();
   if (-session_pnl > cfg_.app.daily_loss_kill_usd) {
     raise_daily_loss_kill_alert(session_pnl);
+  }
+}
+
+void LiveExecutionEngine::check_user_kill_switch() {
+  if (kill_switch_triggered_by_user_)
+    return;
+  if (cfg_.app.kill_switch_trigger_path.empty())
+    return;
+  std::error_code ec;
+  if (!std::filesystem::exists(cfg_.app.kill_switch_trigger_path, ec)) {
+    return;
+  }
+  trigger_user_kill_switch();
+}
+
+void LiveExecutionEngine::trigger_user_kill_switch() {
+  if (kill_switch_triggered_by_user_)
+    return;
+  kill_switch_triggered_by_user_ = true;
+
+  // Read the operator's reason (first non-empty line) so the audit
+  // trail has something better than "kill triggered". File may be
+  // empty - that's fine, just no reason.
+  std::string reason;
+  if (!cfg_.app.kill_switch_trigger_path.empty()) {
+    std::ifstream rf(cfg_.app.kill_switch_trigger_path);
+    if (rf.is_open()) {
+      std::string line;
+      while (std::getline(rf, line)) {
+        // Drop trailing CR (operators on Windows or echo'ing from
+        // PowerShell can drop CRLF in here).
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
+        if (!line.empty()) {
+          reason = std::move(line);
+          break;
+        }
+      }
+    }
+  }
+
+  std::ostringstream line;
+  line << "user kill switch triggered via file="
+       << cfg_.app.kill_switch_trigger_path << " step=" << current_step_t_
+       << " entry_orders_open=" << entry_orders_.size()
+       << " exit_orders_open=" << exit_order_symbols_.size()
+       << " open_positions=" << open_positions_.size();
+  if (!reason.empty()) {
+    line << " reason=\"" << reason << "\"";
+  }
+  if (!cfg_.app.run_label.empty()) {
+    line << " label=" << cfg_.app.run_label;
+  }
+  const std::string msg = line.str();
+  hl::raise_warning(hl::ComponentId::Engine, /*code=*/6, msg.c_str());
+
+  // Cancel every entry order still in flight. We do NOT erase
+  // entry_orders_ here - refresh_order_state will see the cancel come
+  // back as a terminal status and clean up. This emits a normal
+  // "cancelled" row in the order log.
+  for (const auto& kv : entry_orders_) {
+    broker_->cancel_order(kv.first);
+  }
+  // Same for exit orders. exit_order_symbols_ keeps order_id -> symbol;
+  // cancellation flows back through refresh_order_state.
+  for (const auto& kv : exit_order_symbols_) {
+    broker_->cancel_order(kv.first);
   }
 }
 

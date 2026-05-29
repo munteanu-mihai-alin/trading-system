@@ -158,6 +158,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.daily_loss_kill_usd = std::stod(val);
       } else if (key == "daily_loss_kill_alert_path") {
         cfg.daily_loss_kill_alert_path = val;
+      } else if (key == "kill_switch_trigger_path") {
+        cfg.kill_switch_trigger_path = val;
       } else if (key == "databento_cache_dir") {
         cfg.databento_cache_dir = val;
       } else if (key == "databento_python") {

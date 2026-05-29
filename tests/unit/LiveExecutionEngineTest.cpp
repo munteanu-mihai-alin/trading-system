@@ -799,6 +799,123 @@ TEST(LiveExecutionEngine, KillAlertNoFileWritesWhenPathEmpty) {
   EXPECT_TRUE(engine.kill_alert_raised());
 }
 
+// ---- User-triggered manual kill switch (AppConfig::kill_switch_trigger_path) ----
+// Distinct from the loss-alert above: this IS destructive. Cancels every
+// open entry + exit order, refuses to place new ones, until the engine
+// is restarted. Triggered by the OPERATOR creating a file at the
+// configured path.
+
+TEST(LiveExecutionEngine, UserKillDisabledWhenPathEmpty) {
+  // kill_switch_trigger_path unset -> even with a "trigger" file
+  // sitting in cwd nothing happens.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.check_user_kill_switch_for_test();
+  EXPECT_FALSE(engine.kill_switch_triggered_by_user());
+}
+
+TEST(LiveExecutionEngine, UserKillNotTriggeredWhenFileMissing) {
+  // Path set but the file does not exist -> no trigger.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.kill_switch_trigger_path =
+      "tmp_user_kill_missing_file_does_not_exist.flag";
+  std::remove(app.kill_switch_trigger_path.c_str());  // be hermetic
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.check_user_kill_switch_for_test();
+  EXPECT_FALSE(engine.kill_switch_triggered_by_user());
+}
+
+TEST(LiveExecutionEngine, UserKillTriggeredWhenFilePresent) {
+  // touch $path -> next poll trips the switch.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.kill_switch_trigger_path = "tmp_user_kill_present.flag";
+  { std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc); }
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.check_user_kill_switch_for_test();
+  EXPECT_TRUE(engine.kill_switch_triggered_by_user());
+  std::remove(app.kill_switch_trigger_path.c_str());
+}
+
+TEST(LiveExecutionEngine, UserKillStartResetsInProcessFlagButLeavesFile) {
+  // The trigger file is operator-owned. start() must reset the
+  // in-process flag (so a re-trigger off the same file works) but
+  // MUST NOT delete the file (otherwise we'd race the operator
+  // semantics of "file present == kill active").
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, connect(_, _, _)).WillOnce(Return(true));
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.kill_switch_trigger_path = "tmp_user_kill_start_leaves_file.flag";
+  {
+    std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc);
+    f << "stale kill from previous session\n";
+  }
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  EXPECT_TRUE(engine.start());
+  EXPECT_FALSE(engine.kill_switch_triggered_by_user());
+  // File still there -> the next step()/check would re-trigger.
+  EXPECT_TRUE(std::ifstream(app.kill_switch_trigger_path).is_open());
+  std::remove(app.kill_switch_trigger_path.c_str());
+}
+
+TEST(LiveExecutionEngine, UserKillSuppressesOrderPlacementAfterTrigger) {
+  // After the kill triggers, step() must not call place_limit_order
+  // for new entries even on otherwise-active portfolio items. Mirror
+  // of the previous behaviour the kill-switch had before the
+  // alert-only refactor, but now gated on the manual kill instead.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.kill_switch_trigger_path = "tmp_user_kill_suppresses_routing.flag";
+  { std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc); }
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(10);
+  // Trigger explicitly before step() runs. step() itself would also
+  // see the file and trigger, but doing it this way isolates the
+  // routing-skip assertion from the polling behaviour.
+  engine.check_user_kill_switch_for_test();
+  ASSERT_TRUE(engine.kill_switch_triggered_by_user());
+  engine.step(0);
+  engine.step(1);
+  std::remove(app.kill_switch_trigger_path.c_str());
+}
+
+TEST(LiveExecutionEngine, UserKillIdempotentOnRepeatedCheck) {
+  // Repeated check_user_kill_switch_for_test calls after the flag is
+  // set must NOT re-issue cancels (the first trigger already did).
+  // We assert by allowing a small number of cancels on the first
+  // trigger then asserting Times(0) on subsequent checks.
+  auto broker_ptr = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  auto* broker_raw = broker_ptr.get();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.kill_switch_trigger_path = "tmp_user_kill_idempotent.flag";
+  { std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc); }
+  // Engine starts with no open orders so the first trigger calls
+  // cancel_order zero times anyway. The point of this test is just
+  // that the second / third trigger don't re-enter the cancel loop.
+  EXPECT_CALL(*broker_raw, cancel_order(_)).Times(0);
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker_ptr));
+  engine.check_user_kill_switch_for_test();
+  ASSERT_TRUE(engine.kill_switch_triggered_by_user());
+  engine.check_user_kill_switch_for_test();
+  engine.check_user_kill_switch_for_test();
+  EXPECT_TRUE(engine.kill_switch_triggered_by_user());
+  std::remove(app.kill_switch_trigger_path.c_str());
+}
+
 TEST(LiveExecutionEngine, KillAlertStartClearsPriorSessionFile) {
   // A stale alert file from a previous session must be removed at
   // start() so its presence post-start means "this session breached"

@@ -4,6 +4,59 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-29] - User-triggered kill switch (file signal, destructive)
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `3656a5c feat(engine,config): user-triggered kill switch (file signal)`.
+- Follows the alert-only refactor in `6fc7a62` (immediately below). Now we have BOTH paths.
+
+User intent:
+- Per user: "Add a flag like `kill_switch_triggered_by_user` that should do cancel every order, refuse new. This should be a flag. But the user would send a signal to the process from outside and we should set this flag that is later checked."
+- The alert-only daily-loss path is observational. The user wanted a separate, explicitly destructive switch that they can pull from outside the process. We picked file-presence over POSIX signals because (a) it works on Windows too, (b) it gives a place to leave a reason, (c) it's trivially scriptable from anywhere.
+
+Behaviour:
+- New config: `kill_switch_trigger_path = /var/run/hft_kill.flag`. Empty disables the check.
+- `check_user_kill_switch()` runs every `step()`: if the file exists, set `kill_switch_triggered_by_user_`, read first line as the reason, log warning, call `broker_->cancel_order(id)` for every open entry + exit order.
+- Subsequent `step()` invocations skip order routing entirely while the flag is set (only `refresh_order_state` + heartbeat keep running).
+- Operator owns the file's lifecycle. Engine **never** removes it - on restart, if the file's still there, we re-trigger immediately. That's the intended "kill stays armed until I explicitly clear it" semantics.
+- `start()` resets the in-process flag (so tests + restarts work) but does NOT touch the file.
+
+Trigger examples (anywhere with shell access):
+```bash
+ssh hetzner 'touch /var/run/hft_kill.flag'
+ssh hetzner 'echo "panic - L2 bogus on KEYS" > /var/run/hft_kill.flag'
+# To clear and resume:
+ssh hetzner 'rm /var/run/hft_kill.flag'   # then restart hft_app
+```
+
+Behaviour matrix now (we have BOTH):
+
+| Switch | Driver | File | Action |
+|---|---|---|---|
+| daily-loss alert (`daily_loss_kill_usd`) | PnL threshold | engine WRITES `daily_loss_kill_alert_path` | warning only, keep trading |
+| user kill (`kill_switch_trigger_path`) | operator | operator WRITES the trigger file | cancel all + refuse new, until restart |
+
+Tests:
+- `UserKillDisabledWhenPathEmpty`
+- `UserKillNotTriggeredWhenFileMissing`
+- `UserKillTriggeredWhenFilePresent`
+- `UserKillStartResetsInProcessFlagButLeavesFile`
+- `UserKillSuppressesOrderPlacementAfterTrigger`
+- `UserKillIdempotentOnRepeatedCheck`
+- AppConfig load test extended.
+- 139 gtests total now (was 133 before this commit); Catch2 still green.
+
+Known follow-ups (none blocking paper):
+- No POSIX signal fast-path. If sub-step latency on the kill matters someday (e.g. fast-moving market), add a `signal(SIGUSR1, handler)` on Linux that flips an `std::atomic<bool>` checked at the same site. The file path stays the long-term mechanism (works cross-platform, leaves a reason, audit-trail).
+- The kill writes through the standard logging component (`hl::raise_warning` code 6). Hetzner ops hardening (umbrella sub-item #4) should route this code to whatever alerting we wire up (PagerDuty, Telegram bot, etc) so the operator gets a confirmation that the engine actually saw the kill.
+- No companion "soft-kill" yet (stop entering, keep managing existing positions). If we want that, add a `soft_kill_trigger_path` that suppresses entries only - exit_order routing keeps running. Out of scope for now.
+
+Suggested commit (already done): `3656a5c`.
+
 ## [2026-05-29] - Daily-loss kill switch reshaped to ALERT-ONLY (no destructive action)
 
 Model / agent:

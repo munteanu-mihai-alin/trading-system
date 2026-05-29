@@ -4,6 +4,53 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-29] - Hetzner disk 100% full; yen v2 dead; step_trace.csv blowup #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `d2f64ff docs(handoff): user-triggered kill switch (3656a5c)`.
+- No code change in this entry; pure ops + diagnosis.
+
+What happened:
+- Yen v2 backtest started 2026-05-29 11:17 (Hetzner local) with the freshly downloaded clean Databento MBP-1 L1 cache (run folder `2026-05-29T0915_cpp_backtest_yen_unwind_v2_db_l1`).
+- Ran ~1h7m. Died 12:24 when `/dev/sdb` (the 255 GB data volume) hit 100% full.
+- Cause: `step_trace.csv` grew to **108 GB** (108,244,729,856 bytes), 5000x the normal ~20 MB it produces on the 10-day windows.
+- `stdout.log` and `l2_trace.csv` are both 0 bytes (buffered writes lost on the abrupt kill). `decisions.csv` (11 KB) and `orders.csv` (643 B) survived → engine made some decisions before death.
+
+Why step_trace blew up:
+- `LiveExecutionEngine::step()` unconditionally writes one row per symbol per `step()` invocation to `step_trace_log_` (see `src/lib/LiveExecutionEngine.cpp` lines 374-378). No sampling guard, no size cap.
+- The 10-day backtests had been fine because they ran against IBKR's L1 (1-minute BID_ASK bars, sparse: ~10 steps/sec).
+- Yen v2 was the first run against **Databento MBP-1 L1**, which is per-top-of-book-update granularity (~64 steps/sec for this window, 6x denser).
+- Math: 8-day window × 86400 s/day × ~64 steps/sec × 49 symbols × ~50 bytes/row ≈ 108 GB. Matches exactly.
+
+Disk state at time of handoff:
+- `/dev/sdb` 255G/255G 100% full.
+- No `hft_app` process running.
+- The 108 GB step_trace.csv is the only file consuming significant space; deleting it frees the volume.
+
+Decisions deferred to next session:
+1. **Delete the 108 GB step_trace.csv** — user paused on this, said "Do not do anything yet" and then "We will deal with this with compression. But first let s see if process is dead". Process confirmed dead; awaiting next session for the actual cleanup decision (delete vs. compress-first).
+2. **Guard against future blowup** — pick from:
+   - Set `step_trace_log_path=` (empty) in `config.databento_backtest.yen.ini` and `config.databento_backtest.covid.ini` to suppress entirely. Cheapest.
+   - Add `step_trace_sample_every_n` config knob (write every Nth step). ~30 min including a unit test.
+   - Add a per-log max-size cap in `open_log_` that closes the stream when X MB is exceeded. Catches all future log regressions. ~20 min.
+3. **Re-run yen v2** once disk freed + guard in place.
+4. **Run COVID backtest** — L1 is fully cached (45/45 files at `/mnt/HC_Volume_105581071/trading-system/data/l1/2020-03-09_2020-03-20/`), config exists (`config.databento_backtest.covid.ini`). Blocked only on disk + guard.
+
+Other state at handoff:
+- 6 stale "background tasks" in the Claude Code UI from prior sessions (Wait for migration / Launch v8 / Wait for v8 / Wait for IMOS L1 / Wait for all 47 Yen L1 / Re-run Yen with clean L1). 5 had no backing local process; 1 (PID 23516, the yen v2 SSH wrapper stuck in a `while pgrep` loop after the abrupt ENOSPC kill) was killed locally. User relaunching Claude Code to clear the stale UI entries since the Stop buttons weren't responsive.
+- Tests still 139/139 green for gtest, Catch2 153 PASS. No code regression from the engine death — it was a runtime resource exhaustion, not a logic bug.
+
+Suggested first commit after disk freed + guard chosen:
+```bash
+git commit -m "config(backtest): suppress step_trace for dense-L1 windows (yen/covid)"
+# or for the sampling-knob path:
+git commit -m "feat(engine,config): step_trace_sample_every_n to bound dense-L1 trace size"
+```
+
 ## [2026-05-29] - User-triggered kill switch (file signal, destructive)
 
 Model / agent:

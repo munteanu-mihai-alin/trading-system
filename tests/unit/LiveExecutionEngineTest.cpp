@@ -641,4 +641,104 @@ TEST(LiveExecutionEngine, StepHeartbeatBoundary) {
   engine.step(100);
 }
 
+// ---- Daily-loss kill switch (AppConfig::daily_loss_kill_usd) ----
+// These cover umbrella sub-item #1 of the live-trading prerequisites.
+// They drive realized_pnl_ via the test seam so the test doesn't depend
+// on the full broker / lifecycle stack to fake an exit Filled.
+
+TEST(LiveExecutionEngine, KillSwitchDisabledWhenThresholdZero) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  // Default daily_loss_kill_usd is 0 -> gate disabled. Even a $1B
+  // realized loss must NOT engage the switch.
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.inject_realized_pnl_for_test(-1e9);
+  engine.check_daily_loss_kill_switch_for_test();
+  EXPECT_FALSE(engine.kill_switch_engaged());
+}
+
+TEST(LiveExecutionEngine, KillSwitchInactiveBelowThreshold) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 100.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  // -99 < -100 is false -> still safe. Equality also safe (>, not >=).
+  engine.inject_realized_pnl_for_test(-99.0);
+  engine.check_daily_loss_kill_switch_for_test();
+  EXPECT_FALSE(engine.kill_switch_engaged());
+
+  engine.inject_realized_pnl_for_test(-100.0);
+  engine.check_daily_loss_kill_switch_for_test();
+  EXPECT_FALSE(engine.kill_switch_engaged());
+}
+
+TEST(LiveExecutionEngine, KillSwitchEngagesWhenLossExceedsThreshold) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 100.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.inject_realized_pnl_for_test(-100.01);  // strictly over
+  engine.check_daily_loss_kill_switch_for_test();
+  EXPECT_TRUE(engine.kill_switch_engaged());
+}
+
+TEST(LiveExecutionEngine, KillSwitchPositivePnlNeverEngages) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 100.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  // A profitable session must never trip the switch, regardless of how
+  // big the gain is.
+  engine.inject_realized_pnl_for_test(1e6);
+  engine.check_daily_loss_kill_switch_for_test();
+  EXPECT_FALSE(engine.kill_switch_engaged());
+}
+
+TEST(LiveExecutionEngine, KillSwitchStepSkipsOrderPlacement) {
+  // After the switch trips, subsequent step() calls must NOT call
+  // place_limit_order even though there are otherwise-active symbols
+  // ready to buy. Without the kill gate the engine would place at least
+  // one order per StepPlacesOrdersForActivePortfolioItems above.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 3;
+  app.daily_loss_kill_usd = 100.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(10);
+  // Trip the switch first; the next step() must skip routing.
+  engine.inject_realized_pnl_for_test(-150.0);
+  engine.check_daily_loss_kill_switch_for_test();
+  ASSERT_TRUE(engine.kill_switch_engaged());
+  engine.step(0);
+  engine.step(1);
+}
+
+TEST(LiveExecutionEngine, KillSwitchIdempotentOnRepeatedCheck) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  // Once engaged, a second check must NOT issue another round of
+  // cancels nor re-raise the error.
+  EXPECT_CALL(*broker, cancel_order(_)).Times(0);
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 100.0;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.inject_realized_pnl_for_test(-200.0);
+  engine.check_daily_loss_kill_switch_for_test();
+  ASSERT_TRUE(engine.kill_switch_engaged());
+  // No open orders to cancel in this hermetic test, so the EXPECT_CALL
+  // is really asserting "no extra cancel attempts after engagement".
+  engine.check_daily_loss_kill_switch_for_test();
+  engine.check_daily_loss_kill_switch_for_test();
+}
+
 }  // namespace

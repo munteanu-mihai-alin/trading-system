@@ -87,6 +87,8 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.energy_cost_per_kwh, 0.0);
   EXPECT_DOUBLE_EQ(cfg.daily_inflation_cost, 0.0);
   EXPECT_DOUBLE_EQ(cfg.expected_daily_shares, 1.0);
+  // Default: kill switch disabled. Real-money configs must opt in.
+  EXPECT_DOUBLE_EQ(cfg.daily_loss_kill_usd, 0.0);
   EXPECT_EQ(cfg.databento_cache_dir, "data/databento");
   EXPECT_EQ(cfg.databento_python, "python");
   EXPECT_EQ(cfg.databento_l1_download_script,
@@ -173,6 +175,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "energy_cost_per_kwh=0.31\n"
       "daily_inflation_cost=1.25\n"
       "expected_daily_shares=250\n"
+      "daily_loss_kill_usd=275.5\n"
       "databento_cache_dir=tmp/db\n"
       "databento_python=python3\n"
       "databento_l1_download_script=scripts/fetch_l1.py\n"
@@ -234,6 +237,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.energy_cost_per_kwh, 0.31);
   EXPECT_DOUBLE_EQ(cfg.daily_inflation_cost, 1.25);
   EXPECT_DOUBLE_EQ(cfg.expected_daily_shares, 250.0);
+  EXPECT_DOUBLE_EQ(cfg.daily_loss_kill_usd, 275.5);
   EXPECT_EQ(cfg.databento_cache_dir, "tmp/db");
   EXPECT_EQ(cfg.databento_python, "python3");
   EXPECT_EQ(cfg.databento_l1_download_script, "scripts/fetch_l1.py");

@@ -251,6 +251,12 @@ void LiveExecutionEngine::emit_l2_trace(const std::string& symbol,
 bool LiveExecutionEngine::start() {
   hl::set_component_state(hl::ComponentId::Engine,
                           hl::ComponentState::Starting);
+  // Reset per-session kill-switch state. A re-started engine MUST start
+  // with a fresh realized-pnl tally and the switch disengaged, otherwise
+  // a long-running test that calls start() between runs would inherit
+  // the previous session's tripped state.
+  realized_pnl_ = 0.0;
+  kill_switch_engaged_ = false;
   const bool ok =
       broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id);
   if (!ok) {
@@ -335,6 +341,12 @@ void LiveExecutionEngine::step(int t) {
   broker_->on_step(t);
   reconcile_broker_state();
   refresh_order_state();
+  // Daily-loss kill switch. Runs right after refresh_order_state so any
+  // exit Filled this step has already updated realized_pnl_ before we
+  // check. Disabled when daily_loss_kill_usd <= 0 (default for backtests
+  // and sim runs). Once engaged we keep falling through to heartbeat /
+  // tracing below but skip order placement at the bottom of step().
+  check_daily_loss_kill_switch();
   ranking.step(t);
 
   // Per-step ranking snapshot to the step-trace file (separate from the
@@ -347,6 +359,18 @@ void LiveExecutionEngine::step(int t) {
   }
 
   if (!cfg_.app.order_enabled) {
+    if ((t % 100) == 0) {
+      hl::heartbeat(hl::ComponentId::Engine);
+    }
+    return;
+  }
+
+  // Kill switch engaged earlier this step (or on a prior step). Skip ALL
+  // order routing for the rest of the session - both new entries and the
+  // exit-order maintenance done by route_exit_orders. The cancels were
+  // issued inside engage_daily_loss_kill_switch; refresh_order_state
+  // continues to drain their terminal statuses naturally.
+  if (kill_switch_engaged_) {
     if ((t % 100) == 0) {
       hl::heartbeat(hl::ComponentId::Engine);
     }
@@ -395,6 +419,7 @@ void LiveExecutionEngine::step(int t) {
     OrderRequest req;
     req.id = next_order_id_++;
     req.symbol = s.symbol;
+    req.primary_exchange = primary_exchange_for(s.symbol);
     req.is_buy = true;
     req.limit = s.best_limit;
     if (req.limit <= 0.0) {
@@ -605,7 +630,8 @@ void LiveExecutionEngine::ensure_depth_subscription(const std::string& symbol,
                                                     int ticker_id) {
   if (depth_subscribed_symbols_.find(symbol) != depth_subscribed_symbols_.end())
     return;
-  broker_->subscribe_market_depth(MarketDepthRequest{ticker_id, symbol, 5});
+  broker_->subscribe_market_depth(
+      MarketDepthRequest{ticker_id, symbol, 5, primary_exchange_for(symbol)});
   depth_subscribed_symbols_.insert(symbol);
 }
 
@@ -678,11 +704,22 @@ void LiveExecutionEngine::refresh_order_state() {
     const double sell_limit_px =
         (pos != open_positions_.end()) ? pos->second.sell_limit : 0.0;
     if (state->status == OrderLifecycleStatus::Filled) {
+      const double filled_qty =
+          state->filled_qty > 0.0 ? state->filled_qty : sell_qty;
       emit_order_event(it->first, it->second, "sell", sell_qty, sell_limit_px,
-                       "filled",
-                       state->filled_qty > 0.0 ? state->filled_qty : sell_qty,
-                       0.0, state->avg_fill_price);
+                       "filled", filled_qty, 0.0, state->avg_fill_price);
+      // Realized PnL bookkeeping for the daily-loss kill switch. We use
+      // the broker-reported fill price against the position's weighted
+      // average entry. Commissions are intentionally NOT subtracted here
+      // (see realized_pnl_ comment in the header) - the kill threshold
+      // is far larger than the per-order commission, so keeping the
+      // running figure commission-free avoids depending on the cost
+      // model's calibration.
       if (pos != open_positions_.end()) {
+        const double entry_price = pos->second.entry_price;
+        const double fill_price =
+            state->avg_fill_price > 0.0 ? state->avg_fill_price : sell_limit_px;
+        realized_pnl_ += (fill_price - entry_price) * filled_qty;
         open_positions_.erase(pos);
       }
       it = exit_order_symbols_.erase(it);
@@ -762,6 +799,7 @@ void LiveExecutionEngine::route_exit_orders() {
     OrderRequest req;
     req.id = next_order_id_++;
     req.symbol = position.symbol;
+    req.primary_exchange = primary_exchange_for(position.symbol);
     req.is_buy = false;
     req.qty = position.qty;
     req.limit = sell_limit;
@@ -777,6 +815,74 @@ void LiveExecutionEngine::route_exit_orders() {
   }
 }
 
+double LiveExecutionEngine::compute_unrealized_pnl_mark_to_market() const {
+  double total = 0.0;
+  for (const auto& kv : open_positions_) {
+    const auto& position = kv.second;
+    if (position.qty <= 0.0)
+      continue;
+    // Prefer the L2 best-bid (we'd hit the bid to exit a long), then
+    // the L1 mid as fallback when L2 is empty, then entry_price so a
+    // missing book yields zero unrealized rather than a spurious loss.
+    const int idx = portfolio_index_for_symbol(position.symbol);
+    double mark = position.entry_price;
+    if (idx >= 0) {
+      const int depth_ticker_id = kDepthTickerIdOffset + idx + 1;
+      const auto book = broker_->snapshot_book(depth_ticker_id);
+      if (has_valid_top(book)) {
+        mark = book.best_bid();
+      } else {
+        const int top_ticker_id = idx + 1;
+        const auto top = broker_->snapshot_top_of_book(top_ticker_id);
+        if (top.valid()) {
+          mark = top.mid();
+        }
+      }
+    }
+    total += (mark - position.entry_price) * position.qty;
+  }
+  return total;
+}
+
+double LiveExecutionEngine::compute_session_pnl() const {
+  return realized_pnl_ + compute_unrealized_pnl_mark_to_market();
+}
+
+void LiveExecutionEngine::engage_daily_loss_kill_switch(double session_pnl) {
+  if (kill_switch_engaged_)
+    return;
+  kill_switch_engaged_ = true;
+  // Cancel every entry order still in flight. We do NOT erase
+  // entry_orders_ here - refresh_order_state will see the cancel come
+  // back as a terminal status and clean up. This way the cancel-event
+  // emits a normal "cancelled" order_log row.
+  for (const auto& kv : entry_orders_) {
+    broker_->cancel_order(kv.first);
+  }
+  // Same for exit orders. exit_order_symbols_ keeps order_id -> symbol;
+  // cancellation flows back through refresh_order_state.
+  for (const auto& kv : exit_order_symbols_) {
+    broker_->cancel_order(kv.first);
+  }
+  hl::raise_error(hl::ComponentId::Engine, /*code=*/4,
+                  "daily_loss_kill_usd breached");
+  hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Error,
+                          /*code=*/4);
+  // Best-effort logged context. Doesn't affect the kill behavior.
+  (void)session_pnl;
+}
+
+void LiveExecutionEngine::check_daily_loss_kill_switch() {
+  if (kill_switch_engaged_)
+    return;
+  if (cfg_.app.daily_loss_kill_usd <= 0.0)
+    return;
+  const double session_pnl = compute_session_pnl();
+  if (-session_pnl > cfg_.app.daily_loss_kill_usd) {
+    engage_daily_loss_kill_switch(session_pnl);
+  }
+}
+
 }  // namespace hft
 
 namespace hft {
@@ -787,9 +893,10 @@ void LiveExecutionEngine::subscribe_live_books(
                           hl::ComponentState::Starting);
   int ticker = 1;
   for (const auto& sym : symbols) {
-    broker_->subscribe_top_of_book(TopOfBookRequest{ticker, sym});
+    const std::string px = primary_exchange_for(sym);
+    broker_->subscribe_top_of_book(TopOfBookRequest{ticker, sym, px});
     if (cfg_.app.hawkes_use_real_trades) {
-      broker_->subscribe_trades(TopOfBookRequest{ticker, sym});
+      broker_->subscribe_trades(TopOfBookRequest{ticker, sym, px});
     }
     ++ticker;
   }

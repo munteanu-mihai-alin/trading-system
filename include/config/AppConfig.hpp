@@ -177,6 +177,21 @@ struct AppConfig {
   double energy_cost_per_kwh = 0.0;
   double daily_inflation_cost = 0.0;
   double expected_daily_shares = 1.0;
+  // Daily-loss kill switch. Tracks the engine's running session PnL
+  // (realized + unrealized, mark-to-market against the latest L1 mid) and
+  // when the loss against the session-start equity exceeds this dollar
+  // figure, the engine stops accepting new orders, cancels every open
+  // order, and flips the Engine component to Error. 0.0 (default) disables
+  // the gate so existing backtests, sim, and paper smokes behave as
+  // before. Set this in live / IBKR-paper configs only; it's a real-money
+  // safety net, not a performance knob.
+  //
+  // Example: daily_loss_kill_usd = 200.0  ->  engine halts when the live
+  // mark-to-market PnL drops to -USD 200 relative to session start.
+  //
+  // See agent/AGENT_HANDOFF_LOG.md [2026-05-16] Live-trading prerequisites
+  // sub-item #1.
+  double daily_loss_kill_usd = 0.0;
   std::string databento_cache_dir = "data/databento";
   std::string databento_python = "python";
   std::string databento_l1_download_script = "scripts/local_l1_csv_provider.py";

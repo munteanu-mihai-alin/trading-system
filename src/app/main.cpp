@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "app/effective_steps.hpp"
 #include "bench/bench.hpp"
 #include "broker/DatabentoBacktestBroker.hpp"
 #include "broker/IBKRClient.hpp"
@@ -100,11 +101,14 @@ int main() {
   hl::set_app_state(hl::AppState::Live);
 
   // Step-count override: when steps_auto_from_broker is set and the
-  // broker reports a positive max_replay_steps(), cap the engine loop
-  // at that value so we don't run far past the L1/L2 data window. We
-  // peek at the broker via a freshly-constructed throwaway only when
+  // broker reports a positive max_replay_steps(), the loop runs for
+  // min(cfg.steps, broker_max) so we (a) never run past the L1/L2
+  // data window, and (b) NEVER run longer than the configured
+  // ceiling. (b) was missing pre-fix and caused the 2026-05-29 yen
+  // v2 disk-full crash; see include/app/effective_steps.hpp. We peek
+  // at the broker via a freshly-constructed throwaway only when
   // mode=databento_backtest because IBKR brokers always return 0.
-  int effective_steps = cfg.steps;
+  int broker_max = 0;
   if (cfg.steps_auto_from_broker &&
       cfg.mode == hft::BrokerMode::DatabentoBacktest) {
     // The owned broker has moved into the engine; the engine doesn't
@@ -117,13 +121,15 @@ int main() {
     for (const auto& sym : symbols) {
       probe.subscribe_top_of_book(hft::TopOfBookRequest{t++, sym});
     }
-    const int broker_max = probe.max_replay_steps();
+    broker_max = probe.max_replay_steps();
     probe.disconnect();
-    if (broker_max > 0) {
-      effective_steps = broker_max;
-      std::cout << "steps_auto_from_broker=true -> capping at "
-                << effective_steps << " (broker max_replay_steps)" << std::endl;
-    }
+  }
+  const int effective_steps = hft::compute_effective_steps(
+      cfg.steps, cfg.steps_auto_from_broker, cfg.mode, broker_max);
+  if (broker_max > 0) {
+    std::cout << "steps_auto_from_broker=true: cfg.steps=" << cfg.steps
+              << " broker_max=" << broker_max
+              << " -> effective_steps=" << effective_steps << std::endl;
   }
   std::cout << "Running " << effective_steps << " engine steps..." << std::endl;
   for (int t = 0; t < effective_steps; ++t) {

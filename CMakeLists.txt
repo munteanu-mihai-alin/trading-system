@@ -264,6 +264,7 @@ add_executable(hft_gtests
   tests/unit/LoggingStateTest.cpp
   tests/unit/AppConfigTest.cpp
   tests/unit/CacheFilenameTest.cpp
+  tests/unit/EffectiveStepsTest.cpp
   tests/unit/IBKRClientTest.cpp
   tests/unit/LiveExecutionEngineTest.cpp
 )

@@ -4,6 +4,49 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-28] - L1 source: IBKR returns split-adjusted, Databento doesn't (cross-vendor mismatch)
+
+Source state:
+- `main` at `5f394e7 feat(scripts): Databento MBP-1 (L1) downloader + cost-quote tool + --source switch` and successor commits.
+
+Context: surfaced when the first Yen 2024-08 backtest run picked symbols whose IBKR L1 ask prices (split-adjusted) were 30-50% different from the Databento L2 best_ask at the same instant. Examples:
+
+  IMOS: IBKR L1 ask $47.65, Databento L2 ask $22.89  (~2.08x = likely 2:1 split since 2024-08)
+  KEYS: IBKR L1 ask $187.26, Databento L2 ask $127.51 (~1.47x = likely 3:2 split)
+  MKSI / IBM: didn't fill because the L1-limit and L2-ask disagreement went the OTHER way
+
+Root cause: IBKR `reqHistoricalData` returns historical prices ADJUSTED retroactively for all corporate actions (splits, etc.) so the time series compares cleanly to today's price. Databento MBP-10 (and MBP-1) returns raw exchange messages from the actual day. For a window that's months/years from "now," any subsequent split shows as a price gap between the two sources.
+
+The IBKR API has no opt-out for split adjustment - this is the documented default behavior, not a script bug.
+
+Impact on the backtest:
+- Engine ranking + sizing read `s.mid` from L1 -> use IBKR-adjusted prices -> wrong absolute values for any symbol that split between window date and "now"
+- Engine sets buy `limit = s.ask_price` (IBKR-adjusted) - often misses L2 by 30-50%
+- Broker fills at L2 best_ask (raw) at correct historical price (since limit >= ask still triggers a cross when the L1 number is higher than reality)
+- Sell limit computed from real entry price (L2 fill) so sell side is OK
+- Net: the backtest "kind of works" but its symbol selection and sizing are based on bogus L1 mids, especially for older windows
+
+Window sensitivity:
+- 2026q2 window (~1 month from now): no splits, IBKR-adjusted == raw. Run #6/v7/v8 results are clean.
+- Yen 2024-08 window (~22 months): plenty of splits, results unreliable until fixed
+- COVID 2020-03 window (~6 years): worst case, lots of splits
+
+Fix shipped (resolver entry):
+`scripts/databento_download_l1.py` mirrors the L2 downloader for the MBP-1 schema, writing the broker's expected top-of-book CSV format. `scripts/hft_l1_backfill.sh` gained a `--source ibkr|databento` flag; databento mode dispatches to Hetzner via ssh because that's where the API key + python venv already live. `scripts/databento_l1_cost_quote.py` calls `databento.metadata.get_cost()` (free) for budget estimates - real quotes pulled this round:
+
+  2026q2 (49 sym, 15 days):  MBP-1 $11.75  vs  MBP-10 $33.02
+  yen    (49 sym,  7 days):  MBP-1 $ 6.93  vs  MBP-10 $19.17
+  covid  (45 sym, 11 days):  MBP-1 $ 9.23  vs  MBP-10 $23.07
+
+Total spend to fix all three windows' L1: ~$28 one-time.
+
+No broker code change required. The broker's cross-folder L1 glob picks up files in the same `data/l1/<window>/<SYM>_<startISO>_<endISO>.mbp1.csv` layout regardless of which source wrote them.
+
+Operational note for future agents: prefer `--source databento` for any window older than ~3 months. Use `--source ibkr` (the default, still) only for very recent windows where splits haven't accumulated AND you want zero spend.
+
+A subtle related consequence: in **live trading**, the same hazard doesn't exist - IBKR `reqMktData` returns real-time quotes (not historical adjusted). The mismatch is purely a backtest data-vendor artifact.
+
+
 ## [2026-05-26] - DatabentoBacktestBroker has no simulated exchange latency, slippage, or queue-time-to-fill realism #todo
 
 Source state:

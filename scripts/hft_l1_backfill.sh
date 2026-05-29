@@ -186,15 +186,25 @@ else
     echo "Set --api-key PATH or DATABENTO_API_KEY_FILE env var." >&2
     exit 1
   fi
+  # Databento source runs ON Hetzner because:
+  #  - the API key file lives there at /root/.config/trading-system/...
+  #  - the databento python package is installed in its venv
+  #  - the resulting file lands in Hetzner's data/l1/<window>/ where the
+  #    backtest binary will read it (no local sync needed for backtest
+  #    flow; pass --no-sync explicitly anyway since the file is already
+  #    on the right machine).
+  #
+  # The local out path passed in is reused verbatim relative to the
+  # Hetzner workdir.
+  HETZNER_DIR_RUN="/mnt/HC_Volume_105581071/trading-system"
+  HETZNER_KEY="/root/.config/trading-system/databento_api_key"
   download_one() {
-    local sym="$1" out="$2"
-    "$PYTHON" scripts/databento_download_l1.py \
-      --symbol "$sym" \
-      --start "${START}T13:30:00Z" --end "$END_DB" \
-      --output "$out" \
-      --dataset "$DATABENTO_DATASET" \
-      --api-key-file "$API_KEY_FILE"
+    local sym="$1" out_rel="$2"
+    ssh -o BatchMode=yes hetzner "cd $HETZNER_DIR_RUN && mkdir -p \$(dirname '$out_rel') && .venv/bin/python scripts/databento_download_l1.py --symbol '$sym' --start '${START}T13:30:00Z' --end '$END_DB' --output '$out_rel' --dataset '$DATABENTO_DATASET' --api-key-file '$HETZNER_KEY'"
   }
+  # Local sync defaults to off for databento source: file's already on
+  # the right machine. Honor --no-sync if set, otherwise still SCP back
+  # at end (useful for local inspection).
 fi
 
 # Run the loop. Each symbol writes into the dated subdir with the

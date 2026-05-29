@@ -29,6 +29,17 @@ bool IBKRClient::connect(const std::string& host, int port, int client_id) {
   hl::set_component_state(hl::ComponentId::Broker,
                           hl::ComponentState::Starting);
   if (transport_->connect(host, port, client_id)) {
+    // Force real-time market data. If the active IBKR subscriptions don't
+    // cover the requested feed we want a hard error (codes 354 / 10167
+    // arrive via on_error) rather than the engine silently consuming
+    // 15-minute-delayed prints. See agent/ibkr_client_audit.md #2.
+    transport_->request_market_data_type(1);
+    // Request a fresh nextValidId snapshot so next_valid_order_id_ matches
+    // the broker's view at session start; covers the case where a sibling
+    // client touched the account or the cached value drifted. See audit
+    // #6. -1 is the conventional placeholder; TWS ignores it in modern
+    // API versions.
+    transport_->request_ids(-1);
     hl::set_component_state(hl::ComponentId::Broker, hl::ComponentState::Ready);
     return true;
   }
@@ -59,7 +70,15 @@ bool IBKRClient::is_connected() const {
 
 void IBKRClient::place_limit_order(const OrderRequest& req) {
   lifecycle_.on_submitted(req.id, req.symbol, req.qty);
-  send_ts_[req.id] = std::chrono::high_resolution_clock::now();
+  // send_ts_ and ack_latency_ms_cache_ are written from the engine thread
+  // here and read/written from the reader thread in on_order_status. Hold
+  // event_mutex_ across the write so the two threads don't rehash the map
+  // concurrently. Release before the transport call to avoid serialising on
+  // the broker round-trip.
+  {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    send_ts_[req.id] = std::chrono::high_resolution_clock::now();
+  }
   transport_->place_limit_order(req);
 }
 
@@ -68,6 +87,10 @@ void IBKRClient::cancel_order(int order_id) {
 }
 
 double IBKRClient::ack_latency_ms(int order_id) const {
+  // Reader thread writes ack_latency_ms_cache_ from on_order_status; this
+  // accessor runs on the engine thread. Guard with event_mutex_ to avoid
+  // racing reads against concurrent rehash.
+  std::lock_guard<std::mutex> lock(event_mutex_);
   const auto it = ack_latency_ms_cache_.find(order_id);
   if (it == ack_latency_ms_cache_.end()) {
     return 0.0;
@@ -224,6 +247,10 @@ void IBKRClient::on_order_status(int order_id, const std::string& status,
                                  double avg_fill_price) {
   lifecycle_.on_status(order_id, status, filled, remaining, avg_fill_price);
   if (status == "Submitted" || status == "PreSubmitted") {
+    // Reader-thread side of the send_ts_ / ack_latency_ms_cache_ race; grab
+    // event_mutex_ for the same reason place_limit_order does on the engine
+    // side. Compute the latency under lock and store atomically.
+    std::lock_guard<std::mutex> lock(event_mutex_);
     const auto it = send_ts_.find(order_id);
     if (it != send_ts_.end()) {
       const auto now = std::chrono::high_resolution_clock::now();

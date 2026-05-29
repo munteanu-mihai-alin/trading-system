@@ -44,6 +44,21 @@ class IBKRTransport {
   // even if no stream is active. Default no-op.
   virtual void cancel_positions_stream() {}
 
+  // Tell the broker which market-data tier to deliver. 1 = real-time only
+  // (errors out if the subscription is missing rather than silently
+  // delivering 15-minute-delayed prints). IBKRClient::connect calls this
+  // with 1 right after a successful connect so the engine never operates
+  // on stale data without an explicit alert from on_error (codes 354 /
+  // 10167). Default no-op so transport doubles keep compiling.
+  virtual void request_market_data_type(int /*data_type*/) {}
+  // Ask the broker to push a fresh nextValidId via the on_next_valid_id
+  // callback. Called from IBKRClient::connect to guarantee
+  // next_valid_order_id_ matches the broker's view at session start, even
+  // if a sibling client touched the account in between or the cached value
+  // has drifted. The TWS API ignores the numIds parameter in modern
+  // versions; pass -1 by convention. Default no-op.
+  virtual void request_ids(int /*num_ids*/) {}
+
   // Block (with an internal timeout, typically ~2s) waiting for inbound
   // traffic from the broker, then dispatch one batch of decoded messages
   // through the registered IBKRCallbacks. Returns when at least one cycle

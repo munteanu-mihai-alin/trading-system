@@ -35,6 +35,10 @@ class MockIBKRTransport : public IBKRTransport {
               (override));
   MOCK_METHOD(void, pump_once, (), (override));
   MOCK_METHOD(void, set_callbacks, (IBKRCallbacks * cb), (override));
+  MOCK_METHOD(void, request_positions, (), (override));
+  MOCK_METHOD(void, cancel_positions_stream, (), (override));
+  MOCK_METHOD(void, request_market_data_type, (int data_type), (override));
+  MOCK_METHOD(void, request_ids, (int num_ids), (override));
 };
 
 }  // namespace hft::test

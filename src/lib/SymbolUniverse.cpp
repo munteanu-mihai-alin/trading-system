@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -18,7 +19,37 @@ std::string trim(const std::string& s) {
   return s.substr(start, end - start + 1);
 }
 
+// Per-symbol IBKR primaryExchange override map. Built once at static
+// initialisation time. Currently EMPTY because the symbol-contract probe
+// (scripts/ibkr_symbol_contract_probe.py) hasn't been run against a live
+// IB Gateway yet - that's the second half of audit item #9. Once the
+// probe report identifies which symbols return ambiguous or wrong
+// contracts under SMART alone, add them here as
+//   {"PSTG", "NYSE"}, {"NIO", "NYSE"}, ...
+// using the listing exchange reported by reqContractDetails.
+//
+// PSTG specifically failed the L1 historical backfill with both
+// `--primary-exchange NASDAQ` and `--primary-exchange NYSE`; we left it
+// out of this map until the probe confirms the correct value (it may
+// need a different secType or a non-SMART exchange code).
+const std::unordered_map<std::string, std::string>&
+primary_exchange_override_table() {
+  static const std::unordered_map<std::string, std::string> kTable = {
+      // Intentionally empty until ibkr_symbol_contract_probe.py runs.
+  };
+  return kTable;
+}
+
 }  // namespace
+
+std::string primary_exchange_for(const std::string& symbol) {
+  const auto& table = primary_exchange_override_table();
+  const auto it = table.find(symbol);
+  if (it == table.end()) {
+    return {};
+  }
+  return it->second;
+}
 
 std::vector<std::pair<std::string, std::string>> load_symbol_universe_from_file(
     const std::string& path) {

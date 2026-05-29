@@ -74,6 +74,32 @@ TEST(IBKRClient, ConnectReturnsFalseOnTransportFailure) {
   EXPECT_FALSE(c.connect("h", 1, 2));
 }
 
+// Audit #2 + #6: after a successful transport connect, IBKRClient must
+// request real-time market data and a fresh next-valid-id so the engine
+// neither silently consumes delayed prints nor collides with stale order
+// ids. These two calls have to fire in order, but the relative ordering
+// between them and against later subscribes is not asserted here (it's
+// outside the contract).
+TEST(IBKRClient, ConnectIssuesMarketDataTypeOneAndReqIds) {
+  auto t = std::make_unique<NiceMockTransport>();
+  EXPECT_CALL(*t, connect(_, _, _)).WillOnce(Return(true));
+  EXPECT_CALL(*t, request_market_data_type(1)).Times(1);
+  EXPECT_CALL(*t, request_ids(-1)).Times(1);
+  hft::IBKRClient c(std::move(t));
+  EXPECT_TRUE(c.connect("h", 1, 2));
+}
+
+// And conversely: if the underlying connect fails, we must NOT issue
+// the post-connect setup calls (TWS would reject and log noise).
+TEST(IBKRClient, ConnectFailureSkipsMarketDataTypeAndReqIds) {
+  auto t = std::make_unique<NiceMockTransport>();
+  EXPECT_CALL(*t, connect(_, _, _)).WillOnce(Return(false));
+  EXPECT_CALL(*t, request_market_data_type(_)).Times(0);
+  EXPECT_CALL(*t, request_ids(_)).Times(0);
+  hft::IBKRClient c(std::move(t));
+  EXPECT_FALSE(c.connect("h", 1, 2));
+}
+
 TEST(IBKRClient, IsConnectedDelegatesToTransport) {
   auto t = std::make_unique<NiceMockTransport>();
   // Explicit WillOnce sequence covers the two assertions; WillRepeatedly
@@ -112,6 +138,36 @@ TEST(IBKRClient, SubscribeMarketDepthForwardsToTransport) {
   hft::IBKRClient c(std::move(t));
   hft::MarketDepthRequest req{1, "FOO", 5};
   c.subscribe_market_depth(req);
+}
+
+// Audit #1: primary_exchange must round-trip through the transport call.
+// The MockIBKRTransport receives the exact MarketDepthRequest we passed
+// in, so a single Field expectation is enough to confirm threading.
+TEST(IBKRClient, SubscribeMarketDepthForwardsPrimaryExchangeField) {
+  auto t = std::make_unique<NiceMockTransport>();
+  EXPECT_CALL(*t, subscribe_market_depth(::testing::Field(
+                      &hft::MarketDepthRequest::primary_exchange,
+                      std::string("NASDAQ"))))
+      .Times(1);
+  hft::IBKRClient c(std::move(t));
+  hft::MarketDepthRequest req{1, "FOO", 5, "NASDAQ"};
+  c.subscribe_market_depth(req);
+}
+
+TEST(IBKRClient, PlaceLimitOrderForwardsPrimaryExchangeField) {
+  auto t = std::make_unique<NiceMockTransport>();
+  EXPECT_CALL(*t,
+              place_limit_order(::testing::Field(
+                  &hft::OrderRequest::primary_exchange, std::string("NYSE"))))
+      .Times(1);
+  hft::IBKRClient c(std::move(t));
+  hft::OrderRequest req{};
+  req.id = 17;
+  req.symbol = "BAR";
+  req.qty = 1.0;
+  req.limit = 10.0;
+  req.primary_exchange = "NYSE";
+  c.place_limit_order(req);
 }
 
 TEST(IBKRClient, SubscribeTopOfBookForwardsToTransport) {
@@ -256,6 +312,61 @@ TEST(IBKRClient, AckLatencyForUnknownOrderIsZero) {
   auto t = std::make_unique<NiceMockTransport>();
   hft::IBKRClient c(std::move(t));
   EXPECT_EQ(c.ack_latency_ms(12345), 0.0);
+}
+
+// Regression test for the send_ts_ / ack_latency_ms_cache_ data race fixed
+// alongside IBKRClient audit item #4. Pre-fix, place_limit_order (engine
+// thread) and on_order_status (reader thread) wrote the same unordered_maps
+// with no mutex; under load this races on rehash and silently corrupts
+// values or crashes. We can't TSan reliably on UCRT64 today so this is a
+// best-effort hammer: spam both sides from concurrent threads and assert we
+// finish without throwing and that ack_latency_ms is consistent for
+// well-formed ids. If the underlying maps are unprotected this test will
+// occasionally segfault or assert; with the mutex in place it's
+// deterministic.
+TEST(IBKRClient, AckLatencyConcurrentSpamDoesNotCrash) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+
+  constexpr int kOrders = 200;
+  std::atomic<bool> writer_done{false};
+
+  // Writer: engine-side place_limit_order + reader-side on_order_status,
+  // interleaved as fast as possible. Mimics the actual call sequence even
+  // though all three happen on this single test thread for setup, then we
+  // overlap with the reader thread below.
+  std::thread writer([&] {
+    for (int i = 0; i < kOrders; ++i) {
+      hft::OrderRequest req{};
+      req.id = i;
+      req.symbol = "X";
+      req.qty = 1.0;
+      c.place_limit_order(req);
+      c.on_order_status(i, "Submitted", 0.0, 1.0, 0.0);
+    }
+    writer_done.store(true);
+  });
+
+  // Reader: hammer ack_latency_ms across the range while writer is still
+  // populating. Pre-fix, this read-during-rehash is the trigger for the
+  // crash; post-fix the lock serialises with on_order_status's write.
+  std::thread reader([&] {
+    while (!writer_done.load()) {
+      for (int i = 0; i < kOrders; ++i) {
+        (void)c.ack_latency_ms(i);
+      }
+    }
+  });
+
+  writer.join();
+  reader.join();
+
+  // After both threads quiesce, every order should have a recorded latency.
+  // We don't bound the value (it's whatever wall clock measured) but it
+  // must be strictly positive, proving the on_order_status write landed.
+  for (int i = 0; i < kOrders; ++i) {
+    EXPECT_GT(c.ack_latency_ms(i), 0.0) << "missing latency for id=" << i;
+  }
 }
 
 TEST(IBKRClient, OnMarketDepthUpdateBidSideInsert) {

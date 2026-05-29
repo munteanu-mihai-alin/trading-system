@@ -72,12 +72,28 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
     return connected_ && client_.isConnected();
   }
 
-  void place_limit_order(const OrderRequest& req) override {
+  // Shared contract builder. Keeps the four subscribe / order call sites
+  // honest about the secType/exchange/currency triple AND ensures the
+  // optional primaryExchange override propagates uniformly. SMART routing
+  // for ambiguous symbols (dual-listed, NASDAQ-vs-NYSE name collisions,
+  // PSTG etc.) silently picks the wrong contract or fails reqContractDetails
+  // outright unless primaryExchange is pinned. See
+  // agent/ibkr_client_audit.md #1 and #9.
+  static Contract build_stock_contract(const std::string& symbol,
+                                       const std::string& primary_exchange) {
     Contract contract;
-    contract.symbol = req.symbol;
+    contract.symbol = symbol;
     contract.secType = "STK";
     contract.exchange = "SMART";
     contract.currency = "USD";
+    if (!primary_exchange.empty()) {
+      contract.primaryExchange = primary_exchange;
+    }
+    return contract;
+  }
+
+  void place_limit_order(const OrderRequest& req) override {
+    Contract contract = build_stock_contract(req.symbol, req.primary_exchange);
 
     Order order;
     order.orderId = req.id;
@@ -96,31 +112,19 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   }
 
   void subscribe_top_of_book(const TopOfBookRequest& req) override {
-    Contract contract;
-    contract.symbol = req.symbol;
-    contract.secType = "STK";
-    contract.exchange = "SMART";
-    contract.currency = "USD";
+    Contract contract = build_stock_contract(req.symbol, req.primary_exchange);
     client_.reqMktData(req.ticker_id, contract, "", false, false,
                        TagValueListSPtr());
   }
 
   void subscribe_market_depth(const MarketDepthRequest& req) override {
-    Contract contract;
-    contract.symbol = req.symbol;
-    contract.secType = "STK";
-    contract.exchange = "SMART";
-    contract.currency = "USD";
+    Contract contract = build_stock_contract(req.symbol, req.primary_exchange);
     client_.reqMktDepth(req.ticker_id, contract, req.depth, false,
                         TagValueListSPtr());
   }
 
   void subscribe_trades(const TopOfBookRequest& req) override {
-    Contract contract;
-    contract.symbol = req.symbol;
-    contract.secType = "STK";
-    contract.exchange = "SMART";
-    contract.currency = "USD";
+    Contract contract = build_stock_contract(req.symbol, req.primary_exchange);
     // "AllLast" delivers every trade print on the symbol. Backfill 0 since
     // we only care about live activity; ignoreSize false so the size field
     // is populated.
@@ -135,6 +139,20 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   }
 
   void cancel_positions_stream() override { client_.cancelPositions(); }
+
+  void request_market_data_type(int data_type) override {
+    // 1 = real-time only. IBKR will respond with error 354 / 10167 if the
+    // active subscriptions don't cover the requested feed; that's the
+    // signal we want rather than silent fallback to delayed prints.
+    client_.reqMarketDataType(data_type);
+  }
+
+  void request_ids(int num_ids) override {
+    // Forces the broker to call back with a fresh next-valid-id via
+    // nextValidId(). The numIds argument is documented as deprecated /
+    // ignored in modern API; the call itself is what matters.
+    client_.reqIds(num_ids);
+  }
 
   void pump_once() override {
     if (!connected_)

@@ -18,11 +18,20 @@ struct MarketDepthRequest {
   int ticker_id = 0;
   std::string symbol;
   int depth = 5;
+  // Optional disambiguation for SMART routing. Empty means "let IBKR pick"
+  // (works for most US single-listed stocks). For dual-listed or ambiguous
+  // symbols (PSTG was the first one we hit on the L1 backfill), set this
+  // to the listing exchange ("NASDAQ", "NYSE", "ARCA", ...) so
+  // reqContractDetails resolves to exactly one contract. See
+  // agent/ibkr_client_audit.md #1 and #9.
+  std::string primary_exchange;
 };
 
 struct TopOfBookRequest {
   int ticker_id = 0;
   std::string symbol;
+  // See MarketDepthRequest::primary_exchange.
+  std::string primary_exchange;
 };
 
 struct TopOfBook {
@@ -49,6 +58,11 @@ struct OrderRequest {
   double qty = 0.0;
   double limit = 0.0;
   bool transmit = true;
+  // Optional, same semantics as MarketDepthRequest::primary_exchange. When
+  // set, RealIBKRTransport pins Contract.primaryExchange so the order
+  // routes to the exact listing the engine subscribed against. Leaving it
+  // empty preserves today's SMART-only behaviour.
+  std::string primary_exchange;
 };
 
 struct OrderUpdate {

@@ -4,6 +4,64 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-29] - Daily-loss kill switch reshaped to ALERT-ONLY (no destructive action)
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `6fc7a62 refactor(engine,config): kill switch -> alert-only (write file, don't act)`.
+- Follow-up to the [2026-05-29] entry below which landed the original auto-cancel version.
+
+User intent:
+- Per user: "Change kill switch so we track when we should use it, not really trigger it. We should have a way to tell we should do the kill, like writing to a file."
+- The kill switch's PnL-tracking + threshold logic is good; the destructive action (cancel + refuse + Engine→Error) was premature. We want to validate the threshold under real market conditions first, then decide whether to promote.
+
+Behaviour change:
+- Before (commit `f333096`): on breach, cancel every entry + exit order, set kill_switch_engaged_, refuse new orders for the session, flip Engine -> Error.
+- After (commit `6fc7a62`): on breach, write one breach line to `cfg.app.daily_loss_kill_alert_path` (if set), raise a warning through `hl::raise_warning`, set `kill_alert_raised_` for observability. **Engine continues placing orders normally** - no cancel, no refuse, Engine stays Ready.
+
+New config:
+- `daily_loss_kill_usd` (existing, semantics unchanged) - threshold in dollars.
+- `daily_loss_kill_alert_path` (new) - where to write the breach line. Empty (default) = log-only.
+
+Alert file:
+- Truncated at every `start()` so prior-session content can't masquerade as live.
+- Written exactly once per session on first breach (idempotent within session via `kill_alert_raised_`).
+- One line, space-separated key=value pairs, easy to `grep` / `tail`:
+  ```
+  breached step=42 ts_ns=1735480123000000000 threshold_usd=200 session_pnl_usd=-250.5 realized_pnl_usd=-50 unrealized_pnl_usd=-200.5 open_positions=3 label=morning_smoke
+  ```
+- Monitoring scripts can `test -f $path` for existence; the line itself gives breakdown.
+
+API renames (internal + public test surface):
+- `kill_switch_engaged_` → `kill_alert_raised_`
+- `kill_switch_engaged()` → `kill_alert_raised()`
+- `engage_daily_loss_kill_switch` → `raise_daily_loss_kill_alert`
+- `check_daily_loss_kill_switch` → `check_daily_loss_kill_alert`
+- `check_daily_loss_kill_switch_for_test` → `check_daily_loss_kill_alert_for_test`
+
+Tests:
+- `KillSwitchStepSkipsOrderPlacement` REMOVED (the inverse assertion is what's now correct).
+- `KillAlertDoesNotSuppressOrderPlacement` ADDED - asserts the engine DOES place orders after the alert raises.
+- `KillAlertWritesBreachLineToConfiguredPath` ADDED.
+- `KillAlertNoFileWritesWhenPathEmpty` ADDED.
+- `KillAlertStartClearsPriorSessionFile` ADDED.
+- AppConfig load test extended for the new path knob.
+- 133 gtests pass; Catch2 still green.
+
+How to promote to a real "kill" later:
+- Add a `daily_loss_kill_action` enum knob: `alert` (default) | `cancel` | `kill_then_alert`.
+- The cancel + Engine->Error logic from commit `f333096` is preserved in git history; cherry-pick the body of the old `engage_daily_loss_kill_switch` and gate it on `daily_loss_kill_action != alert`.
+- Run live with `alert` for at least one paper-trading week first to validate threshold readings.
+
+Known follow-ups:
+- The breach line uses `std::ostringstream` default precision (six significant digits for doubles). Sub-cent precision drops; for monitoring this is fine but if anyone parses these for accounting, switch to `std::fixed << std::setprecision(2)`.
+- The alert file uses `std::ofstream(path, std::ios::trunc)` so a misconfigured path that can't be created surfaces as a logged warning (code 5) only - no exception. Operators should periodically check that the alert file path is writable, e.g. with a startup ls in `scripts/hft_status.sh`.
+
+Suggested commit (already done): `6fc7a62`.
+
 ## [2026-05-29] - Live-trading prereqs: IBKRClient audit blocker batch + daily-loss kill switch landed
 
 Model / agent:

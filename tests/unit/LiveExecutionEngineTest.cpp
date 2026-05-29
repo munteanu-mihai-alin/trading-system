@@ -641,22 +641,26 @@ TEST(LiveExecutionEngine, StepHeartbeatBoundary) {
   engine.step(100);
 }
 
-// ---- Daily-loss kill switch (AppConfig::daily_loss_kill_usd) ----
-// These cover umbrella sub-item #1 of the live-trading prerequisites.
-// They drive realized_pnl_ via the test seam so the test doesn't depend
-// on the full broker / lifecycle stack to fake an exit Filled.
+// ---- Daily-loss kill ALERT (AppConfig::daily_loss_kill_usd) ----
+// These cover umbrella sub-item #1 of the live-trading prerequisites,
+// in its alert-only form. The engine MUST NOT cancel orders, refuse
+// new orders, or flip the Engine component to Error - just raise the
+// flag, log a warning, and write one breach line to the configured
+// alert path. They drive realized_pnl_ via the test seam so the test
+// doesn't depend on the full broker / lifecycle stack to fake an exit
+// Filled.
 
-TEST(LiveExecutionEngine, KillSwitchDisabledWhenThresholdZero) {
+TEST(LiveExecutionEngine, KillAlertDisabledWhenThresholdZero) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   // Default daily_loss_kill_usd is 0 -> gate disabled. Even a $1B
-  // realized loss must NOT engage the switch.
+  // realized loss must NOT raise the alert.
   hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   engine.inject_realized_pnl_for_test(-1e9);
-  engine.check_daily_loss_kill_switch_for_test();
-  EXPECT_FALSE(engine.kill_switch_engaged());
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_FALSE(engine.kill_alert_raised());
 }
 
-TEST(LiveExecutionEngine, KillSwitchInactiveBelowThreshold) {
+TEST(LiveExecutionEngine, KillAlertInactiveBelowThreshold) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   hft::AppConfig app;
   app.mode = hft::BrokerMode::Paper;
@@ -665,15 +669,15 @@ TEST(LiveExecutionEngine, KillSwitchInactiveBelowThreshold) {
                                   std::move(broker));
   // -99 < -100 is false -> still safe. Equality also safe (>, not >=).
   engine.inject_realized_pnl_for_test(-99.0);
-  engine.check_daily_loss_kill_switch_for_test();
-  EXPECT_FALSE(engine.kill_switch_engaged());
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_FALSE(engine.kill_alert_raised());
 
   engine.inject_realized_pnl_for_test(-100.0);
-  engine.check_daily_loss_kill_switch_for_test();
-  EXPECT_FALSE(engine.kill_switch_engaged());
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_FALSE(engine.kill_alert_raised());
 }
 
-TEST(LiveExecutionEngine, KillSwitchEngagesWhenLossExceedsThreshold) {
+TEST(LiveExecutionEngine, KillAlertRaisedWhenLossExceedsThreshold) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   hft::AppConfig app;
   app.mode = hft::BrokerMode::Paper;
@@ -681,31 +685,37 @@ TEST(LiveExecutionEngine, KillSwitchEngagesWhenLossExceedsThreshold) {
   hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
                                   std::move(broker));
   engine.inject_realized_pnl_for_test(-100.01);  // strictly over
-  engine.check_daily_loss_kill_switch_for_test();
-  EXPECT_TRUE(engine.kill_switch_engaged());
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_TRUE(engine.kill_alert_raised());
 }
 
-TEST(LiveExecutionEngine, KillSwitchPositivePnlNeverEngages) {
+TEST(LiveExecutionEngine, KillAlertPositivePnlNeverRaises) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   hft::AppConfig app;
   app.mode = hft::BrokerMode::Paper;
   app.daily_loss_kill_usd = 100.0;
   hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
                                   std::move(broker));
-  // A profitable session must never trip the switch, regardless of how
+  // A profitable session must never raise the alert, regardless of how
   // big the gain is.
   engine.inject_realized_pnl_for_test(1e6);
-  engine.check_daily_loss_kill_switch_for_test();
-  EXPECT_FALSE(engine.kill_switch_engaged());
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_FALSE(engine.kill_alert_raised());
 }
 
-TEST(LiveExecutionEngine, KillSwitchStepSkipsOrderPlacement) {
-  // After the switch trips, subsequent step() calls must NOT call
-  // place_limit_order even though there are otherwise-active symbols
-  // ready to buy. Without the kill gate the engine would place at least
-  // one order per StepPlacesOrdersForActivePortfolioItems above.
+// Critical alert-only invariant: after the alert raises, subsequent
+// step() calls must STILL place orders normally. The alert is
+// observational; the operator decides whether to intervene.
+// Pre-refactor this test asserted Times(0) - that was the wrong
+// semantic for what the user wanted.
+TEST(LiveExecutionEngine, KillAlertDoesNotSuppressOrderPlacement) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
-  EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
+  // With the alert raised, the engine MUST still place orders for
+  // active portfolio items - identical behaviour to
+  // StepPlacesOrdersForActivePortfolioItems above.
+  EXPECT_CALL(*broker, place_limit_order(_)).Times(AtLeast(1));
+  // It also MUST NOT cancel anything just because the alert raised.
+  EXPECT_CALL(*broker, cancel_order(_)).Times(0);
 
   hft::AppConfig app;
   app.mode = hft::BrokerMode::Paper;
@@ -714,18 +724,18 @@ TEST(LiveExecutionEngine, KillSwitchStepSkipsOrderPlacement) {
   hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
                                   std::move(broker));
   engine.initialize_universe(10);
-  // Trip the switch first; the next step() must skip routing.
   engine.inject_realized_pnl_for_test(-150.0);
-  engine.check_daily_loss_kill_switch_for_test();
-  ASSERT_TRUE(engine.kill_switch_engaged());
+  engine.check_daily_loss_kill_alert_for_test();
+  ASSERT_TRUE(engine.kill_alert_raised());
   engine.step(0);
   engine.step(1);
 }
 
-TEST(LiveExecutionEngine, KillSwitchIdempotentOnRepeatedCheck) {
+TEST(LiveExecutionEngine, KillAlertIdempotentOnRepeatedCheck) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
-  // Once engaged, a second check must NOT issue another round of
-  // cancels nor re-raise the error.
+  // Once raised, subsequent checks must be no-ops: no extra
+  // cancel_order calls (we never cancel anyway in alert-only mode)
+  // and the flag stays set.
   EXPECT_CALL(*broker, cancel_order(_)).Times(0);
   hft::AppConfig app;
   app.mode = hft::BrokerMode::Paper;
@@ -733,12 +743,93 @@ TEST(LiveExecutionEngine, KillSwitchIdempotentOnRepeatedCheck) {
   hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
                                   std::move(broker));
   engine.inject_realized_pnl_for_test(-200.0);
-  engine.check_daily_loss_kill_switch_for_test();
-  ASSERT_TRUE(engine.kill_switch_engaged());
-  // No open orders to cancel in this hermetic test, so the EXPECT_CALL
-  // is really asserting "no extra cancel attempts after engagement".
-  engine.check_daily_loss_kill_switch_for_test();
-  engine.check_daily_loss_kill_switch_for_test();
+  engine.check_daily_loss_kill_alert_for_test();
+  ASSERT_TRUE(engine.kill_alert_raised());
+  engine.check_daily_loss_kill_alert_for_test();
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_TRUE(engine.kill_alert_raised());
+}
+
+TEST(LiveExecutionEngine, KillAlertWritesBreachLineToConfiguredPath) {
+  // With daily_loss_kill_alert_path set, the alert raise must drop a
+  // single-line breach record at that path. Operators (and monitoring
+  // scripts) detect the alert by `test -f` on the path.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  const std::string path = "tmp_daily_loss_kill_alert_writes_breach_line.txt";
+  std::remove(path.c_str());  // hermetic: clear any prior leftover
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 100.0;
+  app.daily_loss_kill_alert_path = path;
+  app.run_label = "test_breach_run";
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.inject_realized_pnl_for_test(-250.5);
+  engine.check_daily_loss_kill_alert_for_test();
+  ASSERT_TRUE(engine.kill_alert_raised());
+
+  std::ifstream in(path);
+  ASSERT_TRUE(in.is_open()) << "alert file not written";
+  std::string line;
+  std::getline(in, line);
+  EXPECT_NE(line.find("breached"), std::string::npos);
+  EXPECT_NE(line.find("threshold_usd=100"), std::string::npos);
+  EXPECT_NE(line.find("session_pnl_usd=-250.5"), std::string::npos);
+  EXPECT_NE(line.find("label=test_breach_run"), std::string::npos);
+  // No second line: write is once-per-session.
+  std::string extra;
+  EXPECT_FALSE(std::getline(in, extra) && !extra.empty());
+  in.close();
+  std::remove(path.c_str());
+}
+
+TEST(LiveExecutionEngine, KillAlertNoFileWritesWhenPathEmpty) {
+  // Threshold set but no path -> alert still raises, but nothing
+  // hits disk. Just the warning log fires.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 50.0;
+  // daily_loss_kill_alert_path intentionally empty.
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.inject_realized_pnl_for_test(-100.0);
+  engine.check_daily_loss_kill_alert_for_test();
+  EXPECT_TRUE(engine.kill_alert_raised());
+}
+
+TEST(LiveExecutionEngine, KillAlertStartClearsPriorSessionFile) {
+  // A stale alert file from a previous session must be removed at
+  // start() so its presence post-start means "this session breached"
+  // unambiguously. We don't actually call start() here (it would try
+  // to connect to a broker); instead we test the seam by creating a
+  // file, calling check with no breach, and confirming start-time
+  // removal happens during a normal engine lifecycle.
+  //
+  // The behaviour-under-test is: the file removed at start() is the
+  // one at daily_loss_kill_alert_path. We exercise it by constructing
+  // an engine with the path set + a stale file present, calling
+  // start(), and asserting the file is gone.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, connect(_, _, _)).WillOnce(Return(true));
+  const std::string path = "tmp_daily_loss_kill_alert_stale_clear.txt";
+  {
+    std::ofstream stale(path, std::ios::trunc);
+    stale << "stale from a previous session\n";
+  }
+  ASSERT_TRUE(std::ifstream(path).is_open()) << "test setup: file must exist";
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.daily_loss_kill_usd = 100.0;
+  app.daily_loss_kill_alert_path = path;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  EXPECT_TRUE(engine.start());
+  EXPECT_FALSE(std::ifstream(path).is_open())
+      << "start() should have removed the stale alert file";
+  std::remove(path.c_str());
 }
 
 }  // namespace

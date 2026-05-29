@@ -65,18 +65,25 @@ class LiveExecutionEngine {
   // threading t through every signature.
   int current_step_t_ = 0;
 
-  // ---- Daily-loss kill switch (AppConfig::daily_loss_kill_usd) ----
+  // ---- Daily-loss kill ALERT (AppConfig::daily_loss_kill_usd) ----
   // realized_pnl_ accumulates each exit Filled's
   //   (avg_fill_price - entry_price) * filled_qty
   // (commission is excluded; it's a small fraction of the kill threshold
   // and computing it precisely would couple us to the order-log column
-  // schema). kill_switch_engaged_ flips once when -session_pnl exceeds
-  // cfg_.app.daily_loss_kill_usd; once true, the engine cancels every
-  // open order, refuses to place new ones, and stays Engine -> Error for
-  // the rest of the session. Reset by stop() / start() to keep tests
-  // hermetic.
+  // schema).
+  //
+  // kill_alert_raised_ flips once when -session_pnl exceeds
+  // cfg_.app.daily_loss_kill_usd. ALERT-ONLY: the engine writes a
+  // single-line breach record to cfg_.app.daily_loss_kill_alert_path
+  // (if set), logs a warning, and OTHERWISE CONTINUES NORMALLY.
+  // Open orders are NOT cancelled and new orders are NOT refused.
+  // Operator-in-the-loop response is intentional; we want to validate
+  // the threshold reading under real conditions before promoting to a
+  // hard kill. See AGENT_HANDOFF_LOG.md [2026-05-29] alert-only entry.
+  //
+  // Reset by start() so tests + multi-session runs start clean.
   double realized_pnl_ = 0.0;
-  bool kill_switch_engaged_ = false;
+  bool kill_alert_raised_ = false;
 
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
@@ -153,20 +160,26 @@ class LiveExecutionEngine {
   // open_positions_ and prices each against the current L2 best
   // bid/ask (falling back to L1 snapshot_top_of_book, then to
   // entry_price when neither is available so a missing book never
-  // synthesises a false loss). Used by the daily-loss kill switch and
+  // synthesises a false loss). Used by the daily-loss kill alert and
   // by tests that want to inspect mid-session state.
   [[nodiscard]] double compute_unrealized_pnl_mark_to_market() const;
   [[nodiscard]] double compute_session_pnl() const;
-  // Engage the daily-loss kill switch: cancel every entry order and
-  // every exit order in flight, flip the Engine component to Error,
-  // and mark the session so subsequent steps refuse to place new
-  // orders. Idempotent - re-calls are no-ops once engaged.
-  void engage_daily_loss_kill_switch(double session_pnl);
+  // Raise the daily-loss kill ALERT: write one breach line to the
+  // configured alert path (if any), log a warning, mark
+  // kill_alert_raised_ so subsequent checks are no-ops. ALERT-ONLY -
+  // no orders are cancelled, no orders are refused, the Engine
+  // component is NOT moved to Error.
+  void raise_daily_loss_kill_alert(double session_pnl);
   // Top-of-step hook that re-evaluates session PnL against
-  // daily_loss_kill_usd and engages the switch when exceeded. Cheap
+  // daily_loss_kill_usd and raises the alert when exceeded. Cheap
   // (O(open_positions) book snapshots). Disabled when the config knob
   // is <= 0.
-  void check_daily_loss_kill_switch();
+  void check_daily_loss_kill_alert();
+  // Reset the alert-file state at session start: if a path is
+  // configured and a prior-session file is sitting there, remove it
+  // so the file's presence post-start unambiguously means "this
+  // session breached".
+  void reset_daily_loss_kill_alert_file();
 
  public:
   RankingEngine ranking;
@@ -198,25 +211,21 @@ class LiveExecutionEngine {
   }
   [[nodiscard]] int orders_placed() const { return orders_placed_; }
 
-  // Read-only kill-switch accessors for tests + the end-of-run summary.
+  // Read-only kill-alert accessors for tests + the end-of-run summary.
   // realized_pnl is the running sum of exit (avg_fill - entry) * filled
-  // since the most recent start(); kill_switch_engaged flips once and
+  // since the most recent start(); kill_alert_raised flips once and
   // never resets within a session.
   [[nodiscard]] double realized_pnl() const { return realized_pnl_; }
-  [[nodiscard]] bool kill_switch_engaged() const {
-    return kill_switch_engaged_;
-  }
+  [[nodiscard]] bool kill_alert_raised() const { return kill_alert_raised_; }
 
-  // Test-only seam. Lets unit tests drive the kill-switch logic without
+  // Test-only seam. Lets unit tests drive the kill-alert logic without
   // having to fake a full broker fill path to populate realized_pnl_.
   // Do NOT call from production code; the engine maintains its own
   // tally via refresh_order_state on exit Filled events.
   void inject_realized_pnl_for_test(double pnl) { realized_pnl_ = pnl; }
-  // Force one round of the kill-switch evaluation against current state.
+  // Force one round of the kill-alert evaluation against current state.
   // Equivalent to what step() does just after refresh_order_state.
-  void check_daily_loss_kill_switch_for_test() {
-    check_daily_loss_kill_switch();
-  }
+  void check_daily_loss_kill_alert_for_test() { check_daily_loss_kill_alert(); }
 };
 
 }  // namespace hft

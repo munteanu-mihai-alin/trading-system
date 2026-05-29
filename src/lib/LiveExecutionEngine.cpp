@@ -13,7 +13,10 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <ios>
+#include <sstream>
+#include <system_error>
 #include <utility>
 
 namespace hft {
@@ -251,12 +254,15 @@ void LiveExecutionEngine::emit_l2_trace(const std::string& symbol,
 bool LiveExecutionEngine::start() {
   hl::set_component_state(hl::ComponentId::Engine,
                           hl::ComponentState::Starting);
-  // Reset per-session kill-switch state. A re-started engine MUST start
-  // with a fresh realized-pnl tally and the switch disengaged, otherwise
+  // Reset per-session kill-alert state. A re-started engine MUST start
+  // with a fresh realized-pnl tally and the alert un-raised, otherwise
   // a long-running test that calls start() between runs would inherit
-  // the previous session's tripped state.
+  // the previous session's flagged state. The alert file is also
+  // wiped (when configured) so its presence post-start unambiguously
+  // means "this session breached".
   realized_pnl_ = 0.0;
-  kill_switch_engaged_ = false;
+  kill_alert_raised_ = false;
+  reset_daily_loss_kill_alert_file();
   const bool ok =
       broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id);
   if (!ok) {
@@ -341,12 +347,14 @@ void LiveExecutionEngine::step(int t) {
   broker_->on_step(t);
   reconcile_broker_state();
   refresh_order_state();
-  // Daily-loss kill switch. Runs right after refresh_order_state so any
+  // Daily-loss kill ALERT. Runs right after refresh_order_state so any
   // exit Filled this step has already updated realized_pnl_ before we
   // check. Disabled when daily_loss_kill_usd <= 0 (default for backtests
-  // and sim runs). Once engaged we keep falling through to heartbeat /
-  // tracing below but skip order placement at the bottom of step().
-  check_daily_loss_kill_switch();
+  // and sim runs). ALERT-ONLY: writes one breach line to the configured
+  // alert path and logs a warning; does NOT cancel orders, refuse new
+  // orders, or move the Engine component to Error. The engine continues
+  // operating normally and the operator decides whether to intervene.
+  check_daily_loss_kill_alert();
   ranking.step(t);
 
   // Per-step ranking snapshot to the step-trace file (separate from the
@@ -359,18 +367,6 @@ void LiveExecutionEngine::step(int t) {
   }
 
   if (!cfg_.app.order_enabled) {
-    if ((t % 100) == 0) {
-      hl::heartbeat(hl::ComponentId::Engine);
-    }
-    return;
-  }
-
-  // Kill switch engaged earlier this step (or on a prior step). Skip ALL
-  // order routing for the rest of the session - both new entries and the
-  // exit-order maintenance done by route_exit_orders. The cancels were
-  // issued inside engage_daily_loss_kill_switch; refresh_order_state
-  // continues to drain their terminal statuses naturally.
-  if (kill_switch_engaged_) {
     if ((t % 100) == 0) {
       hl::heartbeat(hl::ComponentId::Engine);
     }
@@ -848,39 +844,75 @@ double LiveExecutionEngine::compute_session_pnl() const {
   return realized_pnl_ + compute_unrealized_pnl_mark_to_market();
 }
 
-void LiveExecutionEngine::engage_daily_loss_kill_switch(double session_pnl) {
-  if (kill_switch_engaged_)
+void LiveExecutionEngine::raise_daily_loss_kill_alert(double session_pnl) {
+  if (kill_alert_raised_)
     return;
-  kill_switch_engaged_ = true;
-  // Cancel every entry order still in flight. We do NOT erase
-  // entry_orders_ here - refresh_order_state will see the cancel come
-  // back as a terminal status and clean up. This way the cancel-event
-  // emits a normal "cancelled" order_log row.
-  for (const auto& kv : entry_orders_) {
-    broker_->cancel_order(kv.first);
+  kill_alert_raised_ = true;
+
+  // Compose the breach line. Plain text + space-separated key=value
+  // pairs so monitoring scripts can `grep -E "session_pnl=-[0-9]"`
+  // without a JSON parser. realized + unrealized are broken out so
+  // an operator can tell at a glance whether the loss is locked in
+  // (sold positions) vs paper (still-open M2M).
+  const double unrealized = compute_unrealized_pnl_mark_to_market();
+  const double realized = session_pnl - unrealized;
+  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+  std::ostringstream line;
+  line << "breached step=" << current_step_t_ << " ts_ns=" << now_ns
+       << " threshold_usd=" << cfg_.app.daily_loss_kill_usd
+       << " session_pnl_usd=" << session_pnl << " realized_pnl_usd=" << realized
+       << " unrealized_pnl_usd=" << unrealized
+       << " open_positions=" << open_positions_.size();
+  if (!cfg_.app.run_label.empty()) {
+    line << " label=" << cfg_.app.run_label;
   }
-  // Same for exit orders. exit_order_symbols_ keeps order_id -> symbol;
-  // cancellation flows back through refresh_order_state.
-  for (const auto& kv : exit_order_symbols_) {
-    broker_->cancel_order(kv.first);
+  const std::string msg = line.str();
+
+  // Surface via the logging component first so the breach shows up in
+  // the standard log stream even if the file write fails. Warning,
+  // not error: the engine is intentionally continuing to run.
+  hl::raise_warning(hl::ComponentId::Engine, /*code=*/4, msg.c_str());
+
+  // Then the file, if configured. Truncate-on-write since
+  // reset_daily_loss_kill_alert_file already cleared any prior-session
+  // file at start(); within this session the kill_alert_raised_ guard
+  // above ensures we only land here once.
+  if (cfg_.app.daily_loss_kill_alert_path.empty())
+    return;
+  std::ofstream out(cfg_.app.daily_loss_kill_alert_path, std::ios::trunc);
+  if (!out.is_open()) {
+    hl::raise_warning(hl::ComponentId::Engine, /*code=*/5,
+                      "could not open daily_loss_kill_alert_path");
+    return;
   }
-  hl::raise_error(hl::ComponentId::Engine, /*code=*/4,
-                  "daily_loss_kill_usd breached");
-  hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Error,
-                          /*code=*/4);
-  // Best-effort logged context. Doesn't affect the kill behavior.
-  (void)session_pnl;
+  out << msg << '\n';
 }
 
-void LiveExecutionEngine::check_daily_loss_kill_switch() {
-  if (kill_switch_engaged_)
+void LiveExecutionEngine::check_daily_loss_kill_alert() {
+  if (kill_alert_raised_)
     return;
   if (cfg_.app.daily_loss_kill_usd <= 0.0)
     return;
   const double session_pnl = compute_session_pnl();
   if (-session_pnl > cfg_.app.daily_loss_kill_usd) {
-    engage_daily_loss_kill_switch(session_pnl);
+    raise_daily_loss_kill_alert(session_pnl);
   }
+}
+
+void LiveExecutionEngine::reset_daily_loss_kill_alert_file() {
+  // Best-effort: only act when a path is configured AND it exists.
+  // std::filesystem::remove on a missing path returns false without
+  // throwing, but we still gate to avoid surprising errno noise if
+  // somebody hooks one of these calls with strace.
+  if (cfg_.app.daily_loss_kill_alert_path.empty())
+    return;
+  std::error_code ec;
+  std::filesystem::remove(cfg_.app.daily_loss_kill_alert_path, ec);
+  // Ignore ec: a permission error or a file-in-use is something the
+  // operator will see anyway when raise_daily_loss_kill_alert
+  // eventually tries to write.
 }
 
 }  // namespace hft

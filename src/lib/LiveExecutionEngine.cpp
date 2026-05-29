@@ -1108,6 +1108,25 @@ void LiveExecutionEngine::subscribe_live_books(
     const std::vector<std::string>& symbols) {
   hl::set_component_state(hl::ComponentId::MarketData,
                           hl::ComponentState::Starting);
+  // Invariant: the i-th subscribed symbol must match items[i] because
+  // reconcile_broker_state looks up ticker_id (i+1) for items[i]. If
+  // the caller passes a list in a DIFFERENT order than items, every
+  // snapshot_top_of_book call returns the wrong symbol's L1 prices -
+  // that is the 2026-05-29 yen v3 misroute bug. We warn loudly rather
+  // than silently routing trades on garbage prices; tests can opt
+  // into the legacy behaviour by passing the empty items list.
+  if (!ranking.portfolio.items.empty() &&
+      ranking.portfolio.items.size() == symbols.size()) {
+    for (std::size_t i = 0; i < symbols.size(); ++i) {
+      if (ranking.portfolio.items[i].symbol != symbols[i]) {
+        hl::raise_warning(hl::ComponentId::MarketData, /*code=*/7,
+                          "subscribe_live_books symbols[i] != items[i] - "
+                          "ticker_id mapping will produce wrong-symbol data; "
+                          "rebuild caller from ranking.portfolio.items");
+        break;
+      }
+    }
+  }
   int ticker = 1;
   for (const auto& sym : symbols) {
     const std::string px = primary_exchange_for(sym);

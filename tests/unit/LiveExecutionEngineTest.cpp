@@ -118,6 +118,50 @@ TEST(LiveExecutionEngine, SubscribeLiveBooksHandlesEmptyList) {
   engine.subscribe_live_books({});
 }
 
+// Regression for the 2026-05-29 yen v3 misroute. The caller (main.cpp)
+// used to build the subscribe-list from kSymbolCompanyList while the
+// engine internally loaded the universe from cfg.symbol_universe_path.
+// When those orderings differ, ticker_id (i+1) ends up associated
+// with a symbol DIFFERENT from items[i], and every later
+// snapshot_top_of_book lookup returns the wrong file's L1 prices.
+//
+// This test pins the invariant from the engine side: the i-th
+// subscribe_top_of_book call MUST receive items[i].symbol. With the
+// correct main.cpp derive-from-items pattern, the symbols passed in
+// equal items mapped to .symbol. Verifying via the recorded request
+// stream is the smallest test that would catch a regression in
+// either main.cpp OR a future engine refactor.
+TEST(LiveExecutionEngine, SubscribeLiveBooksMatchesItemsOrder) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  // Capture every subscribe_top_of_book request in order.
+  std::vector<hft::TopOfBookRequest> captured;
+  EXPECT_CALL(*broker, subscribe_top_of_book(_))
+      .WillRepeatedly([&captured](const hft::TopOfBookRequest& req) {
+        captured.push_back(req);
+      });
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.initialize_universe(8);
+
+  // Mirror main.cpp's post-fix pattern: build symbols from items.
+  std::vector<std::string> symbols;
+  symbols.reserve(engine.ranking.portfolio.items.size());
+  for (const auto& item : engine.ranking.portfolio.items) {
+    symbols.push_back(item.symbol);
+  }
+  engine.subscribe_live_books(symbols);
+
+  ASSERT_EQ(captured.size(), engine.ranking.portfolio.items.size());
+  for (std::size_t i = 0; i < captured.size(); ++i) {
+    EXPECT_EQ(captured[i].ticker_id, static_cast<int>(i + 1))
+        << "ticker_id at position " << i << " should be " << (i + 1);
+    EXPECT_EQ(captured[i].symbol, engine.ranking.portfolio.items[i].symbol)
+        << "ticker_id " << (i + 1) << " was subscribed for symbol "
+        << captured[i].symbol << " but items[" << i << "] is "
+        << engine.ranking.portfolio.items[i].symbol
+        << " - reconcile_broker_state will pull wrong L1 data";
+  }
+}
+
 TEST(LiveExecutionEngine, StepPlacesOrdersForActivePortfolioItems) {
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   // After initialize_universe + a single step, the ranking engine selects up

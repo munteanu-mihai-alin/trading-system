@@ -87,13 +87,27 @@ int main() {
   const int universe_size = std::clamp(
       cfg.universe_size, 0, static_cast<int>(hft::kSymbolCompanyList.size()));
   engine.initialize_universe(universe_size);
-  std::cout << "Universe initialized with " << universe_size << " symbols."
-            << std::endl;
+  // The engine resolved the universe internally (file override via
+  // cfg.symbol_universe_path, or the hard-coded kSymbolCompanyList as
+  // a fallback) and pushed Stock items into ranking.portfolio.items
+  // in load order. We MUST derive the subscription list from those
+  // items: subscribe_live_books assigns ticker_id = i+1 to the i-th
+  // symbol it sees, and reconcile_broker_state later looks up that
+  // ticker_id by items[i]. If we build `symbols` from a different
+  // source (e.g. the hard-coded list while the file override is set),
+  // ticker_id i+1 ends up subscribed for a DIFFERENT symbol than
+  // items[i], and every snapshot_top_of_book call returns the wrong
+  // L1 file's prices. That is the bug that produced the 2026-05-29
+  // yen v3 misroute (KEYS reading IBM's L1, KLAC reading KEYS's L1,
+  // every subsequent step seeing wrong mids); see
+  // agent/AGENT_HANDOFF_LOG.md.
   std::vector<std::string> symbols;
-  for (int i = 0; i < universe_size; ++i) {
-    symbols.push_back(
-        hft::kSymbolCompanyList[static_cast<std::size_t>(i)].first);
+  symbols.reserve(engine.ranking.portfolio.items.size());
+  for (const auto& item : engine.ranking.portfolio.items) {
+    symbols.push_back(item.symbol);
   }
+  std::cout << "Universe initialized with " << symbols.size() << " symbols."
+            << std::endl;
   std::cout << "Subscribing live books for " << symbols.size() << " symbols..."
             << std::endl;
   engine.subscribe_live_books(symbols);

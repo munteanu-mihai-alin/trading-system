@@ -4,6 +4,76 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-29] - Live-trading prereqs: IBKRClient audit blocker batch + daily-loss kill switch landed
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `f333096 feat(engine,config): daily-loss kill switch + engine primary_exchange wiring`.
+- Two commits land here: `3682027` (broker-layer audit hardening) and `f333096` (engine wiring + kill switch).
+- Test suites: 136 gtests + Catch2 all green.
+
+Context:
+- The [2026-05-16] `Live-trading prerequisites` umbrella below listed 10 sub-items gating real-money paper mode. After re-reading the audit (`agent/ibkr_client_audit.md`) and the actual code, several "hard blockers" had already been wired in prior commits: #5 (query_positions) was implemented end-to-end (IBKRClient -> IBKRTransport::request_positions -> RealIBKRTransport::reqPositions, with FakeIBKRTransport coverage in TestBrokerIntegration).
+- This entry closes the **remaining** broker-layer hard blockers (#4, #2, #6, #1, #9) plus umbrella sub-item #1 (daily-loss kill switch). All work in two commits.
+
+#4 Mutex on send_ts_ / ack_latency_ms_cache_ (Done):
+- `place_limit_order` (engine thread) and `on_order_status` (reader thread) wrote the same `std::unordered_map`s with no mutex. Under load this would race on rehash -> silent corruption or crash.
+- Fix: wrap all three call sites under the existing `event_mutex_` (used for `next_valid_order_id_` + `errors_`). Lock released before the broker call so we don't serialise on the round-trip.
+- Test: `IBKRClient.AckLatencyConcurrentSpamDoesNotCrash` spams writer + reader threads against the same client; pre-fix this would deterministically segfault under TSan-style load.
+
+#2 reqMarketDataType(1) on connect (Done):
+- Pre-fix: without `reqMarketDataType`, IBKR silently delivers 15-min-delayed ticks when a market-data subscription is missing.
+- Fix: `IBKRClient::connect` now calls `transport_->request_market_data_type(1)` after a successful eConnect. Missing subscriptions now surface as `on_error(354)` / `on_error(10167)` instead.
+- New `IBKRTransport::request_market_data_type(int)` virtual, default no-op so the gmock + Fake doubles keep compiling. `RealIBKRTransport` calls `client_.reqMarketDataType(data_type)`.
+
+#6 Explicit reqIds(-1) on connect (Done):
+- Pre-fix: nextValidId only fires automatically once at connect. If the cached `next_valid_order_id_` drifts (sibling client touched the account, manual TWS order during session), the next place_order can collide and reject.
+- Fix: same connect path also calls `transport_->request_ids(-1)`. Forces TWS to push a fresh nextValidId.
+- Note: `numIds` arg is documented as deprecated; -1 is the conventional placeholder.
+
+#1 + #9 primary_exchange threading + symbol-contract probe (Done):
+- Pre-fix: `RealIBKRTransport` built every Contract with `secType="STK"`, `exchange="SMART"`, `currency="USD"`, no `primaryExchange`. For ambiguous symbols (PSTG was the first one we hit during the L1 backfill) SMART either picks the wrong contract or fails reqContractDetails outright; the engine then silently never streams L1/L2.
+- Fix:
+  - Added optional `primary_exchange` field on `OrderRequest`, `TopOfBookRequest`, `MarketDepthRequest`.
+  - Centralised contract construction in `RealIBKRTransport::build_stock_contract(symbol, primary_exchange)`; all four subscribe / order call sites use it.
+  - `LiveExecutionEngine` populates `primary_exchange = primary_exchange_for(symbol)` at every call site (buy + sell OrderRequest, ensure_depth_subscription, subscribe_live_books).
+  - `primary_exchange_for(symbol)` (in `src/lib/SymbolUniverse.cpp`) returns empty string for now; the override table is intentionally empty pending the live probe run.
+- Probe: `scripts/ibkr_symbol_contract_probe.py` runs `reqContractDetails` over the universe, prints a markdown table classifying each symbol OK / AMBIGUOUS / ERROR / NO_MATCH. Operator runs it once against the user's paper account, pastes results into `agent/ibkr_symbol_audit.md`, then populates the override table accordingly. Currently empty because that requires a live IB Gateway session (and the user's paper credentials).
+
+Umbrella #1 Daily-loss kill switch (Done):
+- New `AppConfig::daily_loss_kill_usd` (default 0 = disabled, so existing backtests / sim / paper smokes see no change).
+- `LiveExecutionEngine` now tracks `realized_pnl_` incrementally as exit Filled events arrive. Commissions intentionally NOT subtracted - the kill threshold dwarfs per-order commission and skipping it keeps the figure independent of cost model calibration.
+- `check_daily_loss_kill_switch` fires at the top of `step()` (after `refresh_order_state` so this step's realized PnL is already counted). Compares `-(realized_pnl_ + compute_unrealized_pnl_mark_to_market())` against `daily_loss_kill_usd`.
+- `compute_unrealized_pnl_mark_to_market` walks `open_positions_` and prices each against L2 best-bid, falling back to L1 mid then `entry_price` so a missing book never synthesises a false loss.
+- `engage_daily_loss_kill_switch` cancels every entry order + every exit order (cancels flow back as normal Cancelled events with order_log emission), raises an error on the Engine component, flips `kill_switch_engaged_`. Subsequent `step()` calls skip all order routing.
+- Idempotent: once engaged, repeated checks are no-ops. Reset only by `start()` between sessions.
+- Tests: `LiveExecutionEngine.KillSwitch{DisabledWhenThresholdZero, InactiveBelowThreshold, EngagesWhenLossExceedsThreshold, PositivePnlNeverEngages, StepSkipsOrderPlacement, IdempotentOnRepeatedCheck}`. Drive via the test-only `inject_realized_pnl_for_test` seam.
+
+What's still open from the umbrella:
+- #4 Hetzner operational hardening (systemd unit + logrotate + alert-on-stop). Operational, not engine code; user / ops task.
+- #5 IB Gateway 2FA / session management on VPS. Documentation task.
+- #7 IBKR live market-data subscriptions. Money + user-action only; user has ~EUR 100 in IBKR (covers the three $1.50/mo L1 prereqs; L2 lines need $500-$2000 NLV minimum).
+- #8 Audit doc (already landed); these blockers were the action items.
+- Audit follow-ups that were tagged "Strong-recommend" rather than hard blocker: `#3 genericTickList` (only matters if `hawkes_use_real_trades=true` without an AllLast sub), `#7 reconnect replay subscriptions`, `#8 error-code dispatch`. None are required for the first L1-only paper smoke.
+- Endurance run (umbrella #2) - the test itself, not a prereq.
+
+What this enables:
+- After the IBKR market-data subscriptions are in place (the three L1 lines, ~$4.50/mo), an L1-only paper smoke against `mode=ibkr_paper` is structurally safe to run. The sell-side compute_execution_score degenerates without L2 but doesn't crash; the kill switch protects against runaway losses regardless of L2 availability.
+
+Validation performed:
+- Built hft_app, hft_gtests, hft_tests on UCRT64. All 136 gtests pass; Catch2 still green.
+- Did NOT run against a live IB Gateway (audit #1 + #9 need the probe + override table populated first; that requires user-action).
+
+Known risks / follow-up:
+- The `primary_exchange_for()` override table is empty. Until the probe runs, the new primary_exchange field is structurally available but threads "" for every symbol -> behaviour is identical to pre-commit for SMART-only resolution. Symbols that need overrides (PSTG was confirmed; others TBD) will still fail subscribe until the table is populated.
+- The daily-loss kill switch's realized PnL is commission-free. If a config sets `daily_loss_kill_usd` very low (sub-$100 territory where commissions matter), the unrealized portion will be a meaningful overestimate of actual breakeven. Default is 0 (disabled); recommended live values >= $100.
+- Unrealized PnL mark uses L2 best-bid (hit-the-bid pessimism) when available. For symbols without an active depth subscription it falls back to L1 mid (less pessimistic) - so a position that only has L1 data will appear slightly more profitable than reality on the kill calculation.
+
+Suggested commit (already done): see `3682027` and `f333096`.
+
 ## [2026-05-28] - L1 source: IBKR returns split-adjusted, Databento doesn't (cross-vendor mismatch)
 
 Source state:
@@ -2024,7 +2094,7 @@ Suggested commit (when calibration is recorded):
 git commit -m "docs(backtest): record one-week Databento run + OU threshold calibration"
 ```
 
-## [2026-05-16] - Live-trading prerequisites (kill-switch, paper endurance, data subs, ops hardening) #todo
+## [2026-05-16] - Live-trading prerequisites (kill-switch, paper endurance, data subs, ops hardening) #todo (partially Done 2026-05-29: sub-items #1 + audit #1/#2/#4/#5/#6/#9 landed; #4 ops, #5 Gateway session, #7 subs, #2 endurance still open)
 
 Model / agent:
 - Model: Claude Opus 4.7 (Anthropic), reasoning model

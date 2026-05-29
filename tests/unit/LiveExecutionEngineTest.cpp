@@ -11,7 +11,9 @@
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #include "common/MockIBroker.hpp"
@@ -797,6 +799,157 @@ TEST(LiveExecutionEngine, KillAlertNoFileWritesWhenPathEmpty) {
   engine.inject_realized_pnl_for_test(-100.0);
   engine.check_daily_loss_kill_alert_for_test();
   EXPECT_TRUE(engine.kill_alert_raised());
+}
+
+// ---- step_trace context-window policy (AppConfig::step_trace_context_window) ----
+// The 2026-05-29 yen v2 disk-full crash was caused by step_trace.csv
+// growing 5000x past its baseline size because the engine writes one
+// row per symbol per step unconditionally. The std::min fix
+// (6139751) caps the step COUNT; this policy caps which steps actually
+// HIT DISK around trade events. Together they bring an 8-day
+// Databento-MBP-1 backtest from 108 GB to ~330 KB without losing any
+// trade-time ranking context.
+
+namespace {
+
+// Parse a step_trace.csv (header + session_start comment + data
+// rows) and return the set of distinct step values seen. Used by the
+// tests below to assert exactly which steps landed on disk.
+std::set<int> read_steps_from_trace(const std::string& path) {
+  std::set<int> out;
+  std::ifstream in(path);
+  if (!in.is_open())
+    return out;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == '#' || line[0] == 't')
+      continue;  // header / session markers
+    const auto first = line.find(',');
+    if (first == std::string::npos)
+      continue;
+    const auto second = line.find(',', first + 1);
+    if (second == std::string::npos)
+      continue;
+    out.insert(std::stoi(line.substr(first + 1, second - first - 1)));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST(LiveExecutionEngine, StepTraceLegacyModeWritesEveryStep) {
+  // Window = 0 must reproduce the historical "log every step" behaviour
+  // so 10-day backtests against sparse IBKR L1 see no schema/output
+  // change after this refactor.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 1;
+  app.step_trace_log_path = "tmp_step_trace_legacy.csv";
+  app.step_trace_context_window = 0;
+  std::remove(app.step_trace_log_path.c_str());
+
+  {
+    hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                    std::move(broker));
+    engine.initialize_universe(5);
+    engine.step(0);
+    engine.step(1);
+    engine.step(2);
+    engine.stop();
+  }
+
+  const auto steps = read_steps_from_trace(app.step_trace_log_path);
+  EXPECT_EQ(steps.size(), 3u);
+  EXPECT_TRUE(steps.count(0));
+  EXPECT_TRUE(steps.count(1));
+  EXPECT_TRUE(steps.count(2));
+  std::remove(app.step_trace_log_path.c_str());
+}
+
+TEST(LiveExecutionEngine, StepTraceContextWindowWritesNothingWithoutTrades) {
+  // Window > 0 + no trade events should produce ZERO step rows on
+  // disk. Everything stays in the ring buffer; on engine destruction
+  // the ring is discarded. order_enabled=false suppresses buys so
+  // nothing fires the event flag.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 1;
+  app.order_enabled = false;  // no buys -> no event flag
+  app.step_trace_log_path = "tmp_step_trace_quiet.csv";
+  app.step_trace_context_window = 3;
+  std::remove(app.step_trace_log_path.c_str());
+
+  {
+    hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                    std::move(broker));
+    engine.initialize_universe(5);
+    for (int t = 0; t < 5; ++t)
+      engine.step(t);
+    engine.stop();
+  }
+
+  // File exists (open_log_ wrote the header) but contains no data
+  // rows. read_steps_from_trace skips header + session markers.
+  EXPECT_TRUE(read_steps_from_trace(app.step_trace_log_path).empty());
+  std::remove(app.step_trace_log_path.c_str());
+}
+
+TEST(LiveExecutionEngine, StepTraceContextWindowFlushesAroundSingleEvent) {
+  // The canonical "N before, N after" assertion. With window=2 and
+  // exactly one trade event (constrained via max_orders_per_run=1):
+  //   step 0: ring=[0] -> trade event -> flush(0), arm trailing=2
+  //   step 1: trailing -> write 1, trailing=1
+  //   step 2: trailing -> write 2, trailing=0
+  //   step 3: push to ring (no flush)
+  //   step 4: push to ring (no flush)
+  // File ends up with steps {0, 1, 2}; steps {3, 4} are stuck in the
+  // ring and discarded on engine destruction.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 1;
+  app.max_orders_per_run = 1;  // gate: exactly one buy across the whole run
+  app.step_trace_log_path = "tmp_step_trace_single_event.csv";
+  app.step_trace_context_window = 2;
+  std::remove(app.step_trace_log_path.c_str());
+
+  {
+    hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                    std::move(broker));
+    engine.initialize_universe(5);
+    for (int t = 0; t < 5; ++t)
+      engine.step(t);
+    engine.stop();
+  }
+
+  const auto steps = read_steps_from_trace(app.step_trace_log_path);
+  EXPECT_EQ(steps.size(), 3u);
+  EXPECT_TRUE(steps.count(0));
+  EXPECT_TRUE(steps.count(1));
+  EXPECT_TRUE(steps.count(2));
+  EXPECT_FALSE(steps.count(3));
+  EXPECT_FALSE(steps.count(4));
+  std::remove(app.step_trace_log_path.c_str());
+}
+
+TEST(LiveExecutionEngine, StepTraceContextWindowZeroPathIsNoop) {
+  // Sanity: when step_trace_log_path is empty NO file is created
+  // regardless of window value. step_trace_log_ stays null so the
+  // emit helpers short-circuit on the null check.
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.top_k = 1;
+  app.step_trace_log_path = "";
+  app.step_trace_context_window = 10;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(3);
+  engine.step(0);
+  // No file to inspect; the test passes by virtue of not crashing.
+  SUCCEED();
 }
 
 // ---- User-triggered manual kill switch (AppConfig::kill_switch_trigger_path) ----

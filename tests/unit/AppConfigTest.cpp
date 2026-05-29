@@ -91,6 +91,7 @@ TEST(AppConfig, DefaultsAreSane) {
   EXPECT_DOUBLE_EQ(cfg.daily_loss_kill_usd, 0.0);
   EXPECT_EQ(cfg.daily_loss_kill_alert_path, "");
   EXPECT_EQ(cfg.kill_switch_trigger_path, "");
+  EXPECT_EQ(cfg.step_trace_context_window, 0);
   EXPECT_EQ(cfg.databento_cache_dir, "data/databento");
   EXPECT_EQ(cfg.databento_python, "python");
   EXPECT_EQ(cfg.databento_l1_download_script,
@@ -180,6 +181,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
       "daily_loss_kill_usd=275.5\n"
       "daily_loss_kill_alert_path=logs/daily_loss_alert.txt\n"
       "kill_switch_trigger_path=tmp/hft_kill.flag\n"
+      "step_trace_context_window=12\n"
       "databento_cache_dir=tmp/db\n"
       "databento_python=python3\n"
       "databento_l1_download_script=scripts/fetch_l1.py\n"
@@ -244,6 +246,7 @@ TEST(AppConfig, ParsesAllKnownKeys) {
   EXPECT_DOUBLE_EQ(cfg.daily_loss_kill_usd, 275.5);
   EXPECT_EQ(cfg.daily_loss_kill_alert_path, "logs/daily_loss_alert.txt");
   EXPECT_EQ(cfg.kill_switch_trigger_path, "tmp/hft_kill.flag");
+  EXPECT_EQ(cfg.step_trace_context_window, 12);
   EXPECT_EQ(cfg.databento_cache_dir, "tmp/db");
   EXPECT_EQ(cfg.databento_python, "python3");
   EXPECT_EQ(cfg.databento_l1_download_script, "scripts/fetch_l1.py");

@@ -66,10 +66,38 @@ struct AppConfig {
   // Per-engine-step ranking snapshot. Same schema as decision_log_path
   // (16 cols) but fires every step, not just on buys. Useful to see how
   // scores, hawkes lambdas, OU mu, and hit_count evolve over the run.
-  // Size estimate: ~130 bytes/row * 50 symbols/step * steps. A 4-day
+  // Size estimate: ~80 bytes/row * 50 symbols/step * steps. A 4-day
   // backtest (~1560 steps) -> ~10 MB. Off by default. Intended for
   // backtest debugging; keep empty in live.
+  //
+  // **Dense L1 caveat**: against Databento MBP-1 L1 (one row per
+  // top-of-book update) the engine steps ~64x/sec of replay time, so an
+  // 8-day backtest emits ~33 GB of step_trace. See
+  // step_trace_context_window below for a way to scope this down to
+  // just the steps around trade events.
   std::string step_trace_log_path;
+  // Ring-buffer scope on step_trace_log emission. When 0 (default,
+  // legacy behaviour) every step writes 1 snapshot per active symbol -
+  // the original behaviour that wrote 108 GB and crashed yen v2 on
+  // 2026-05-29. When >0, the engine instead keeps a rolling buffer of
+  // the last N step snapshots in memory, and only flushes them to disk
+  // when a trade event fires (any buy or sell `place_limit_order` call
+  // this step). After flushing, the engine writes the next N steps
+  // direct to disk so each trade gets ~2N steps of "before + after"
+  // context. Overlapping events within the trailing window extend
+  // (re-arm) trailing instead of creating duplicate output.
+  //
+  // Trade-off: you lose continuous time-series of ranking dynamics
+  // BETWEEN trades (use decisions.csv for buy-event snapshots; this
+  // captures both buys AND sells at higher resolution around each one).
+  // Output size: ~2N snapshots per trade event vs every step.
+  // For yen v2 with 4 events at N=10: ~330 KB total instead of 33 GB.
+  //
+  // 10 is a reasonable default for a dense-L1 window. Set this in
+  // adversarial-window configs (yen, covid) and any future
+  // Databento-MBP-1 backtest; leave at 0 for IBKR-L1 backtests where
+  // step_trace stays small anyway.
+  int step_trace_context_window = 0;
   // Per-step L2 snapshot for held positions. When non-empty, the engine
   // writes one row per open-position per step capturing best_bid/ask
   // + sizes, microprice, top-10 bid/ask volume, sell_limit, sell_score.

@@ -1,4 +1,5 @@
 #pragma once
+#include <deque>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -57,6 +58,27 @@ class LiveExecutionEngine {
   // buys. Heavier - see AppConfig::step_trace_log_path docs.
   std::unique_ptr<std::ofstream> step_trace_log_;
   int next_step_trace_id_ = 0;
+  // Ring-buffer scope for step_trace emission. Mirror of
+  // cfg_.app.step_trace_context_window cached here for the hot path.
+  // 0 = legacy "log every step" behaviour; >0 = ring + trailing
+  // policy. See AppConfig docs for the design rationale.
+  int step_trace_context_window_ = 0;
+  // Rolling buffer of the last N step snapshots (CSV chunks) that have
+  // NOT yet been flushed to disk because no trade event fired. Drained
+  // on trade event. Size bounded by step_trace_context_window_.
+  std::deque<std::string> step_trace_ring_;
+  // Steps remaining in the "post-event trailing" window. While > 0,
+  // each step writes direct to disk (bypassing the ring) and decrements.
+  // Re-armed (set to N) whenever a new trade event fires during
+  // trailing - so overlapping events extend rather than duplicate
+  // output.
+  int step_trace_trailing_ = 0;
+  // Per-step flag the broker call-sites flip when a buy or sell order
+  // is placed this step. Read by the step_trace emitter at end of
+  // step() and reset on the next step's entry. Independent of
+  // step_trace_context_window_ being 0 - keeping it always-tracked
+  // means tests can switch the window without restructuring state.
+  bool step_trace_event_this_step_ = false;
   // Optional log: per-step L2 microstructure trace for held positions.
   // Written from route_exit_orders.
   std::unique_ptr<std::ofstream> l2_trace_log_;
@@ -141,10 +163,23 @@ class LiveExecutionEngine {
   // per-step trace; factored so both files share the same 17-column
   // schema (16 ranking cols + ts_ns). decision_id is meaningful within
   // a single output file (each call increments). When chosen is empty,
-  // no row is marked chosen=1.
-  void write_ranking_snapshot_to(std::ofstream& out, int decision_id, int t,
+  // no row is marked chosen=1. Takes std::ostream& (not std::ofstream&)
+  // so the step_trace ring buffer can stage chunks through
+  // std::ostringstream before flushing them in a batch.
+  void write_ranking_snapshot_to(std::ostream& out, int decision_id, int t,
                                  const std::string& chosen_symbol,
                                  const std::string& gate);
+  // Phase 1 of step_trace emission: serialize this step's snapshot and
+  // either write it direct (legacy mode + trailing mode) or stash it
+  // in the ring buffer awaiting a trade event (context-window mode,
+  // pre-event). Idempotent when step_trace_log_ is null.
+  void emit_step_trace_push_(int t);
+  // Phase 2 of step_trace emission: if a trade event fired this step
+  // AND we're in ring mode, flush the ring buffer (the "N before" part
+  // of the user's design) and arm trailing for the next N steps. Called
+  // at end of step() AFTER the entry / exit loops have had a chance to
+  // set step_trace_event_this_step_. No-op in legacy (window=0) mode.
+  void emit_step_trace_post_event_();
   // Open one of the CSV log files honouring cfg_.app.log_append_mode.
   // Writes the schema header when the file is fresh (truncate mode or
   // first-time append). Writes a session_start comment line in both

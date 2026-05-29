@@ -137,6 +137,10 @@ LiveExecutionEngine::LiveExecutionEngine(LiveTradingConfig cfg,
                 "microprice,bid_vol_top10,ask_vol_top10,sell_limit,"
                 "sell_score\n",
                 "l2_trace");
+  // Cache for the hot path. Negative values get clamped to 0 so a
+  // misconfigured negative window degrades to legacy "log every step"
+  // instead of doing something nonsensical.
+  step_trace_context_window_ = std::max(0, cfg_.app.step_trace_context_window);
 }
 
 std::unique_ptr<std::ofstream> LiveExecutionEngine::open_log_(
@@ -182,8 +186,8 @@ void LiveExecutionEngine::close_logs_with_session_end_() {
 }
 
 void LiveExecutionEngine::write_ranking_snapshot_to(
-    std::ofstream& out, int decision_id, int t,
-    const std::string& chosen_symbol, const std::string& gate) {
+    std::ostream& out, int decision_id, int t, const std::string& chosen_symbol,
+    const std::string& gate) {
   const auto ts = wall_ns_now();
   // Emit rows in rank order so the `rank` column matches the score sort.
   // ranked_indices indexes into items (which is stable subscribe order).
@@ -209,6 +213,76 @@ void LiveExecutionEngine::emit_decision_snapshot(
   write_ranking_snapshot_to(*decision_log_, next_decision_id_++, t,
                             chosen_symbol, gate);
   decision_log_->flush();
+}
+
+void LiveExecutionEngine::emit_step_trace_push_(int t) {
+  if (!step_trace_log_ || !step_trace_log_->is_open())
+    return;
+
+  // Legacy "log every step" - the path before the ring-buffer policy
+  // existed. Cheap and matches the historical behaviour 1:1 so 10-day
+  // backtests with sparse IBKR L1 see no change.
+  if (step_trace_context_window_ <= 0) {
+    write_ranking_snapshot_to(*step_trace_log_, next_step_trace_id_++, t,
+                              /*chosen=*/"", /*gate=*/"");
+    step_trace_log_->flush();
+    return;
+  }
+
+  // Context-window mode: stage the snapshot through an in-memory
+  // stringstream so we can either flush it later (ring -> on-event
+  // flush) or write it now (trailing window).
+  std::ostringstream buf;
+  write_ranking_snapshot_to(buf, next_step_trace_id_++, t,
+                            /*chosen=*/"", /*gate=*/"");
+  std::string chunk = buf.str();
+
+  if (step_trace_trailing_ > 0) {
+    // We are inside the "N after" trailing window of a prior trade.
+    // Write directly so the trade's tail context lands on disk,
+    // independent of any new event flag (the post-event phase will
+    // re-arm trailing if a new event also fires this step).
+    *step_trace_log_ << chunk;
+    step_trace_log_->flush();
+    --step_trace_trailing_;
+    return;
+  }
+
+  // Quiet mode: push to ring and evict the oldest so size <= N. The
+  // ring holds the pre-event context that the on-event flush will
+  // flush in one batch.
+  step_trace_ring_.push_back(std::move(chunk));
+  while (static_cast<int>(step_trace_ring_.size()) >
+         step_trace_context_window_) {
+    step_trace_ring_.pop_front();
+  }
+}
+
+void LiveExecutionEngine::emit_step_trace_post_event_() {
+  if (step_trace_context_window_ <= 0)
+    return;
+  if (!step_trace_event_this_step_)
+    return;
+  if (!step_trace_log_ || !step_trace_log_->is_open())
+    return;
+
+  // Flush the pre-event ring (the "N before" half of the context
+  // window). On the second event within a trailing window the ring
+  // is empty because trailing-mode push goes direct to disk; the
+  // loop is then a no-op and we just re-arm trailing.
+  if (!step_trace_ring_.empty()) {
+    for (const auto& chunk : step_trace_ring_) {
+      *step_trace_log_ << chunk;
+    }
+    step_trace_ring_.clear();
+  }
+
+  // Arm (or re-arm) the trailing window. Overlapping events thus
+  // produce one continuous output region rather than fragmented
+  // duplicates - the next emit_step_trace_push_ for steps t+1..t+N
+  // will write direct.
+  step_trace_trailing_ = step_trace_context_window_;
+  step_trace_log_->flush();
 }
 
 void LiveExecutionEngine::emit_order_event(
@@ -349,6 +423,11 @@ void LiveExecutionEngine::initialize_universe(int n_stocks) {
 
 void LiveExecutionEngine::step(int t) {
   current_step_t_ = t;
+  // Reset the per-step trade-event flag. Set true by place_limit_order
+  // call sites (buy entry + sell exit) below; read by
+  // emit_step_trace_post_event_() at the end of step() to decide
+  // whether to flush the ring buffer.
+  step_trace_event_this_step_ = false;
   broker_->on_step(t);
   reconcile_broker_state();
   refresh_order_state();
@@ -368,14 +447,17 @@ void LiveExecutionEngine::step(int t) {
   check_user_kill_switch();
   ranking.step(t);
 
-  // Per-step ranking snapshot to the step-trace file (separate from the
-  // buy-event decisions file). No chosen symbol, no gate - this is the
-  // full ranking at end-of-step for time-series analysis.
-  if (step_trace_log_ && step_trace_log_->is_open()) {
-    write_ranking_snapshot_to(*step_trace_log_, next_step_trace_id_++, t,
-                              /*chosen=*/"", /*gate=*/"");
-    step_trace_log_->flush();
-  }
+  // Per-step ranking snapshot to the step-trace file (separate from
+  // the buy-event decisions file). No chosen symbol, no gate - this
+  // is the full ranking at end-of-step for time-series analysis.
+  //
+  // Two-phase: phase 1 stages the snapshot (push to ring or direct
+  // write while in trailing mode); phase 2 runs at end of step() and
+  // either flushes the ring (on trade event) or does nothing. See
+  // emit_step_trace_push_ + emit_step_trace_post_event_ for the
+  // policy. In legacy mode (step_trace_context_window=0) phase 1
+  // writes direct every step and phase 2 is a no-op.
+  emit_step_trace_push_(t);
 
   if (!cfg_.app.order_enabled) {
     if ((t % 100) == 0) {
@@ -472,6 +554,11 @@ void LiveExecutionEngine::step(int t) {
     }
     emit_decision_snapshot(t, s.symbol, /*gate=*/"");
     broker_->place_limit_order(req);
+    // Mark this step as a trade event for the step_trace context-
+    // window policy. Both buy entries (here) and sell exits (in
+    // route_exit_orders) flip the same flag, so the ring buffer
+    // captures "N before / N after" around either side of a trade.
+    step_trace_event_this_step_ = true;
     emit_order_event(req.id, req.symbol, "buy", req.qty, req.limit, "placed",
                      /*filled_qty=*/0.0, /*remaining_qty=*/req.qty,
                      /*avg_fill_price=*/0.0);
@@ -479,6 +566,11 @@ void LiveExecutionEngine::step(int t) {
     ++orders_placed_;
     ++symbol_order_counts_[s.symbol];
   }
+
+  // Phase 2 of step_trace: if buys (above) or sells (route_exit_orders
+  // earlier in step) fired, flush the ring + arm trailing. No-op in
+  // legacy mode and when no trade event happened.
+  emit_step_trace_post_event_();
 
   // Heartbeat the engine roughly every 100 steps so the registry's
   // last_update_ns advances without flooding the log with one event per step.
@@ -826,6 +918,8 @@ void LiveExecutionEngine::route_exit_orders() {
       continue;
 
     broker_->place_limit_order(req);
+    // Sell-side counterpart of the entry-loop tag - see comment there.
+    step_trace_event_this_step_ = true;
     emit_order_event(req.id, req.symbol, "sell", req.qty, req.limit, "placed",
                      /*filled_qty=*/0.0, /*remaining_qty=*/req.qty,
                      /*avg_fill_price=*/0.0);

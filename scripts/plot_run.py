@@ -781,14 +781,73 @@ def main(argv: List[str]) -> int:
         return 0
 
     # Preload per-symbol L1 frames once; reused for marker timestamps AND
-    # per-symbol plotting AND the new mark-to-market / holding-analytics
-    # path (need full L1 mid trajectory across each holding window).
+    # per-symbol plotting AND the mark-to-market / holding-analytics path
+    # (need full L1 mid trajectory across each holding window).
+    #
+    # Layout is dated-per-window (see include/broker/cache_filename.hpp):
+    #   <l1_dir>/<startDate>_<endDate>/<SYM>_<startISO>_<endISO>.mbp1.csv
+    # We pick the file whose ts_event range COVERS the run's configured
+    # window so we don't accidentally read a different window's L1 (e.g.
+    # both Yen 2024-08 and 2026q2 are in data/l1/ side by side; a naive
+    # glob sorts alphabetically and would pick the older one). Falls back
+    # to the legacy flat <l1_dir>/<SYM>.mbp1.csv last.
     symbols = sorted({t.symbol for t in trips})
     l1_by_symbol: Dict[str, pd.DataFrame] = {}
+
+    cfg_start_iso = cfg.get("databento_start", "")
+    cfg_end_iso = cfg.get("databento_end", "")
+    cfg_start_ns: Optional[int] = None
+    cfg_end_ns: Optional[int] = None
+    try:
+        if cfg_start_iso:
+            cfg_start_ns = int(
+                pd.Timestamp(cfg_start_iso.replace("Z", "+00:00")).value
+            )
+        if cfg_end_iso:
+            cfg_end_ns = int(
+                pd.Timestamp(cfg_end_iso.replace("Z", "+00:00")).value
+            )
+    except Exception:
+        pass
+
+    def pick_l1(sym: str) -> Optional[Path]:
+        candidates = sorted(args.l1_dir.glob(f"**/{sym}_*.mbp1.csv"))
+        if cfg_start_ns is not None and cfg_end_ns is not None:
+            # Prefer files whose ts_event range covers the run window.
+            # The filename has it: SYM_<startISO>_<endISO>.mbp1.csv with
+            # basic ISO 8601 (YYYYMMDDTHHMMSSZ).
+            for p in candidates:
+                name = p.stem  # drops ".mbp1.csv" leaving SYM_<s>_<e>.mbp1
+                # leaf without ".mbp1" -> e.g. LRCX_20260413T133000Z_20260428T195900Z
+                core = name[:-5] if name.endswith(".mbp1") else name
+                parts = core.rsplit("_", 2)
+                if len(parts) < 3:
+                    continue
+                start_str, end_str = parts[1], parts[2]
+                try:
+                    s = int(pd.Timestamp(
+                        f"{start_str[:4]}-{start_str[4:6]}-{start_str[6:8]}T"
+                        f"{start_str[9:11]}:{start_str[11:13]}:{start_str[13:15]}+00:00"
+                    ).value)
+                    e = int(pd.Timestamp(
+                        f"{end_str[:4]}-{end_str[4:6]}-{end_str[6:8]}T"
+                        f"{end_str[9:11]}:{end_str[11:13]}:{end_str[13:15]}+00:00"
+                    ).value)
+                except Exception:
+                    continue
+                # 24h end-tolerance mirrors broker's cache_covers_window.
+                if s <= cfg_start_ns + 60 * 1_000_000_000 and \
+                   e >= cfg_end_ns - 24 * 60 * 60 * 1_000_000_000:
+                    return p
+        if candidates:
+            return candidates[0]
+        legacy = args.l1_dir / f"{sym}.mbp1.csv"
+        return legacy if legacy.exists() else None
+
     for sym in symbols:
-        l1_csv = args.l1_dir / f"{sym}.mbp1.csv"
-        if l1_csv.exists():
-            l1_by_symbol[sym] = pd.read_csv(l1_csv)
+        path = pick_l1(sym)
+        if path is not None:
+            l1_by_symbol[sym] = pd.read_csv(path)
 
     attach_market_timestamps(trips, l1_by_symbol)
 

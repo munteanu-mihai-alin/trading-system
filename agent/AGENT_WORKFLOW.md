@@ -125,26 +125,52 @@ terminates any in-flight `hft_app` before launching; `--no-wait`,
 `--no-archive`, `--no-sync`, `--no-plot` make the script stop earlier;
 `--dry-run` echoes commands without running them.
 
-### IBKR L1 backfill (local)
+### L1 backfill — choosing IBKR vs Databento source
 
 ```bash
-# Backfill Yen window (49 symbols, ~4 h IBKR-rate-limited):
+# Default = IBKR (free, ~4h IBKR-pacing-bound for full universe):
 scripts/hft_l1_backfill.sh yen
 
-# Backfill the 10-day window with custom symbols file:
-scripts/hft_l1_backfill.sh 10day --symbols config/symbols_yen.txt
+# Databento MBP-1 (recommended for any window >3 months old):
+scripts/hft_l1_backfill.sh yen --source databento
 
-# Backfill COVID window:
-scripts/hft_l1_backfill.sh covid
+# Backfill COVID window via Databento (the only sensible choice -
+# IBKR's split-adjustment makes 6-year-old data unusable):
+scripts/hft_l1_backfill.sh covid --source databento
 ```
 
-Three presets baked in (`yen`, `covid`, `10day`). Each writes directly
-into the dated layout `data/l1/<startDate>_<endDate>/<SYMBOL>_<startISO>_<endISO>.mbp1.csv`
-(see `include/broker/cache_filename.hpp`), checks IB Gateway reachability
-on port 4002 first, runs sequentially because IBKR pacing makes parallel
-no faster, and at the end `scp`'s the new files to Hetzner's
-`data/l1/<window>/` so a subsequent `scripts/hft_backtest.sh` finds
-them. Pass `--no-sync` to skip the upload.
+Three window presets baked in (`yen`, `covid`, `10day`). All write into
+the dated layout `data/l1/<startDate>_<endDate>/<SYMBOL>_<startISO>_<endISO>.mbp1.csv`
+(see `include/broker/cache_filename.hpp`).
+
+| Aspect | `--source ibkr` (default) | `--source databento` |
+|---|---|---|
+| Where it runs | Locally (needs IB Gateway on port 4002) | On Hetzner via ssh (needs API key + databento python pkg, both already there) |
+| Cost | Free | ~$0.15-0.30/symbol per ~10-day window (~$7-12 for full 49-symbol universe per window) |
+| Wall time | ~5 min/symbol serial (IBKR rate-limits) -> ~4h for 49 sym | Parallel-friendly; ~10-30 min for 49 sym via xargs -P 16 |
+| Price adjustment | **Split-adjusted retroactively** by IBKR (no opt-out) | Raw exchange prints, never adjusted |
+| Right for | Very recent windows (<3 months from "now") where no splits have happened since | Adversarial / historical windows (Yen 2024-08, COVID 2020-03) |
+
+**Rule of thumb**: prefer `--source databento` for any window where stocks could have split since then. The IBKR free path is fine for windows in the recent past, but for COVID (6 years out) or Yen (22 months out) the L1 vs L2 disagreement is severe (30-50% on split-affected symbols) and silently corrupts ranking + sizing decisions. See the 2026-05-28 handoff entry for the full root-cause writeup.
+
+Cost-quote helper before committing spend:
+
+```bash
+ssh hetzner 'cd /mnt/HC_Volume_105581071/trading-system && \
+  .venv/bin/python scripts/databento_l1_cost_quote.py --also-mbp10'
+```
+
+Calls Databento's free `metadata.get_cost()` and prints MBP-1 + MBP-10 quotes for all three preset windows.
+
+### Comparing runs side-by-side
+
+```bash
+scripts/compare_runs.py                          # latest 8 runs as markdown
+scripts/compare_runs.py <id1> <id2> ...          # explicit list
+scripts/compare_runs.py --label-contains target  # filter by substring
+```
+
+Reads `metrics.json` from each `reports/runs/<run_id>/` and prints a markdown table (also saved to `reports/runs/_compare.md`). Columns: trip count, realized PnL, win rate, avg per-trade $, open count, avg holding minutes, annualised Sharpe, net PnL after opportunity cost, unrealized PnL, deepest drawdown %. Newer metrics (honest-loss) show "-" for older runs whose metrics.json predates them.
 
 ### Situational awareness
 

@@ -4,6 +4,48 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-29] - Yen v3 misroute: symbol/ticker_id mismatch when symbol_universe_path is set #Done
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `0f05078 fix(app,engine): subscribe symbols from items, not kSymbolCompanyList (yen v3 misroute)`.
+- Discovered while watching the first yen v3 (post-disk-fix, post-step-trace-policy) launch in flight. Killed mid-run; no useful results from yen v3.
+
+Symptom:
+- `decisions.csv` showed wildly off-target mids: KEYS mid=188.75 (real ~$130), KLAC mid=130.5 (real ~$715), IMOS mid=47.71 (real ~$23), MKSI mid=9.17 (real ~$108). Engine placed buys at those wrong prices and got filled at REAL market prices, so realized PnL was garbage.
+
+Root cause:
+- `main.cpp` built the `symbols` list for `engine.subscribe_live_books(symbols)` from the hard-coded `kSymbolCompanyList`. But `engine.initialize_universe(N)` reads `cfg.symbol_universe_path` (when set) and pushes items into `ranking.portfolio.items` in the FILE's order.
+- For yen the file is alphabetical (`config/symbols_yen.txt`), the hardcoded list is roughly market-cap ordered. They disagree.
+- `reconcile_broker_state` then iterates `items[i]` and reads `broker_->snapshot_top_of_book(i+1)`. ticker_id `i+1` had been subscribed for `kSymbolCompanyList[i]` ≠ `items[i]`, so every symbol's L1 lookup came back as a DIFFERENT symbol's prices.
+- Verification: items[23] = KEYS, kSymbolCompanyList[23] = IBM, engine sees KEYS mid=188.75 = IBM's real mid. Exact match for every checked symbol.
+
+Why this didn't bite earlier:
+- 10-day baseline configs (`config.databento_backtest.example.ini` etc.) do NOT set `symbol_universe_path`. Both code paths fall back to `kSymbolCompanyList`, so the two orderings coincidentally agree.
+- Yen + COVID configs DO set it. Yen v1 / v2 ran with this bug silently — their reported PnLs are garbage too. Throw out those metrics.
+
+Fix:
+- `src/app/main.cpp`: build `symbols` from `engine.ranking.portfolio.items` after `initialize_universe`, so the order is guaranteed to match what `reconcile_broker_state` will index against.
+- `src/lib/LiveExecutionEngine.cpp::subscribe_live_books`: defensive runtime warning when the passed `symbols` don't equal `items[].symbol` element-wise (code 7 via `hl::raise_warning`). Catches future regressions from any caller.
+- Test `SubscribeLiveBooksMatchesItemsOrder` in `tests/unit/LiveExecutionEngineTest.cpp`: would fail against the pre-fix `main.cpp` pattern.
+
+Knock-on:
+- yen v1 (`2026-05-28T1345_cpp_backtest_yen_unwind`, 0 orders) — PnL meaningless. ARM/OKLO etc. weren't in the file so the symbol set was off too.
+- yen v2 (`2026-05-28T1409_cpp_backtest_yen_unwind`, 4 orders, $4.20 realized) — PnL meaningless. Same misroute.
+- yen v3 (`2026-05-29T1753_yen_v3_fixed`, killed mid-run) — was supposed to be the clean re-run after the disk + step_trace fixes. Misroute discovered ~1 min into it. Killed at 20:54.
+- COVID hasn't run yet — must use the new binary (with this fix) when we do.
+
+Suggested commit (already done): `0f05078`.
+
+Suggested next steps:
+1. Push commits. User pulls the new CI binary (build 13+).
+2. Deploy fresh binary to Hetzner's `bin/hft_app`.
+3. Re-launch yen with `scripts/hft_backtest.sh --config config.databento_backtest.yen.ini --label yen_v4_fixed`. Watch first few decisions.csv rows to verify mids are sane (IMOS ~$23, KEYS ~$130, MKSI ~$108).
+4. Then COVID.
+
 ## [2026-05-29] - Hetzner disk 100% full; yen v2 dead; step_trace.csv blowup #todo
 
 Model / agent:

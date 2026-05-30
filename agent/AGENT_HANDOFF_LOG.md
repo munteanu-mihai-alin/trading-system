@@ -4,6 +4,274 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-31] - Product backlog: live-trading + paper + mobile app + daemonisation #todo
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `efdb7bb`. Yen v4 (`reports/runs/2026-05-29T2113_yen_v4_clean/`) completed cleanly: 9 orders placed, 6 closed trips, 3 open positions at end (MU, CSCO, IMOS) -- $1406 open notional. First yen run with the symbol/ticker_id alignment fix from `0f05078`. step_trace stayed at 611 KB thanks to the ring buffer (commit `af376b4`); disk used grew 31 -> 37 GB just from on-demand L2 downloads for 7 symbols (~$1.40 of Databento spend). Engine ran 3h22m wall-clock for an 8.5 M step replay.
+
+Backlog captured from the 2026-05-31 user review. Order preserves the user's numbering; each item lists current code behaviour where I could verify it, the open questions, and a tackling sketch. None of these are blocking the first paper smoke described in the [2026-05-16] umbrella entry; treat this as the parallel "what does the system need to actually be live and usable" thread.
+
+### 1. Pickup existing live positions; sell at current price when above target
+
+**Current behaviour (verified):**
+- `LiveExecutionEngine::start()` calls `broker_->query_positions()`, wired through `IBKRClient::query_positions()` -> `reqPositions` (per `src/lib/LiveExecutionEngine.cpp:364-386` and the [2026-05-16] umbrella sub-item #5).
+- For each reconciled position: `s.entry_price = p.avg_cost` (the broker's running average cost basis, which already includes entry commissions). `s.sell_limit = 0.0` initially; `s.sell_order_id = 0`; route_exit_orders populates on the next step.
+- `route_exit_orders` (`src/lib/LiveExecutionEngine.cpp:879-901`) sets:
+  ```cpp
+  gross_target = entry_price * (1 + target_profit_pct);
+  sell_limit = gross_target + cost_per_share;
+  ```
+- This depends ONLY on entry_price + target_profit_pct + estimated round-trip cost. It does **not** look at the current market price at all.
+
+**Open issue (the user's concern):**
+- If market is currently $X above our entry-derived `gross_target`, the engine will still post the limit at `gross_target` + cost. The broker will fill it immediately at whatever the market actually offers (almost certainly at or near current best bid), so we DO get the higher price -- but we're throwing away the "trailing" upside.
+- If price spikes mid-position (e.g. earnings, news), same story: we sell at our target the moment the bid touches it, even if the move would have continued.
+
+**Tackling sketch:**
+- Add a `max(...)` guard in `route_exit_orders`:
+  ```cpp
+  const double bid = book.best_bid();
+  sell_limit = std::max(gross_target + cost_per_share, bid);  // never sell below current bid
+  ```
+- More sophisticated: trailing stop. Track `position.high_water_bid_since_buy`; sell_limit = high_water * (1 - trail_pct). Configurable `trail_pct`. Decision point: do we ratchet ONLY upward (true trailing stop) or symmetric (smart-bracket)?
+- For the picked-up-positions case: the same guard applies -- the reconciled position with avg_cost=$X will see current bid $Y > target ($X * 1.008), and the engine will post at $Y instead of leaving money on the table.
+- Test: hermetic test in LiveExecutionEngineTest that injects a position via the test seam, drives L2 with bid > gross_target, asserts the placed sell_limit == bid (or trail-derived value).
+
+### 2. Bracket orders: place sell at same time as buy
+
+**Current behaviour:**
+- Strict sequential flow. Engine places buy limit, waits for terminal Filled status, then on the next step `route_exit_orders` sees the now-open position and places the sell limit. Window between fill and sell-placement is one step (~ms-to-seconds depending on broker).
+
+**Trade-off analysis:**
+- **Pro of bracketing**: deterministic exit even if the engine crashes between fill and sell placement. IBKR supports OCA groups + native bracket orders (TWS API `Order::parentId`).
+- **Con of bracketing**: sell_limit at the bracket-placement time is computed from the BUY LIMIT (we don't yet know the actual fill price). If fills come in below the buy limit, the sell target is computed off a too-high entry assumption -> we'd over-target. Currently sell_limit is computed from `avg_fill_price` after the fill arrives, which is the right basis.
+- **Mitigation**: place the sell with a placeholder limit equal to `buy_limit * (1 + target)` (slightly over-target), then on the actual fill UPDATE the sell limit via `placeOrder` re-submit. IBKR allows order modification.
+
+**Tackling sketch:**
+- Worth a feature flag (`bracket_orders_enabled` in AppConfig). Default false; explicit opt-in.
+- Implementation: bind sell-order placement to the buy submission via OCA + a follow-up "modify" call when avg_fill_price lands. ~80 LOC + a few tests covering the modify path.
+
+### 3. Per-symbol cooldown / multi-slot when score is dominant
+
+**Current behaviour:**
+- Single global `cooldown_steps` config (engine.cpp uses `s.cooldown > 0` skip in `RankingEngine::step`).
+- `max_orders_per_symbol` limits orders per symbol per RUN (not per slot).
+- Top-K selection picks `cfg.app.top_k` items per step from the ranked list (sorted by score). Same symbol can be picked across steps but each step picks distinct items via `ranked_indices`.
+
+**Open question (the user's concern):**
+- If one stock's score is dramatically higher than the runners-up (say 2x), we currently still split slots equally across the top-K. Maybe the right thing is to take 2 or 3 slots for the dominant one.
+
+**Tackling sketch:**
+- Add `score_dominance_multi_slot_threshold` config: if `score[0] >= threshold * score[1]`, allocate 2 slots to symbol 0 instead of 1. Generalises to 3 slots when score[0] >= threshold * score[2].
+- Sizing: per-slot notional stays at `trade_notional` so the gross exposure scales with conviction.
+- Shorter cooldown for high-score symbols: parameterise as `cooldown_scale_by_score = true`. Score-weighted cooldown: `effective_cooldown = base_cooldown / max(1, score / median_score)`.
+- Both behind feature flags; needs a few hermetic tests against synthetic rankings to confirm the slot accounting.
+
+### 4. Step-by-step buy / sell trace (documentation only)
+
+Open as a documentation #todo. Tackle by writing a section in `agent/AGENT_WORKFLOW.md` titled "Buy/sell engine flow" with the actual control flow:
+
+**Buy (entry):**
+1. `broker_->on_step(t)` advances the replay clock / pumps the live broker.
+2. `reconcile_broker_state` reads `snapshot_top_of_book(ticker_id=i+1)` per item; updates `s.mid`, `s.bid_price`, `s.ask_price`, `s.queue`. Also drains trade prints into Hawkes mid-change proxy.
+3. `refresh_order_state` walks `entry_orders_` / `exit_order_symbols_` against `OrderLifecycleBook`; updates `open_positions_` on terminal statuses.
+4. `check_daily_loss_kill_alert` -- alert-only, no destructive action.
+5. `check_user_kill_switch` -- destructive if the trigger file is present; cancels all + refuses new for the rest of the session.
+6. `ranking.step(t)` -- updates Hawkes intensities, OU mu, hit_count tilt, computes per-stock score, fills `ranked_indices`.
+7. `sync_next_order_id_from_broker` -- ensures `next_order_id_` doesn't collide with IBKR's view.
+8. Entry loop: for each `ranked_indices[i]` (i < top_k):
+   a. Skip if `s.cooldown > 0` or `!s.active`.
+   b. Skip if OU mu gate fails: `s.mid > s.ou.mu * (1 + ou_buy_threshold_pct)` (we only buy when price is at or below the recent mean -- mean-reversion entry).
+   c. Skip if `s.best_limit <= 0` (no live L1 yet).
+   d. Compute `target_notional` (per-symbol override or global `trade_notional`).
+   e. Compute `qty = size_entry_qty(limit, target_notional)`.
+   f. Skip if `qty <= 0` (e.g. budget < per-share price).
+   g. Skip if `qty * limit > max_notional_per_order`.
+   h. Skip if `max_orders_per_run` reached.
+   i. Skip if `max_orders_per_symbol[sym]` reached.
+   j. Skip if `max_open_symbols` reached.
+   k. Skip if budget gate exhausted (`account_budget - open_notional < target_notional`).
+   l. `emit_decision_snapshot` + `broker_->place_limit_order` + emit_order_event "placed" + record in `entry_orders_` + increment counters + set cooldown.
+9. Heartbeat every 100 steps.
+
+**Sell (exit) -- via `route_exit_orders` inside step():**
+1. For each open position with `sell_order_id == 0`:
+   a. Look up `idx = portfolio_index_for_symbol(symbol)`.
+   b. `ensure_depth_subscription(symbol, depth_ticker_id)` -- subscribes L2 lazily on first hit.
+   c. Get `book = broker_->snapshot_book(depth_ticker_id)`. Skip if `!has_valid_top(book)`.
+   d. `gross_target = entry_price * (1 + target_profit_pct)`.
+   e. `cost_per_share = estimate_round_trip_cost_per_share(qty, entry, gross_target)`.
+   f. `sell_limit = gross_target + cost_per_share`. *(See item 1 for the upgrade.)*
+   g. `mid = (best_bid + best_ask) / 2`.
+   h. `queue_ahead = visible_ask_queue_ahead(book, sell_limit)`.
+   i. `lambda_for_exit = max(hawkes_sell.lambda, hawkes.lambda, 1e-9)`.
+   j. `sell_score = compute_execution_score(mid, sell_limit, mu, lambda, queue_ahead, latency, net_reward, loss)`.
+   k. Emit L2 trace row.
+   l. Skip if `sell_score < min_sell_execution_score`.
+   m. Build sell `OrderRequest` (qty = position.qty, is_buy=false, limit=sell_limit, primary_exchange=lookup).
+   n. `broker_->place_limit_order` + emit_order_event "placed" + record in `exit_order_symbols_` + set `position.sell_order_id`.
+
+**Sell terminal handling (in `refresh_order_state`):**
+- On Filled exit: realized_pnl_ += (avg_fill_price - entry_price) * filled_qty. Remove from open_positions_ + exit_order_symbols_.
+- On Cancelled: clear sell_order_id so next step re-evaluates.
+
+### 5. Average fill time (buy + sell)
+
+**Current state:**
+- `IBKRClient::ack_latency_ms_cache_` (now mutex-protected, commit `3682027`) measures **ack** latency (placeOrder -> Submitted) only.
+- **Fill latency** (placeOrder -> Filled) is NOT tracked. The data is reachable -- send_ts_ is captured at placeOrder time; on_order_status fires at every status incl. Filled -- but we never compute the delta.
+
+**Tackling sketch:**
+- Add `fill_latency_ms_cache_` analogous to `ack_latency_ms_cache_`. In `IBKRClient::on_order_status` when status == "Filled", compute `now - send_ts_[id]` ms and store. Mutex-protect under `event_mutex_`.
+- Expose `fill_latency_ms(order_id) const` on IBroker (analogous to existing ack_latency_ms).
+- plot_run.py: read orders.csv, join placed/filled rows by order_id, compute p50/p99 separately for buy + sell. Add to metrics.md.
+- App (item 6) surfaces it on the run-detail screen.
+
+### 6. Mobile app for monitoring
+
+**Scope as described:**
+- Overall paper/live performance: orders placed timeline, fills, average wait time per side.
+- Latency dashboard (mem usage, p99, etc.) -- some of this already exists in `step_trace.csv` + the engine's `Latency (cycles)` line.
+- Item list of all runs (backtests) with same metric panel.
+- Health / status check.
+- Hetzner-side daemon producing the data the app reads.
+- Claude Code chat integration for incident investigation.
+- Push notifications: down / memory / disk.
+- All info also in the per-run HTML report.
+
+**Tackling plan:**
+- *Backend (Hetzner side)*: small FastAPI / Flask service that exposes:
+  - `GET /runs` -- list of run folders + summary metrics
+  - `GET /runs/<id>` -- per-run detail incl. orders, latencies, mids
+  - `GET /live/status` -- current process state, uptime, RSS, disk free, last-N orders
+  - `GET /health` -- liveness + readiness
+  - Reads from existing CSVs + reports/runs/ folders; no separate DB needed initially.
+- *Auth*: shared secret or wireguard between phone and Hetzner. We do NOT want this on the public internet without auth.
+- *App*: React Native (cross-platform) or Flutter is the natural fit. Connects to the backend, polls + push notifications via FCM/APNS.
+- *Claude Code integration*: when the user taps "investigate", the app sends a description + recent logs to a Claude Code session via the Anthropic API. Tasks the user wants on phone are short -- "summarise what went wrong" -- so a single Claude API call is enough.
+- Substantial multi-week project; not blocking anything else. Track as `#todo` in this entry until split into per-component subtasks.
+
+### 7. Daemon / systemd process supervisor
+
+**Pre-kill-switch note**: the user wrote this BEFORE we built the alert-only daily-loss + the user-triggered file-based kill (commits `6fc7a62`, `3656a5c`). Some overlap below; the new in-process kill switches still need this supervisor to ACT on signals from outside.
+
+**Wanted features:**
+- Kill the process (already covered by user kill switch via file -- commits `3656a5c` / `d2f64ff`).
+- "Kill switch for trading" = force-sell open positions in loss to save remaining capital. This is NEW; the current alert-only path warns but doesn't liquidate. Trigger likely comes from the mobile app (item 6).
+- Restart on crash.
+- Monitor mem / disk usage; raise alerts on threshold breach or unexpected bugs.
+
+**Tackling plan:**
+- Phase 1 (umbrella sub-item #4): systemd unit + logrotate + on-stop email/notification. ~half a day.
+- Phase 2: "force liquidate" file flag analogous to `kill_switch_trigger_path`. Path read from `force_liquidate_trigger_path` -- when present, engine cancels everything and sends `place_limit_order(side=sell, limit=best_bid - epsilon)` for every open position. Different from kill_switch (which only freezes -- doesn't sell).
+- Phase 3: a small monitoring daemon (Python) that polls disk + mem + pid + log-grep for known error patterns; pushes to a per-symbol JSON file the app reads.
+
+### 8. Backtest-launcher daemon, monitored by #7
+
+**Idea**: scripts/hft_backtest.sh becomes a long-running daemon that accepts launch requests and manages backtest binary versions.
+
+**Tackling plan:**
+- A FastAPI endpoint behind the same backend as item 6: `POST /backtests` with payload (config overrides, label, symbols, dates).
+- Daemon spawns the binary via systemd transient unit (`systemd-run`) so the supervisor (item 7) sees it.
+- Each backtest binary is tagged with the CI build number it came from; daemon keeps the last N binaries in a versioned dir.
+- Health endpoint on the launcher reports current binary, queued runs, running runs.
+
+### 9. App: launch a test with parameters
+
+Extends item 6 + uses item 8's backend. Parameters:
+- Config (defaults inherited from the last-known-good config).
+- Period (start / end dates).
+- Symbol universe -- offer a picker over `kSymbolCompanyList` + the existing `config/symbols_*.txt` files.
+- Live Databento credit balance -- there IS a Databento API call for `metadata.get_balance` or similar; need to verify the exact endpoint. The existing `databento_l1_cost_quote.py` could be extended to surface remaining balance.
+- Chat surface to Claude Code / Codex / Cursor when a run fails. Selecting one of the three platforms gates which API is called. **Note**: this is a future feature, not blocking initial app delivery.
+
+### 10. HTML report: ratios prominent at top of item list
+
+**Current state:**
+- `scripts/plot_run.py` produces `metrics.md` + per-symbol PNGs under `plots/`. No HTML report.
+- `metrics.md` has the headline numbers (n_trips, realized_pnl, win_rate, sharpe, etc.) but no rendering / layout.
+
+**Tackling plan:**
+- Add a `--html` flag to `plot_run.py` that emits `report.html`. Top section: card layout of the headline ratios (`n_trips`, `realized_pnl`, `win_rate`, `sharpe_annualized`, `deepest_drawdown_pct_any_position`, `avg_holding_minutes`) -- big numbers, traffic-light colours.
+- Below that: orders table + open positions + per-symbol plot grid (`<img>` from the existing PNG files).
+- Self-contained file: inline CSS, all PNGs base64-embedded so the user can email it / view offline.
+- Probably ~250 LOC of Python + Jinja2 template.
+
+### 11. Live entry: pre-loaded ranking vs cold-warmup
+
+**Current state:**
+- Engine starts with `RankingEngine::initialize` which sets `s.mid = 100.0 + 0.05 * i` (seeded placeholder, not real data).
+- Real `s.mid` populates only after the first `reconcile_broker_state` call sees live L1 ticks.
+- Hawkes and OU state start zeroed; they accumulate from the first event onward. **Cold start = no useful score for the first N steps.**
+
+**Open question (the user's concern):**
+- Start at 11:02:35 -- do we already have a ranking ready? Or wait?
+
+**Discussion to have:**
+- **Option A (cold start, today's behaviour):** engine waits for ~minutes of live data before scores stabilise. First half hour is essentially dead.
+- **Option B (offline warmup file):** before market open, run a small "seed" pass against the most recent N hours of historical data (Databento intraday up to T-15min, the API delay) to pre-populate `s.ou`, `s.hawkes`, `s.hit_count`. Engine starts hot.
+- **Option C (rolling warmup background process):** a continuous backtester runs against the most recent rolling window in the background, snapshots its state every 30s to a file. Live engine starts by reading the snapshot. Simpler for the operator but heavier engineering.
+
+**Tackling sketch:**
+- Discuss with user before coding. Probably ship Option B first (one-shot warmup script reading T-30min..T data, writing a `warmup_state.json` the engine can read on start). Option C is a v2.
+
+### 12. App / daemon improvement ideas (open invitation)
+
+**Suggested additions to instrument:**
+- Per-symbol decision rate (decisions / hour) so we can spot a symbol the engine keeps re-ranking but never trading.
+- Budget gate hit rate: how often did `account_budget` block a buy? If high, the user is constantly running near the cap.
+- IBKR error code histogram: lets us see if a particular code (354 = subscription missing, etc.) is occurring at scale.
+- Per-step wall-clock distribution: the engine prints `Latency (cycles)` once at end-of-run; emit a per-step histogram so we can detect drift.
+- Position age histogram: how long are we holding positions before exit? Pairs with `avg_holding_minutes`.
+- Order-to-fill timeline view: bar chart of `placed -> Submitted -> PartiallyFilled? -> Filled` durations per order.
+
+### 13. Trading-hours window for the binary
+
+**Current state:**
+- Backtest configs run RTH only: `databento_start = ...T13:30:00Z`, `databento_end = ...T20:00:00Z` (US Regular Trading Hours, 9:30 AM - 4:00 PM ET).
+- For live/paper, the engine has no concept of "market hours" today -- it just steps continuously while running.
+- Databento and IBKR both halt their L1/L2 streams outside RTH (extended hours have a separate, optional feed).
+
+**Open question (the user's concern):**
+- Single window per day (RTH only) or multiple (incl. pre/post)?
+- Do we kill the binary outside RTH and relaunch, or keep it running idle?
+- Could we run paper trading after-hours against historical data while live trading is closed?
+
+**Discussion:**
+- US equities have 4 sessions: pre-market 4:00-9:30 ET, RTH 9:30-16:00, after-hours 16:00-20:00, then closed. Pre/post are lower-volume and the strategy's assumptions (deep L2, tight spreads) don't hold.
+- **Recommendation**: trade RTH only (today's setup). Outside RTH the engine has no useful work. Options:
+  - **(a)** Kill at 20:00 ET, relaunch at 13:30 UTC next day. Pros: clean state daily, predictable resource usage. Cons: loses OU/Hawkes warmup; first 30 min are cold.
+  - **(b)** Keep the binary running continuously but enter a "park" mode outside RTH: skip step() entirely, just heartbeat. Preserves warmup state. Cons: ties up memory; if there's a bug the engine sits broken until morning.
+  - **(c)** Keep running and use after-hours for paper-trading against synthetic data. Mixes two operational modes -- complex.
+- **Suggested**: (b) with an explicit `rth_only_mode = true` flag, default true for live + paper. After-hours the engine logs `HEALTH state=Parked` and refuses to place orders. Simpler than (a), preserves warmup, isolates the safety-vs-state-loss trade-off behind a config knob.
+
+---
+
+## Tackling plan (ordered)
+
+Quick wins first (each <1 day):
+1. **Item 1** -- `sell_limit = max(gross_target + cost, current_bid)` guard. Hermetic test. ~30 LOC. Lands before any production run because the gap is a real money-leak.
+2. **Item 5** -- fill_latency tracking. ~40 LOC + plot_run.py join.
+3. **Item 10** -- HTML report with ratios at top. ~250 LOC of Python.
+4. **Item 4** -- documentation only, into `agent/AGENT_WORKFLOW.md`. Half a day.
+
+Medium-effort items (1-3 days each):
+5. **Item 13** -- `rth_only_mode` parking. Touches engine main loop + config + tests. Needed before any unattended live/paper run.
+6. **Item 7 (Phase 2)** -- force-liquidate trigger file. Mirror of the user kill switch; ~80 LOC + tests.
+7. **Item 2** -- bracket-orders feature flag. Investigation phase first to confirm IBKR semantics; build behind a feature flag once we know.
+
+Bigger pieces (split into sub-todos when started):
+8. **Item 11** -- offline warmup file. Needs design conversation with user first.
+9. **Item 3** -- score-dominant slot allocation + dynamic cooldown. Strategy change, needs backtesting against the yen + covid windows to confirm it doesn't degrade.
+10. **Item 7 (Phase 1)** -- systemd unit + logrotate + alerting (umbrella sub-item #4).
+11. **Items 6 + 8 + 9 + 12** -- mobile app. Multi-week. Backend first (Hetzner FastAPI), then app.
+
+Each item, when picked up, should get its own `[2026-XX-XX]` entry in this log with the actual landing details.
+
 ## [2026-05-29] - Yen v3 misroute: symbol/ticker_id mismatch when symbol_universe_path is set #Done
 
 Model / agent:

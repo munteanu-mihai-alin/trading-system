@@ -4,6 +4,49 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-05-31] - Product backlog items 1, 4, 5, 10 + kill-switch signals #Done
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `d00332a feat: product backlog batch -- items 1, 4, 5, 10 + kill-switch signals`.
+
+What landed (5 changes, one commit because the tests + docs cross-reference):
+- **Item 1: sell_limit current-bid guard.** `route_exit_orders` now does `sell_limit = max(gross_target + cost, book.best_bid())`. Stale reconciled positions + post-buy price spikes no longer leak money. Tests: `RouteExitClampsSellLimitToCurrentBid` + steady-tape regression `RouteExitKeepsTargetWhenAboveCurrentBid`.
+- **Item 4: Buy/sell flow docs.** New section in `agent/AGENT_WORKFLOW.md` -- step-by-step trace of `LiveExecutionEngine::step(t)`, the route_exit_orders flow (reflecting the item 1 clamp), and where latency numbers come from.
+- **Item 5: fill_latency tracking.** `IBKRClient::on_order_status` now records placeOrder->Filled in addition to ->Submitted. `IBroker::fill_latency_ms` accessor + MockIBroker mock entry. `plot_run.py` joins orders.csv placed+filled rows by order_id and emits `buy_p50_ms`, `buy_p99_ms`, `buy_max_ms`, `sell_p50_ms`, `sell_p99_ms`, `sell_max_ms` into metrics.json. Verified against yen v4: `buy_p50_ms=0.074` (synthetic backtest fills) vs `sell_p50_ms=800852` (~13 min realistic "time waiting for the exit"). Tests: `OnOrderStatusRecordsFillLatencyForFilled` + `OnOrderStatusSubmittedDoesNotRecordFillLatency`.
+- **Item 10: HTML report.** `scripts/plot_run.py` emits `report.html` in each run folder. Headline ratios in big-number cards at top (net PnL, win rate, Sharpe, drawdown, holding); latency cards under that; detail table + round-trip + open-position tables; per-symbol plot grid. Inline CSS, relative `<img>` paths so it's phone-friendly. Auto-emitted alongside the existing metrics.md.
+- **Kill switch: file -> POSIX signals (Linux only) + force-liquidate (item 7).** New `include/engine/kill_signals.hpp` + `src/lib/kill_signals.cpp`:
+  - `SIGUSR1` -> `g_user_kill` atomic -> `check_user_kill_switch` -> cancel all + refuse new (open positions stay open).
+  - `SIGUSR2` -> `g_force_liquidate` atomic -> `check_force_liquidate` -> same as user-kill PLUS marketable sell at `best_bid` for every open position.
+  - Cross-platform `inject_*_for_test` seams so gtest works on UCRT64 (verified: SIGUSR1/SIGUSR2 are undefined macros on UCRT64; install_kill_signal_handlers is a no-op there).
+  - Operator commands: `kill -USR1 $(pgrep hft_app)` and `kill -USR2 $(pgrep hft_app)`.
+  - REMOVED: `AppConfig::kill_switch_trigger_path` config knob, filesystem-polling logic, all related AppConfigTest expectations.
+  - 6 new tests replacing 6 file-based ones; net +6 gtests total.
+
+Item 3 (multi-slot allocation): per user instruction, kept as-is for now. The "allow another buy on same symbol if the new score beats the dominant symbol's last score" idea remains in the product backlog entry for later.
+
+Items 2, 6, 8, 9, 11, 12, 13: untouched -- still in the [2026-05-31] product backlog entry below as `#todo`.
+
+Final test counts:
+- 158 gtests pass (was 152 -- net +6: -6 file-based UserKill, +6 signal-based UserKill+ForceLiquidate, +2 sell_limit, +2 fill_latency, -2 AppConfig expectation drops).
+- Catch2 still green.
+
+Quick reference for the operator (Linux production):
+```bash
+# Freeze trader: cancel everything, no new orders. Positions stay open.
+ssh hetzner 'kill -USR1 $(pgrep -f bin/hft_app)'
+
+# Liquidate: freeze trader + marketable sell at best_bid for every position.
+ssh hetzner 'kill -USR2 $(pgrep -f bin/hft_app)'
+```
+
+The signals are sticky: once flipped, the atomic stays set until `engine.start()` clears it. So a SIGUSR1 between sessions has no effect on the next session.
+
+Suggested commit (already done): `d00332a`.
+
 ## [2026-05-31] - Product backlog: live-trading + paper + mobile app + daemonisation #todo
 
 Model / agent:

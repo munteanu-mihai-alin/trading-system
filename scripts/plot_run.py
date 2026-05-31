@@ -397,6 +397,57 @@ def compute_time_weighted_equity(
     return df
 
 
+def compute_fill_latency_stats(orders: pd.DataFrame) -> Dict[str, Any]:
+    """Joins `placed` and `filled` rows in orders.csv by order_id, returns
+    p50/p99 fill-time in ms, split by side. Backtest output will have
+    fills almost adjacent to placements (broker is synthetic); live and
+    paper outputs reflect real broker round-trips.
+
+    Returns dict shaped as
+        {
+            'buy_n': int,
+            'buy_p50_ms': float, 'buy_p99_ms': float, 'buy_max_ms': float,
+            'sell_n': int,
+            'sell_p50_ms': float, 'sell_p99_ms': float, 'sell_max_ms': float,
+        }
+    Empty / single-side runs yield zeros for the missing side.
+    """
+    out: Dict[str, Any] = {
+        "buy_n": 0, "buy_p50_ms": 0.0, "buy_p99_ms": 0.0, "buy_max_ms": 0.0,
+        "sell_n": 0, "sell_p50_ms": 0.0, "sell_p99_ms": 0.0, "sell_max_ms": 0.0,
+    }
+    if orders is None or orders.empty:
+        return out
+    if not {"order_id", "event", "ts_ns", "side"}.issubset(orders.columns):
+        return out
+
+    placed = orders[orders["event"] == "placed"][
+        ["order_id", "ts_ns", "side"]
+    ].rename(columns={"ts_ns": "placed_ts_ns"})
+    filled = orders[orders["event"] == "filled"][
+        ["order_id", "ts_ns"]
+    ].rename(columns={"ts_ns": "filled_ts_ns"})
+    joined = placed.merge(filled, on="order_id", how="inner")
+    if joined.empty:
+        return out
+    # Convert ns -> ms; clip below at 0 so a misordered timestamp pair
+    # (which shouldn't happen but) doesn't poison the stats.
+    joined["latency_ms"] = (
+        joined["filled_ts_ns"] - joined["placed_ts_ns"]
+    ) / 1_000_000.0
+    joined = joined[joined["latency_ms"] >= 0.0]
+
+    for side, prefix in (("buy", "buy"), ("sell", "sell")):
+        s = joined[joined["side"] == side]["latency_ms"]
+        if s.empty:
+            continue
+        out[f"{prefix}_n"] = int(len(s))
+        out[f"{prefix}_p50_ms"] = round(float(s.quantile(0.50)), 3)
+        out[f"{prefix}_p99_ms"] = round(float(s.quantile(0.99)), 3)
+        out[f"{prefix}_max_ms"] = round(float(s.max()), 3)
+    return out
+
+
 def compute_metrics(
     trips: List[RoundTrip],
     net_pnl: List[float],
@@ -405,6 +456,7 @@ def compute_metrics(
     *,
     l1_by_symbol: Optional[Dict[str, pd.DataFrame]] = None,
     daily_inflation_cost: float = 0.0,
+    orders: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     l1_by_symbol = l1_by_symbol or {}
     closed = [(t, pnl) for t, pnl in zip(trips, net_pnl) if not t.open_at_end]
@@ -568,6 +620,10 @@ def compute_metrics(
         "sortino_ratio_annualized": round(sortino, 4),
         "calmar_ratio": round(calmar, 4),
         "avg_holding_minutes": round(avg_holding_min, 2),
+        # Fill-time latency from orders.csv. Backtest broker fills are
+        # near-zero (synthetic); live/paper reflect real broker round-
+        # trip. p50/p99 in milliseconds, split by side.
+        **compute_fill_latency_stats(orders if orders is not None else pd.DataFrame()),
     }
 
 
@@ -682,6 +738,243 @@ def render_symbol_plot(
 
 
 # ----------------------------- Reporting ---------------------------- #
+
+
+def write_metrics_html(
+    metrics: Dict[str, Any],
+    trips: List[RoundTrip],
+    net_pnl: List[float],
+    cfg: Dict[str, str],
+    plots_dir: Path,
+    out_path: Path,
+) -> None:
+    """Self-contained HTML report. Ratios are the FIRST thing the reader
+    sees -- big-number cards arranged in a grid. Below them comes the
+    latency section, then the round-trip and open-position tables, then
+    the per-symbol plots referenced by relative path (the file lives in
+    the same run folder as `plots/`).
+
+    Single-file design so it can be opened on a phone or emailed
+    around. Embed only the CSS inline; PNGs stay as relative `<img>`
+    references so the HTML stays small.
+    """
+    label = cfg.get("run_label", "(no label)")
+    window = (
+        f"{cfg.get('databento_start', '?')} → {cfg.get('databento_end', '?')}"
+    )
+    universe_size = cfg.get("universe_size", "?")
+    top_k = cfg.get("top_k", "?")
+    max_open = cfg.get("max_open_symbols", "?")
+
+    def fmt(v: Any, suffix: str = "") -> str:
+        if v is None:
+            return "—"
+        if isinstance(v, float):
+            return f"{v:+.4f}{suffix}" if "pnl" in suffix.lower() else f"{v:.4f}{suffix}"
+        return f"{v}{suffix}"
+
+    def card(title: str, value: Any, *, accent: Optional[str] = None,
+             suffix: str = "") -> str:
+        cls = "card"
+        if accent == "good":
+            cls += " good"
+        elif accent == "bad":
+            cls += " bad"
+        elif accent == "muted":
+            cls += " muted"
+        return (
+            f'<div class="{cls}"><div class="card-title">{title}</div>'
+            f'<div class="card-value">{fmt(value, suffix)}</div></div>'
+        )
+
+    # Accent the headline cards by sign so a glance at the top of the
+    # page is enough to know whether the run made money.
+    realized = metrics.get("realized_pnl_net", 0.0) or 0.0
+    net_after_opp = metrics.get("net_pnl_after_opportunity_cost", 0.0) or 0.0
+    win_rate = metrics.get("win_rate")
+    sharpe = metrics.get("sharpe_ratio_annualized", 0.0) or 0.0
+
+    def sign_accent(v: float) -> str:
+        return "good" if v > 0 else "bad" if v < 0 else "muted"
+
+    headline_cards = "\n".join([
+        card("Net P&L (realized)", realized, accent=sign_accent(realized)),
+        card("Net P&L − opp. cost", net_after_opp, accent=sign_accent(net_after_opp)),
+        card("Round-trips closed", metrics.get("n_round_trips_closed", 0)),
+        card("Win rate",
+             f"{(win_rate * 100):.1f}%" if win_rate is not None else None,
+             accent="good" if (win_rate or 0) >= 0.5 else "muted"),
+        card("Sharpe (annualised)", round(sharpe, 2),
+             accent="good" if sharpe > 1 else "muted"),
+        card("Avg holding (min)", metrics.get("avg_holding_minutes", 0)),
+        card("Deepest drawdown %",
+             metrics.get("deepest_drawdown_pct_any_position", 0),
+             accent="bad" if (metrics.get("deepest_drawdown_pct_any_position", 0) or 0) < -0.02
+             else "muted"),
+        card("Open at end",
+             metrics.get("n_positions_open_at_end", 0),
+             accent="muted" if (metrics.get("n_positions_open_at_end", 0) or 0) > 0
+             else "good"),
+    ])
+
+    latency_cards = "\n".join([
+        card("Buy p50 (ms)", metrics.get("buy_p50_ms", 0)),
+        card("Buy p99 (ms)", metrics.get("buy_p99_ms", 0)),
+        card("Sell p50 (ms)", metrics.get("sell_p50_ms", 0)),
+        card("Sell p99 (ms)", metrics.get("sell_p99_ms", 0)),
+    ])
+
+    # Full metrics table (everything else, for the reader who wants to
+    # scroll past the headline). Order them so the most-asked-for ones
+    # are at the top.
+    detail_keys = [
+        "unrealized_pnl_mark_to_market",
+        "net_pnl_realized_plus_unrealized",
+        "profit_factor",
+        "sortino_ratio_annualized",
+        "calmar_ratio",
+        "max_drawdown_dollars",
+        "avg_win",
+        "avg_loss",
+        "gross_profit",
+        "gross_loss",
+        "avg_pct_time_below_entry",
+        "n_stalled_open_positions",
+        "opportunity_cost_dollars",
+        "capital_efficiency_ratio",
+    ]
+    detail_rows = []
+    for k in detail_keys:
+        if k in metrics:
+            detail_rows.append(
+                f"<tr><th>{k}</th><td>{fmt(metrics[k])}</td></tr>"
+            )
+
+    # Round-trips table.
+    rt_rows = []
+    closed_idx = 0
+    for t, pnl in zip(trips, net_pnl):
+        if t.open_at_end:
+            continue
+        closed_idx += 1
+        held = (
+            t.holding_market_minutes
+            if not math.isnan(t.holding_market_minutes)
+            else t.holding_minutes
+        )
+        sign_cls = "good" if pnl > 0 else "bad"
+        rt_rows.append(
+            f"<tr><td>{closed_idx}</td><td>{t.symbol}</td>"
+            f"<td>{t.entry_price:.4f}</td><td>{t.exit_price:.4f}</td>"
+            f"<td>{t.qty:g}</td>"
+            f"<td class='{sign_cls}'>{pnl:+.4f}</td>"
+            f"<td>{held:.1f}</td></tr>"
+        )
+
+    # Open positions table.
+    open_rows = []
+    for t, _ in zip(trips, net_pnl):
+        if not t.open_at_end:
+            continue
+        open_rows.append(
+            f"<tr><td>{t.symbol}</td><td>{t.entry_price:.4f}</td>"
+            f"<td>{t.qty:g}</td><td>{t.entry_price * t.qty:.2f}</td></tr>"
+        )
+
+    # Per-symbol plot grid. Reference relative paths; the HTML file
+    # lives next to `plots/`.
+    plot_imgs = []
+    if plots_dir.is_dir():
+        for png in sorted(plots_dir.glob("*.png")):
+            rel = png.relative_to(out_path.parent)
+            plot_imgs.append(
+                f'<figure><img src="{rel.as_posix()}" alt="{png.stem}" '
+                f'loading="lazy"><figcaption>{png.stem}</figcaption></figure>'
+            )
+
+    css = """
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 16px;
+           background: #f7f7f8; color: #222; }
+    h1, h2 { color: #111; }
+    .meta { color: #555; font-size: 0.9em; margin-bottom: 16px; }
+    .card-grid { display: grid;
+                 grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                 gap: 10px; margin: 12px 0 24px; }
+    .card { background: white; border: 1px solid #e5e5e7; border-radius: 12px;
+            padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card-title { font-size: 0.78em; color: #666; text-transform: uppercase;
+                  letter-spacing: 0.04em; }
+    .card-value { font-size: 1.6em; font-weight: 600; margin-top: 6px; }
+    .card.good .card-value { color: #1f7a3e; }
+    .card.bad .card-value { color: #b91c1c; }
+    .card.muted .card-value { color: #555; }
+    table { border-collapse: collapse; width: 100%; background: white;
+            margin: 8px 0 24px; }
+    th, td { border: 1px solid #e5e5e7; padding: 6px 10px; text-align: left;
+             font-size: 0.92em; }
+    th { background: #f0f0f3; }
+    td.good { color: #1f7a3e; font-weight: 600; }
+    td.bad  { color: #b91c1c; font-weight: 600; }
+    figure { display: inline-block; margin: 6px; vertical-align: top;
+             background: white; padding: 6px; border: 1px solid #e5e5e7;
+             border-radius: 8px; max-width: 100%; }
+    figure img { max-width: 600px; height: auto; display: block; }
+    figcaption { text-align: center; font-size: 0.85em; color: #555;
+                 padding-top: 4px; }
+    .plot-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    """
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backtest report — {label}</title>
+<style>{css}</style>
+</head>
+<body>
+<h1>Backtest report — {label}</h1>
+<div class="meta">
+  <strong>Window:</strong> {window}<br>
+  <strong>Universe:</strong> {universe_size} symbols, top_k={top_k},
+  max_open_symbols={max_open}
+</div>
+
+<h2>Headline ratios</h2>
+<div class="card-grid">
+{headline_cards}
+</div>
+
+<h2>Order latency (ms)</h2>
+<div class="card-grid">
+{latency_cards}
+</div>
+
+<h2>All metrics</h2>
+<table>{''.join(detail_rows)}</table>
+
+<h2>Round-trips (closed)</h2>
+<table>
+<thead><tr><th>#</th><th>Symbol</th><th>Entry</th><th>Exit</th>
+<th>Qty</th><th>Net P&amp;L ($)</th><th>Held (market min)</th></tr></thead>
+<tbody>{''.join(rt_rows) if rt_rows else '<tr><td colspan="7">no closed trips</td></tr>'}</tbody>
+</table>
+
+<h2>Open positions at end</h2>
+<table>
+<thead><tr><th>Symbol</th><th>Entry</th><th>Qty</th>
+<th>Open notional ($)</th></tr></thead>
+<tbody>{''.join(open_rows) if open_rows else '<tr><td colspan="4">none</td></tr>'}</tbody>
+</table>
+
+<h2>Per-symbol plots</h2>
+<div class="plot-grid">
+{''.join(plot_imgs) if plot_imgs else '<p>(no plots generated)</p>'}
+</div>
+
+</body>
+</html>"""
+    out_path.write_text(html, encoding="utf-8")
 
 
 def write_metrics_markdown(metrics: Dict[str, Any], trips: List[RoundTrip],
@@ -857,6 +1150,7 @@ def main(argv: List[str]) -> int:
         trips, net_pnl, equity, account_budget,
         l1_by_symbol=l1_by_symbol,
         daily_inflation_cost=daily_inflation_cost,
+        orders=orders,
     )
 
     # Plots.
@@ -877,6 +1171,12 @@ def main(argv: List[str]) -> int:
         json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     write_metrics_markdown(metrics, trips, net_pnl, cfg, run_dir / "metrics.md")
+    # HTML report with the same metrics, formatted for quick scanning:
+    # headline ratios at the top, then latency, then detailed tables
+    # and the per-symbol plots. Always emitted -- file is small and
+    # never overwrites the markdown.
+    write_metrics_html(metrics, trips, net_pnl, cfg, plots_dir,
+                       run_dir / "report.html")
 
     print(f"plot_run: wrote {len(symbols)} symbol plot(s) + metrics to {run_dir}")
     return 0

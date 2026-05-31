@@ -28,6 +28,13 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   std::unordered_map<int, std::chrono::high_resolution_clock::time_point>
       send_ts_;
   std::unordered_map<int, double> ack_latency_ms_cache_;
+  // Companion of ack_latency_ms_cache_ measuring placeOrder -> Filled.
+  // Populated by on_order_status when status == "Filled"; under
+  // event_mutex_ for the same races. Stays empty for orders that
+  // never fill. Reset by stop_event_loop / disconnect lifecycle but
+  // not on a per-order basis - tests / monitoring can read up to the
+  // session boundary.
+  std::unordered_map<int, double> fill_latency_ms_cache_;
   std::unordered_map<int, TopOfBook> top_books_;
   std::unordered_map<int, L2Book> books_;
   // Per-ticker FIFO of trade prints, drained by the engine each step.
@@ -76,6 +83,7 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
   bool reconnect_once();
 
   [[nodiscard]] double ack_latency_ms(int order_id) const override;
+  [[nodiscard]] double fill_latency_ms(int order_id) const override;
   [[nodiscard]] TopOfBook snapshot_top_of_book(int ticker_id) const override;
   [[nodiscard]] L2Book snapshot_book(int ticker_id) const override;
   [[nodiscard]] int next_valid_order_id() const;

@@ -199,6 +199,125 @@ The scripts cover the 95% case. Reach for hand-composed `ssh` when:
 If the same hand-composed command shows up twice in a session, fold it
 into one of the scripts above and document it here.
 
+## Buy / sell engine flow
+
+Step-by-step trace of what `LiveExecutionEngine::step(t)` does on each
+tick. Useful when reading orders.csv after a run -- this is what
+produced each row. Source of truth is `src/lib/LiveExecutionEngine.cpp`;
+this section summarises it.
+
+### Buy (entry) side
+
+Order of operations inside `step(t)`:
+
+1. **`broker_->on_step(t)`** -- advances the backtest replay clock (no-op
+   for live brokers).
+2. **`reconcile_broker_state()`** -- per item, calls
+   `snapshot_top_of_book(ticker_id=i+1)` and updates the Stock's
+   `mid`, `bid_price`, `ask_price`, `queue` from L1. Drains trade
+   prints into the Hawkes mid-change proxy when
+   `hawkes_use_real_trades` is set.
+3. **`refresh_order_state()`** -- walks open entry + exit orders against
+   `OrderLifecycleBook`; updates `open_positions_` on terminal statuses
+   (Filled / Cancelled / Rejected).
+4. **`check_daily_loss_kill_alert()`** -- alert-only, never destructive.
+5. **`check_user_kill_switch()`** -- polls `kill_signals::user_kill_requested()`
+   (SIGUSR1 atomic on Linux); if set, cancels all + refuses new for
+   the rest of the session.
+   **`check_force_liquidate()`** -- polls
+   `kill_signals::force_liquidate_requested()` (SIGUSR2); on top of
+   user-kill semantics, places marketable sells at best_bid for every
+   open position. Operator commands: `kill -USR1` and `kill -USR2`.
+6. **`ranking.step(t)`** -- updates Hawkes intensities, OU mu,
+   hit_count tilt, computes `s.score`, fills `ranked_indices`.
+7. **`step_trace` push** (when configured) -- per `step_trace_context_window`:
+   either write the snapshot direct (legacy / trailing mode) or push
+   to the ring buffer.
+8. **`sync_next_order_id_from_broker()`** -- prevents collisions with
+   the broker's own next-id when other clients touch the account.
+9. **Entry loop** (skipped when `kill_switch_triggered_by_user_`): for
+   each `ranked_indices[i]` while `i < top_k`:
+   1. Skip if `s.cooldown > 0` or `!s.active`.
+   2. **OU mu gate**: skip if `s.mid > s.ou.mu * (1 + ou_buy_threshold_pct)`.
+      Mean-reversion entry: only buy when price is at or below recent mean.
+   3. Skip if `s.best_limit <= 0` (no live L1 yet).
+   4. Compute `target_notional` (per-symbol override or global `trade_notional`).
+   5. `qty = size_entry_qty(limit, target_notional)`. Skip if 0
+      (budget too small for one share, or legacy knobs zeroed it).
+   6. Skip if `qty * limit > max_notional_per_order`.
+   7. Skip if `max_orders_per_run` reached.
+   8. Skip if `max_orders_per_symbol[sym]` reached.
+   9. Skip if `max_open_symbols` reached.
+   10. Skip if budget gate exhausted
+       (`account_budget - open_notional < target_notional`).
+   11. `emit_decision_snapshot` -> `broker_->place_limit_order` ->
+       `emit_order_event("placed")` -> record in `entry_orders_` ->
+       increment counters -> set cooldown -> mark
+       `step_trace_event_this_step_ = true`.
+10. **`step_trace` post-event** (when ring-buffer mode and a trade
+    event fired): flush ring + arm trailing.
+11. Heartbeat every 100 steps.
+
+### Sell (exit) side -- inside `route_exit_orders()`
+
+Called within `step()` after `refresh_order_state` (skipped when
+`kill_switch_triggered_by_user_`). For each open position with
+`sell_order_id == 0`:
+
+1. `idx = portfolio_index_for_symbol(symbol)` -- skip if -1
+   (shouldn't happen; defensive).
+2. `ensure_depth_subscription(symbol, depth_ticker_id)` -- subscribes
+   L2 lazily on first hit, so we don't carry the L2 cost for symbols
+   we never open.
+3. `book = broker_->snapshot_book(depth_ticker_id)`. Skip if
+   `!has_valid_top(book)`.
+4. `gross_target = entry_price * (1 + target_profit_pct)`.
+5. `cost_per_share = estimate_round_trip_cost_per_share(qty, entry, gross_target)`.
+6. **`sell_limit = max(gross_target + cost_per_share, current_bid)`** --
+   the `max` clamp is the 2026-05-31 product-backlog item 1 fix:
+   never post a sell below the current bid. Picked-up reconciled
+   positions with stale `avg_cost` AND price spikes between buy fill
+   and this step both benefit from this guard.
+7. `mid = (best_bid + best_ask) / 2`.
+8. `queue_ahead = visible_ask_queue_ahead(book, sell_limit)`.
+9. `lambda_for_exit = max(hawkes_sell.lambda, hawkes.lambda, 1e-9)`.
+10. `sell_score = compute_execution_score(mid, sell_limit,
+    sell_directional_mu, lambda, queue_ahead, latency,
+    net_reward, loss)`.
+11. Emit L2 trace row.
+12. Skip if `sell_score < min_sell_execution_score`.
+13. Build sell `OrderRequest` (qty = position.qty, is_buy=false,
+    limit=sell_limit, primary_exchange via per-symbol lookup).
+14. `broker_->place_limit_order` -> `emit_order_event("placed")` ->
+    record in `exit_order_symbols_` -> set `position.sell_order_id` ->
+    mark `step_trace_event_this_step_ = true`.
+
+### Sell terminal handling
+
+Done in `refresh_order_state` on Filled / Cancelled status:
+
+- **Filled exit**: `realized_pnl_ += (avg_fill_price - entry_price) * filled_qty`.
+  Remove from `open_positions_`, `exit_order_symbols_`,
+  `entry_orders_`.
+- **Cancelled exit**: clear `sell_order_id` so the next step's
+  `route_exit_orders` re-evaluates and places again (likely with a
+  different sell_limit if the book has moved).
+
+### Where the latency numbers come from
+
+- `ack_latency_ms` -- placeOrder -> Submitted/PreSubmitted callback;
+  measured by `IBKRClient`, stored under `event_mutex_`.
+- `fill_latency_ms` -- placeOrder -> Filled callback; same mechanism.
+  (Item 5 of the 2026-05-31 product backlog.)
+- Per-side p50/p99/max in milliseconds end up in `metrics.json` (look
+  for `buy_p50_ms`, `sell_p99_ms`, etc.) after `scripts/plot_run.py`
+  joins placed + filled rows in `orders.csv` by `order_id`.
+
+In backtest the broker fills synthetically -- placed and filled
+share the same engine step, so the timestamp delta is microseconds.
+For live + paper the same metrics reflect real broker round-trip,
+which is operationally what we care about.
+
 ## Required handoff behavior
 
 After each substantive user interaction, agents must append an entry to:

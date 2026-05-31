@@ -107,15 +107,22 @@ class LiveExecutionEngine {
   double realized_pnl_ = 0.0;
   bool kill_alert_raised_ = false;
 
-  // ---- User-triggered manual kill (AppConfig::kill_switch_trigger_path) ----
-  // Polled at every step(): if the configured file exists, the engine
-  // cancels every open entry + exit order and refuses to place new
-  // orders for the rest of the session. Unlike kill_alert_raised_,
-  // this IS destructive - it's the operator's explicit "stop trading
-  // now" button. Reset by start() so tests can re-trigger between
-  // runs, but the trigger FILE is NOT removed by the engine; the
-  // operator owns its lifecycle.
+  // ---- Operator-initiated kill signals ----
+  // The engine polls hft::kill_signals::user_kill_requested() and
+  // hft::kill_signals::force_liquidate_requested() once per step().
+  // On Linux the underlying atomics are flipped by SIGUSR1/SIGUSR2
+  // handlers installed in start(); on Windows the same atomics are
+  // only reachable via the inject_*_for_test seams (the dev box
+  // can't receive the POSIX signals).
+  //
+  // kill_switch_triggered_by_user_ = "user kill" took effect -
+  //   cancelled every open entry + exit order, refusing new orders
+  //   for the rest of the session. Open positions stay open.
+  // force_liquidate_triggered_ = SAME plus we issued a marketable
+  //   sell at best_bid for every open position. Both flags reset
+  //   on the next start().
   bool kill_switch_triggered_by_user_ = false;
+  bool force_liquidate_triggered_ = false;
 
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
@@ -226,18 +233,24 @@ class LiveExecutionEngine {
   // session breached".
   void reset_daily_loss_kill_alert_file();
 
-  // Poll the user-kill trigger path; if the file exists, run the
-  // destructive kill (cancel orders, set the flag, log). Cheap
-  // (one filesystem::exists call) so it's fine to call every step.
-  // No-op when kill_switch_trigger_path is empty or the flag is
-  // already set.
+  // Poll hft::kill_signals::user_kill_requested(); if set, run the
+  // freeze-trader action and set the flag. Cheap (one atomic load)
+  // so it's fine to call every step. No-op when already triggered.
   void check_user_kill_switch();
-  // Execute the manual-kill action. Reads the first line of the
-  // trigger file (if any) for an operator-supplied reason, logs it,
-  // cancels every entry + exit order in flight, and sets
-  // kill_switch_triggered_by_user_. Idempotent - re-calls are
-  // no-ops once the flag is set.
+  // Execute the freeze-trader action. Logs the breach, cancels every
+  // entry + exit order in flight, sets kill_switch_triggered_by_user_.
+  // Idempotent - subsequent calls are no-ops once flag is set.
   void trigger_user_kill_switch();
+  // Poll hft::kill_signals::force_liquidate_requested(); if set, run
+  // the freeze-trader action AND emit a marketable sell at best_bid
+  // for every open position. No-op when already triggered. Implies
+  // user-kill semantics (orders cancelled, no new entries).
+  void check_force_liquidate();
+  // Execute the liquidate action: emit a marketable sell order at
+  // best_bid for every open position with no live sell_order_id.
+  // Sets force_liquidate_triggered_. Logs reason + per-position
+  // notional sold.
+  void trigger_force_liquidate();
 
  public:
   RankingEngine ranking;
@@ -278,17 +291,44 @@ class LiveExecutionEngine {
   [[nodiscard]] bool kill_switch_triggered_by_user() const {
     return kill_switch_triggered_by_user_;
   }
+  [[nodiscard]] bool force_liquidate_triggered() const {
+    return force_liquidate_triggered_;
+  }
 
   // Test-only seam. Lets unit tests drive the kill-alert logic without
   // having to fake a full broker fill path to populate realized_pnl_.
   // Do NOT call from production code; the engine maintains its own
   // tally via refresh_order_state on exit Filled events.
   void inject_realized_pnl_for_test(double pnl) { realized_pnl_ = pnl; }
+  // Test-only seam. Drops an open position into open_positions_ as if
+  // refresh_order_state had just observed a Filled buy. Sell_order_id
+  // and sell_limit start at 0 so route_exit_orders will compute and
+  // place on the next call. Production code goes through the broker
+  // fill path; tests use this to skip the buy plumbing when the only
+  // thing being exercised is the sell-side logic.
+  void inject_open_position_for_test(const std::string& symbol, double qty,
+                                     double entry_price) {
+    OpenPositionState s;
+    s.symbol = symbol;
+    s.qty = qty;
+    s.entry_price = entry_price;
+    s.entry_ack_latency_ms = 1.0;
+    s.sell_order_id = 0;
+    s.sell_limit = 0.0;
+    s.sell_score = 0.0;
+    open_positions_[symbol] = std::move(s);
+  }
+  // Test-only seam: run a single route_exit_orders pass without
+  // having to call step() (which would also drive ranking + entry
+  // logic). Useful for hermetic exit-only tests.
+  void route_exit_orders_for_test() { route_exit_orders(); }
   // Force one round of the kill-alert evaluation against current state.
   // Equivalent to what step() does just after refresh_order_state.
   void check_daily_loss_kill_alert_for_test() { check_daily_loss_kill_alert(); }
   // Force one round of the user-kill poll. Test-only seam.
   void check_user_kill_switch_for_test() { check_user_kill_switch(); }
+  // Force one round of the force-liquidate poll. Test-only seam.
+  void check_force_liquidate_for_test() { check_force_liquidate(); }
 };
 
 }  // namespace hft

@@ -20,6 +20,7 @@
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "engine/LiveExecutionEngine.hpp"
+#include "engine/kill_signals.hpp"
 
 namespace {
 
@@ -116,6 +117,111 @@ TEST(LiveExecutionEngine, SubscribeLiveBooksHandlesEmptyList) {
   EXPECT_CALL(*broker, subscribe_market_depth(_)).Times(0);
   hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   engine.subscribe_live_books({});
+}
+
+// Regression for product backlog item 1 (2026-05-31 entry): when the
+// market bid is above the entry-derived sell target (reconciled stale
+// position OR price spike between buy fill and the next step), the
+// engine must clamp sell_limit upward to current_bid so we don't post
+// a limit below market. Pre-fix the limit was the bare gross_target +
+// cost; post-fix it's max(target, bid).
+TEST(LiveExecutionEngine, RouteExitClampsSellLimitToCurrentBid) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+
+  // L2 book with bid=$110, ask=$110.10 - bid is well above any
+  // entry-derived target for the $100 entry we'll inject.
+  hft::L2Book book{};
+  book.bids[0] = {110.0, 100.0};
+  book.bids[1] = {109.9, 100.0};
+  book.asks[0] = {110.1, 100.0};
+  book.asks[1] = {110.2, 100.0};
+  EXPECT_CALL(*broker, snapshot_book(::testing::_))
+      .WillRepeatedly(::testing::Return(book));
+
+  // Stub order_lifecycle to a default-constructed empty book; the
+  // engine just needs non-null + no terminal-status rows for the
+  // injected position (it has no sell_order_id yet).
+  hft::OrderLifecycleBook empty_lifecycle;
+  EXPECT_CALL(*broker, order_lifecycle())
+      .WillRepeatedly(::testing::Return(&empty_lifecycle));
+
+  // Capture every sell order placed so we can inspect the limit.
+  std::vector<hft::OrderRequest> placed;
+  EXPECT_CALL(*broker, place_limit_order(::testing::_))
+      .WillRepeatedly(
+          [&placed](const hft::OrderRequest& req) { placed.push_back(req); });
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.target_profit_pct = 0.008;        // 0.8%
+  app.min_sell_execution_score = -1e9;  // any non-NaN score places
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+
+  // items[0] is the first symbol in the universe load order; that's
+  // what we have to anchor the position to so portfolio_index_for_symbol
+  // finds it.
+  const std::string sym = engine.ranking.portfolio.items.front().symbol;
+  // entry=$100; gross_target = 100 * 1.008 = 100.80; + cost ~ 101 or so
+  // -> well below the $110 bid. Without the clamp the engine would
+  //    place at ~$101; with the clamp it must place at $110.
+  engine.inject_open_position_for_test(sym, /*qty=*/10, /*entry=*/100.0);
+
+  engine.route_exit_orders_for_test();
+
+  ASSERT_EQ(placed.size(), 1u);
+  EXPECT_DOUBLE_EQ(placed[0].limit, 110.0)
+      << "sell_limit must clamp upward to current bid when the "
+         "entry-derived target is below the market";
+  EXPECT_EQ(placed[0].symbol, sym);
+  EXPECT_FALSE(placed[0].is_buy);
+}
+
+// Companion: when the entry-derived target is ABOVE the current bid
+// (the common case in a steady or down-trending tape), the original
+// target is preserved. This is the "no regression" guard.
+TEST(LiveExecutionEngine, RouteExitKeepsTargetWhenAboveCurrentBid) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+
+  // Bid is BELOW any reasonable entry-derived target for $100 entry +
+  // 0.8% target. Place must use the target-derived limit, not the
+  // bid (which would be a fire-sale).
+  hft::L2Book book{};
+  book.bids[0] = {99.5, 100.0};
+  book.bids[1] = {99.4, 100.0};
+  book.asks[0] = {99.6, 100.0};
+  book.asks[1] = {99.7, 100.0};
+  EXPECT_CALL(*broker, snapshot_book(::testing::_))
+      .WillRepeatedly(::testing::Return(book));
+
+  hft::OrderLifecycleBook empty_lifecycle;
+  EXPECT_CALL(*broker, order_lifecycle())
+      .WillRepeatedly(::testing::Return(&empty_lifecycle));
+
+  std::vector<hft::OrderRequest> placed;
+  EXPECT_CALL(*broker, place_limit_order(::testing::_))
+      .WillRepeatedly(
+          [&placed](const hft::OrderRequest& req) { placed.push_back(req); });
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  app.target_profit_pct = 0.008;
+  app.min_sell_execution_score = -1e9;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+
+  const std::string sym = engine.ranking.portfolio.items.front().symbol;
+  engine.inject_open_position_for_test(sym, /*qty=*/10, /*entry=*/100.0);
+
+  engine.route_exit_orders_for_test();
+
+  ASSERT_EQ(placed.size(), 1u);
+  // Limit must be at LEAST gross_target ($100.80) and stay close to it
+  // (a tiny cost addition is allowed). Importantly: NOT the bid $99.5.
+  EXPECT_GE(placed[0].limit, 100.80);
+  EXPECT_LT(placed[0].limit, 102.0);
 }
 
 // Regression for the 2026-05-29 yen v3 misroute. The caller (main.cpp)
@@ -1002,115 +1108,162 @@ TEST(LiveExecutionEngine, StepTraceContextWindowZeroPathIsNoop) {
 // is restarted. Triggered by the OPERATOR creating a file at the
 // configured path.
 
-TEST(LiveExecutionEngine, UserKillDisabledWhenPathEmpty) {
-  // kill_switch_trigger_path unset -> even with a "trigger" file
-  // sitting in cwd nothing happens.
+// Signal-based kill switches (SIGUSR1, SIGUSR2). The signal handler
+// flips an std::atomic<bool>; the engine polls the atomic each step.
+// Tests use the inject_*_for_test seams to flip the atomic without
+// going through a real signal -- works cross-platform so the gtest
+// suite is identical on Linux and Windows.
+
+TEST(LiveExecutionEngine, UserKillNoSignalNoTrigger) {
+  hft::kill_signals::reset_for_session();  // hermetic
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   engine.check_user_kill_switch_for_test();
   EXPECT_FALSE(engine.kill_switch_triggered_by_user());
 }
 
-TEST(LiveExecutionEngine, UserKillNotTriggeredWhenFileMissing) {
-  // Path set but the file does not exist -> no trigger.
+TEST(LiveExecutionEngine, UserKillTriggeredAfterSignal) {
+  hft::kill_signals::reset_for_session();
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
-  hft::AppConfig app;
-  app.mode = hft::BrokerMode::Paper;
-  app.kill_switch_trigger_path =
-      "tmp_user_kill_missing_file_does_not_exist.flag";
-  std::remove(app.kill_switch_trigger_path.c_str());  // be hermetic
-  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
-                                  std::move(broker));
-  engine.check_user_kill_switch_for_test();
-  EXPECT_FALSE(engine.kill_switch_triggered_by_user());
-}
-
-TEST(LiveExecutionEngine, UserKillTriggeredWhenFilePresent) {
-  // touch $path -> next poll trips the switch.
-  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
-  hft::AppConfig app;
-  app.mode = hft::BrokerMode::Paper;
-  app.kill_switch_trigger_path = "tmp_user_kill_present.flag";
-  { std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc); }
-  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
-                                  std::move(broker));
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  hft::kill_signals::inject_user_kill_for_test();
   engine.check_user_kill_switch_for_test();
   EXPECT_TRUE(engine.kill_switch_triggered_by_user());
-  std::remove(app.kill_switch_trigger_path.c_str());
+  hft::kill_signals::reset_for_session();
 }
 
-TEST(LiveExecutionEngine, UserKillStartResetsInProcessFlagButLeavesFile) {
-  // The trigger file is operator-owned. start() must reset the
-  // in-process flag (so a re-trigger off the same file works) but
-  // MUST NOT delete the file (otherwise we'd race the operator
-  // semantics of "file present == kill active").
+TEST(LiveExecutionEngine, UserKillStartResetsAtomicAndInProcessFlag) {
+  // start() must clear BOTH the in-process flag AND the signal
+  // atomic so a fresh session doesn't inherit either piece of state.
+  hft::kill_signals::inject_user_kill_for_test();
+  ASSERT_TRUE(hft::kill_signals::user_kill_requested());
+
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   EXPECT_CALL(*broker, connect(_, _, _)).WillOnce(Return(true));
-  hft::AppConfig app;
-  app.mode = hft::BrokerMode::Paper;
-  app.kill_switch_trigger_path = "tmp_user_kill_start_leaves_file.flag";
-  {
-    std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc);
-    f << "stale kill from previous session\n";
-  }
-  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
-                                  std::move(broker));
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
   EXPECT_TRUE(engine.start());
   EXPECT_FALSE(engine.kill_switch_triggered_by_user());
-  // File still there -> the next step()/check would re-trigger.
-  EXPECT_TRUE(std::ifstream(app.kill_switch_trigger_path).is_open());
-  std::remove(app.kill_switch_trigger_path.c_str());
+  EXPECT_FALSE(hft::kill_signals::user_kill_requested())
+      << "start() must clear the signal atomic for a fresh session";
 }
 
 TEST(LiveExecutionEngine, UserKillSuppressesOrderPlacementAfterTrigger) {
   // After the kill triggers, step() must not call place_limit_order
-  // for new entries even on otherwise-active portfolio items. Mirror
-  // of the previous behaviour the kill-switch had before the
-  // alert-only refactor, but now gated on the manual kill instead.
+  // for new entries even on otherwise-active portfolio items.
+  hft::kill_signals::reset_for_session();
   auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   EXPECT_CALL(*broker, place_limit_order(_)).Times(0);
 
   hft::AppConfig app;
   app.mode = hft::BrokerMode::Paper;
   app.top_k = 3;
-  app.kill_switch_trigger_path = "tmp_user_kill_suppresses_routing.flag";
-  { std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc); }
   hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
                                   std::move(broker));
   engine.initialize_universe(10);
-  // Trigger explicitly before step() runs. step() itself would also
-  // see the file and trigger, but doing it this way isolates the
-  // routing-skip assertion from the polling behaviour.
+  hft::kill_signals::inject_user_kill_for_test();
   engine.check_user_kill_switch_for_test();
   ASSERT_TRUE(engine.kill_switch_triggered_by_user());
   engine.step(0);
   engine.step(1);
-  std::remove(app.kill_switch_trigger_path.c_str());
+  hft::kill_signals::reset_for_session();
 }
 
 TEST(LiveExecutionEngine, UserKillIdempotentOnRepeatedCheck) {
-  // Repeated check_user_kill_switch_for_test calls after the flag is
-  // set must NOT re-issue cancels (the first trigger already did).
-  // We assert by allowing a small number of cancels on the first
-  // trigger then asserting Times(0) on subsequent checks.
+  hft::kill_signals::reset_for_session();
   auto broker_ptr = std::make_unique<NiceMock<hft_test::MockIBroker>>();
   auto* broker_raw = broker_ptr.get();
-  hft::AppConfig app;
-  app.mode = hft::BrokerMode::Paper;
-  app.kill_switch_trigger_path = "tmp_user_kill_idempotent.flag";
-  { std::ofstream f(app.kill_switch_trigger_path, std::ios::trunc); }
   // Engine starts with no open orders so the first trigger calls
-  // cancel_order zero times anyway. The point of this test is just
-  // that the second / third trigger don't re-enter the cancel loop.
+  // cancel_order zero times anyway. The point: the second / third
+  // trigger don't re-enter the cancel loop.
   EXPECT_CALL(*broker_raw, cancel_order(_)).Times(0);
-  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
-                                  std::move(broker_ptr));
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker_ptr));
+  hft::kill_signals::inject_user_kill_for_test();
   engine.check_user_kill_switch_for_test();
   ASSERT_TRUE(engine.kill_switch_triggered_by_user());
   engine.check_user_kill_switch_for_test();
   engine.check_user_kill_switch_for_test();
   EXPECT_TRUE(engine.kill_switch_triggered_by_user());
-  std::remove(app.kill_switch_trigger_path.c_str());
+  hft::kill_signals::reset_for_session();
+}
+
+// ---- Force-liquidate (SIGUSR2) ----
+// Implies user-kill semantics PLUS marketable sells for every open
+// position at best_bid.
+
+TEST(LiveExecutionEngine, ForceLiquidateNoSignalNoTrigger) {
+  hft::kill_signals::reset_for_session();
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.check_force_liquidate_for_test();
+  EXPECT_FALSE(engine.force_liquidate_triggered());
+  EXPECT_FALSE(engine.kill_switch_triggered_by_user());
+}
+
+TEST(LiveExecutionEngine, ForceLiquidatePlacesSellAtBestBidForOpenPositions) {
+  hft::kill_signals::reset_for_session();
+
+  hft::L2Book book{};
+  book.bids[0] = {110.0, 100.0};
+  book.asks[0] = {110.1, 100.0};
+  book.bids[1] = {109.9, 100.0};
+  book.asks[1] = {110.2, 100.0};
+
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, snapshot_book(_))
+      .WillRepeatedly(::testing::Return(book));
+  std::vector<hft::OrderRequest> placed;
+  EXPECT_CALL(*broker, place_limit_order(_))
+      .WillRepeatedly(
+          [&placed](const hft::OrderRequest& req) { placed.push_back(req); });
+
+  hft::AppConfig app;
+  app.mode = hft::BrokerMode::Paper;
+  hft::LiveExecutionEngine engine(hft::LiveTradingConfig::from_app(app),
+                                  std::move(broker));
+  engine.initialize_universe(5);
+  const std::string sym = engine.ranking.portfolio.items.front().symbol;
+  engine.inject_open_position_for_test(sym, /*qty=*/10, /*entry=*/100.0);
+
+  hft::kill_signals::inject_force_liquidate_for_test();
+  engine.check_force_liquidate_for_test();
+
+  EXPECT_TRUE(engine.force_liquidate_triggered());
+  EXPECT_TRUE(engine.kill_switch_triggered_by_user())
+      << "force-liquidate implies user-kill (freeze trader) too";
+  ASSERT_EQ(placed.size(), 1u);
+  EXPECT_DOUBLE_EQ(placed[0].limit, 110.0)
+      << "liquidate sells AT the bid for an immediate fill";
+  EXPECT_FALSE(placed[0].is_buy);
+  EXPECT_EQ(placed[0].symbol, sym);
+  hft::kill_signals::reset_for_session();
+}
+
+TEST(LiveExecutionEngine, ForceLiquidateIdempotentOnRepeatedCheck) {
+  // Repeated SIGUSR2 must NOT re-send sells (the first trigger
+  // already did). One sell per open position, ever.
+  hft::kill_signals::reset_for_session();
+  hft::L2Book book{};
+  book.bids[0] = {99.5, 100.0};
+  book.asks[0] = {99.6, 100.0};
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  EXPECT_CALL(*broker, snapshot_book(_))
+      .WillRepeatedly(::testing::Return(book));
+  std::vector<hft::OrderRequest> placed;
+  EXPECT_CALL(*broker, place_limit_order(_))
+      .WillRepeatedly(
+          [&placed](const hft::OrderRequest& req) { placed.push_back(req); });
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.initialize_universe(5);
+  const std::string sym = engine.ranking.portfolio.items.front().symbol;
+  engine.inject_open_position_for_test(sym, 10, 100.0);
+
+  hft::kill_signals::inject_force_liquidate_for_test();
+  engine.check_force_liquidate_for_test();
+  ASSERT_EQ(placed.size(), 1u);
+  engine.check_force_liquidate_for_test();
+  engine.check_force_liquidate_for_test();
+  EXPECT_EQ(placed.size(), 1u) << "second/third trigger must be no-op";
+  hft::kill_signals::reset_for_session();
 }
 
 TEST(LiveExecutionEngine, KillAlertStartClearsPriorSessionFile) {

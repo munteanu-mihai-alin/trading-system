@@ -1,5 +1,6 @@
 #include "engine/LiveExecutionEngine.hpp"
 #include "broker/IBKRClient.hpp"
+#include "engine/kill_signals.hpp"
 #include "execution/InstitutionalTransactionCostModel.h"
 #include "execution/score.hpp"
 #include "log/logging_state.hpp"
@@ -337,11 +338,18 @@ bool LiveExecutionEngine::start() {
   realized_pnl_ = 0.0;
   kill_alert_raised_ = false;
   reset_daily_loss_kill_alert_file();
-  // The user-kill trigger FILE is operator-owned, so we deliberately
-  // do NOT remove it here. But the in-process flag must reset so a
-  // restart can re-trigger off the same file (or off a freshly
-  // created one) without inheriting last session's state.
+  // In-process kill flags reset every session so a re-started engine
+  // doesn't inherit a prior session's tripped state.
   kill_switch_triggered_by_user_ = false;
+  force_liquidate_triggered_ = false;
+  // Clear the SIGUSR1/SIGUSR2 atomics so signals received between
+  // engine sessions in the same process don't fire spuriously.
+  // Production runs are usually one session per process; tests are
+  // the main caller that recycles the same process across sessions.
+  hft::kill_signals::reset_for_session();
+  // Install the SIGUSR1/SIGUSR2 handlers (no-op on Windows). Safe to
+  // call every start() - second call replaces the first.
+  hft::kill_signals::install_kill_signal_handlers();
   const bool ok =
       broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id);
   if (!ok) {
@@ -439,12 +447,16 @@ void LiveExecutionEngine::step(int t) {
   // orders, or move the Engine component to Error. The engine continues
   // operating normally and the operator decides whether to intervene.
   check_daily_loss_kill_alert();
-  // User-triggered manual kill. Polls the configured trigger file
-  // (no-op when not configured). Distinct from the loss-alert above:
-  // this IS destructive - if the operator dropped the kill file
-  // in place, we cancel everything and refuse new orders for the
-  // rest of the session.
+  // User-triggered manual kill via SIGUSR1. Distinct from the loss-
+  // alert above: this IS destructive - if the operator sent SIGUSR1,
+  // we cancel everything and refuse new orders for the rest of the
+  // session.
   check_user_kill_switch();
+  // Force-liquidate via SIGUSR2. Implies user-kill semantics PLUS
+  // marketable sells for every open position at best_bid. "Save the
+  // portfolio at any cost." Order matters - we check after
+  // user-kill so the cancel-then-resell sequence is deterministic.
+  check_force_liquidate();
   ranking.step(t);
 
   // Per-step ranking snapshot to the step-trace file (separate from
@@ -881,7 +893,23 @@ void LiveExecutionEngine::route_exit_orders() {
     const double gross_target = position.entry_price * (1.0 + profit_pct);
     const double cost_per_share = estimate_round_trip_cost_per_share(
         position.qty, position.entry_price, gross_target);
-    const double sell_limit = gross_target + cost_per_share;
+    // Two scenarios produce a target-derived limit BELOW the current
+    // bid:
+    //   (a) reconciled position picked up from a prior live session
+    //       where avg_cost is stale relative to the current market.
+    //   (b) a price spike (news/earnings) that pushed the bid past our
+    //       target between buy fill and this step.
+    // In either case, posting at the target-derived limit means the
+    // sell would fill immediately at the current bid - we'd capture
+    // SOME of the upside but the limit itself "anchors" the order
+    // below market. Clamp upward to current_bid so the limit is at
+    // least the marketable price; this is the smallest fix that
+    // closes the gap. A future trailing-stop config knob can ratchet
+    // the floor above the bid; see the [2026-05-31] product backlog
+    // entry item 1.
+    const double current_bid = book.best_bid();
+    const double sell_limit =
+        std::max(gross_target + cost_per_share, current_bid);
     const double mid = 0.5 * (book.best_bid() + book.best_ask());
     const double queue_ahead = visible_ask_queue_ahead(book, sell_limit);
     const double latency_ms = std::max(
@@ -1021,12 +1049,8 @@ void LiveExecutionEngine::check_daily_loss_kill_alert() {
 void LiveExecutionEngine::check_user_kill_switch() {
   if (kill_switch_triggered_by_user_)
     return;
-  if (cfg_.app.kill_switch_trigger_path.empty())
+  if (!hft::kill_signals::user_kill_requested())
     return;
-  std::error_code ec;
-  if (!std::filesystem::exists(cfg_.app.kill_switch_trigger_path, ec)) {
-    return;
-  }
   trigger_user_kill_switch();
 }
 
@@ -1035,37 +1059,12 @@ void LiveExecutionEngine::trigger_user_kill_switch() {
     return;
   kill_switch_triggered_by_user_ = true;
 
-  // Read the operator's reason (first non-empty line) so the audit
-  // trail has something better than "kill triggered". File may be
-  // empty - that's fine, just no reason.
-  std::string reason;
-  if (!cfg_.app.kill_switch_trigger_path.empty()) {
-    std::ifstream rf(cfg_.app.kill_switch_trigger_path);
-    if (rf.is_open()) {
-      std::string line;
-      while (std::getline(rf, line)) {
-        // Drop trailing CR (operators on Windows or echo'ing from
-        // PowerShell can drop CRLF in here).
-        if (!line.empty() && line.back() == '\r') {
-          line.pop_back();
-        }
-        if (!line.empty()) {
-          reason = std::move(line);
-          break;
-        }
-      }
-    }
-  }
-
   std::ostringstream line;
-  line << "user kill switch triggered via file="
-       << cfg_.app.kill_switch_trigger_path << " step=" << current_step_t_
+  line << "user kill switch triggered via SIGUSR1"
+       << " step=" << current_step_t_
        << " entry_orders_open=" << entry_orders_.size()
        << " exit_orders_open=" << exit_order_symbols_.size()
        << " open_positions=" << open_positions_.size();
-  if (!reason.empty()) {
-    line << " reason=\"" << reason << "\"";
-  }
   if (!cfg_.app.run_label.empty()) {
     line << " label=" << cfg_.app.run_label;
   }
@@ -1083,6 +1082,73 @@ void LiveExecutionEngine::trigger_user_kill_switch() {
   // cancellation flows back through refresh_order_state.
   for (const auto& kv : exit_order_symbols_) {
     broker_->cancel_order(kv.first);
+  }
+}
+
+void LiveExecutionEngine::check_force_liquidate() {
+  if (force_liquidate_triggered_)
+    return;
+  if (!hft::kill_signals::force_liquidate_requested())
+    return;
+  trigger_force_liquidate();
+}
+
+void LiveExecutionEngine::trigger_force_liquidate() {
+  if (force_liquidate_triggered_)
+    return;
+  force_liquidate_triggered_ = true;
+  // Force-liquidate implies the freeze-trader action of the regular
+  // kill switch -- we don't want any NEW entries while we're tearing
+  // down. trigger_user_kill_switch is idempotent so it's fine to call
+  // even if user-kill already fired.
+  trigger_user_kill_switch();
+
+  std::ostringstream line;
+  line << "force liquidate triggered via SIGUSR2"
+       << " step=" << current_step_t_
+       << " open_positions=" << open_positions_.size();
+  if (!cfg_.app.run_label.empty()) {
+    line << " label=" << cfg_.app.run_label;
+  }
+  hl::raise_warning(hl::ComponentId::Engine, /*code=*/8, line.str().c_str());
+
+  // For every open position, emit a marketable sell at best_bid so
+  // the order hits the book immediately. Skip positions that already
+  // have a live sell_order_id (they were cancelled by trigger_user_
+  // kill_switch above, but refresh_order_state hasn't drained that
+  // status yet -- next step's route_exit_orders WOULD replace, but
+  // we want a guaranteed fill THIS step).
+  for (auto& it : open_positions_) {
+    auto& position = it.second;
+    const int idx = portfolio_index_for_symbol(position.symbol);
+    if (idx < 0)
+      continue;
+    const int depth_ticker_id = kDepthTickerIdOffset + idx + 1;
+    const auto book = broker_->snapshot_book(depth_ticker_id);
+    if (!has_valid_top(book))
+      continue;
+    OrderRequest req;
+    req.id = next_order_id_++;
+    req.symbol = position.symbol;
+    req.primary_exchange = primary_exchange_for(position.symbol);
+    req.is_buy = false;
+    req.qty = position.qty;
+    // Sell AT the bid: an order priced at the bid is marketable -
+    // it crosses the spread immediately. We accept whatever fill
+    // price comes back; the goal is the EXIT, not a tight price.
+    req.limit = book.best_bid();
+    if (req.qty <= 0.0 || req.limit <= 0.0) {
+      --next_order_id_;
+      continue;
+    }
+    broker_->place_limit_order(req);
+    emit_order_event(req.id, req.symbol, "sell", req.qty, req.limit,
+                     "placed_liquidate",
+                     /*filled_qty=*/0.0, /*remaining_qty=*/req.qty,
+                     /*avg_fill_price=*/0.0);
+    position.sell_order_id = req.id;
+    position.sell_limit = req.limit;
+    exit_order_symbols_[req.id] = position.symbol;
   }
 }
 

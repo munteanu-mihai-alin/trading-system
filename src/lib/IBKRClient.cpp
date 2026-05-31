@@ -98,6 +98,19 @@ double IBKRClient::ack_latency_ms(int order_id) const {
   return it->second;
 }
 
+double IBKRClient::fill_latency_ms(int order_id) const {
+  // Same race posture as ack_latency_ms; the reader thread writes
+  // fill_latency_ms_cache_ from on_order_status when status=="Filled".
+  // Returns 0.0 for orders that haven't filled yet, identical to the
+  // ack accessor's convention.
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  const auto it = fill_latency_ms_cache_.find(order_id);
+  if (it == fill_latency_ms_cache_.end()) {
+    return 0.0;
+  }
+  return it->second;
+}
+
 void IBKRClient::start_event_loop() {
   if (reader_running_.exchange(true)) {
     return;
@@ -246,18 +259,33 @@ void IBKRClient::on_order_status(int order_id, const std::string& status,
                                  double filled, double remaining,
                                  double avg_fill_price) {
   lifecycle_.on_status(order_id, status, filled, remaining, avg_fill_price);
-  if (status == "Submitted" || status == "PreSubmitted") {
-    // Reader-thread side of the send_ts_ / ack_latency_ms_cache_ race; grab
-    // event_mutex_ for the same reason place_limit_order does on the engine
-    // side. Compute the latency under lock and store atomically.
-    std::lock_guard<std::mutex> lock(event_mutex_);
-    const auto it = send_ts_.find(order_id);
-    if (it != send_ts_.end()) {
-      const auto now = std::chrono::high_resolution_clock::now();
-      const double ms =
-          std::chrono::duration<double, std::milli>(now - it->second).count();
-      ack_latency_ms_cache_[order_id] = ms;
-    }
+  // Two separate latency measurements off the same send_ts_ baseline:
+  //   - ack_latency_ms = placeOrder -> Submitted   (broker received the
+  //     order and queued it)
+  //   - fill_latency_ms = placeOrder -> Filled     (the order is done)
+  // Both use the high_resolution_clock delta against send_ts_[order_id]
+  // captured when the engine called place_limit_order. Reader-thread
+  // side of the race; grab event_mutex_ for the same reason
+  // place_limit_order does on the engine side.
+  const bool is_ack = (status == "Submitted" || status == "PreSubmitted");
+  const bool is_filled = (status == "Filled");
+  if (!is_ack && !is_filled)
+    return;
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  const auto it = send_ts_.find(order_id);
+  if (it == send_ts_.end())
+    return;
+  const auto now = std::chrono::high_resolution_clock::now();
+  const double ms =
+      std::chrono::duration<double, std::milli>(now - it->second).count();
+  if (is_ack) {
+    ack_latency_ms_cache_[order_id] = ms;
+  } else {
+    // is_filled - record once; subsequent Filled events for the same
+    // id (broker re-emit on partial fills) would overwrite with the
+    // SAME duration delta, so the operator-facing measurement is
+    // stable.
+    fill_latency_ms_cache_[order_id] = ms;
   }
 }
 

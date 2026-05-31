@@ -314,6 +314,39 @@ TEST(IBKRClient, AckLatencyForUnknownOrderIsZero) {
   EXPECT_EQ(c.ack_latency_ms(12345), 0.0);
 }
 
+// Companion of OnOrderStatusRecordsAckLatencyForSubmitted: on terminal
+// Filled the engine records placeOrder -> Filled separately. Pre-fix
+// (product backlog item 5) only ack was tracked; fill time was the
+// dark side of the moon.
+TEST(IBKRClient, OnOrderStatusRecordsFillLatencyForFilled) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  hft::OrderRequest req{};
+  req.id = 31;
+  req.symbol = "DD";
+  req.qty = 1.0;
+  c.place_limit_order(req);
+  c.on_order_status(31, "Filled", 1.0, 0.0, 100.0);
+  EXPECT_GT(c.fill_latency_ms(31), 0.0);
+  // Pre-Filled status alone must NOT populate fill_latency.
+  EXPECT_EQ(c.fill_latency_ms(99999), 0.0);
+}
+
+// And the ack-only path must NOT also populate fill_latency.
+TEST(IBKRClient, OnOrderStatusSubmittedDoesNotRecordFillLatency) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  hft::OrderRequest req{};
+  req.id = 32;
+  req.symbol = "EE";
+  req.qty = 1.0;
+  c.place_limit_order(req);
+  c.on_order_status(32, "Submitted", 0.0, 1.0, 0.0);
+  EXPECT_GT(c.ack_latency_ms(32), 0.0);
+  EXPECT_EQ(c.fill_latency_ms(32), 0.0)
+      << "fill_latency must not be recorded until status==Filled";
+}
+
 // Regression test for the send_ts_ / ack_latency_ms_cache_ data race fixed
 // alongside IBKRClient audit item #4. Pre-fix, place_limit_order (engine
 // thread) and on_order_status (reader thread) wrote the same unordered_maps

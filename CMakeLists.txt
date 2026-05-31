@@ -22,6 +22,7 @@ set(LIB_SOURCES
   src/lib/DatabentoBacktestBroker.cpp
   src/lib/RankingEngine.cpp
   src/lib/IBKRClient.cpp
+  src/lib/kill_signals.cpp
   src/lib/LiveExecutionEngine.cpp
   src/lib/RealIBKRTransport.cpp
   src/lib/SymbolUniverse.cpp

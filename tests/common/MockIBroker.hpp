@@ -38,6 +38,7 @@ class MockIBroker : public IBroker {
   MOCK_METHOD(const OrderLifecycleBook*, order_lifecycle, (),
               (const, override));
   MOCK_METHOD(double, ack_latency_ms, (int order_id), (const, override));
+  MOCK_METHOD(double, fill_latency_ms, (int order_id), (const, override));
 };
 
 }  // namespace hft::test

@@ -129,6 +129,15 @@ class IBroker {
     return 0.0;
   }
 
+  // Companion to ack_latency_ms measuring placeOrder -> Filled in
+  // milliseconds. Returns 0.0 for orders that haven't filled yet or
+  // for brokers that don't track this (backtest brokers default to
+  // 0.0 - fills there are synchronous so latency is conceptually
+  // zero). Live IBKR implements it via IBKRClient::fill_latency_ms.
+  [[nodiscard]] virtual double fill_latency_ms(int /*order_id*/) const {
+    return 0.0;
+  }
+
   // Backtest brokers that load finite replay data can report the maximum
   // step index they have data for. main.cpp uses this to cap cfg.steps
   // when AppConfig::steps_auto_from_broker is set, avoiding the common

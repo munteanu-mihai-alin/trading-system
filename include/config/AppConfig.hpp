@@ -246,29 +246,17 @@ struct AppConfig {
   // path that includes the timestamp or run_label.
   std::string daily_loss_kill_alert_path;
 
-  // User-triggered manual kill switch. Path to a file the engine polls
-  // at every step(): if it exists, the engine cancels every open
-  // entry + exit order, sets kill_switch_triggered_by_user_, and
-  // REFUSES TO PLACE NEW ORDERS for the rest of the session. The
-  // file's first line (if present) is logged as the kill reason so
-  // the operator can leave a breadcrumb like
-  //     "panic - L2 looks bogus on KEYS"
+  // User-triggered manual kill is now signal-based (SIGUSR1 on Linux).
+  // See include/engine/kill_signals.hpp for the API + operator
+  // commands. Companion force-liquidate via SIGUSR2.
   //
-  // Empty (default) disables the gate so backtests / sim runs see no
-  // overhead. To trigger from outside the process:
-  //     touch $kill_switch_trigger_path           # bare flag
-  //     echo "reason here" > $kill_switch_trigger_path
-  //     ssh hetzner 'touch /tmp/hft_kill.flag'    # remote kill
-  //
-  // The file is NOT automatically removed when the engine triggers;
-  // its presence is sticky so a restart of the engine with the file
-  // still in place will re-trigger immediately. Operator must
-  // explicitly `rm` it to clear, which is the intended audit trail.
+  // Windows builds don't support these signals; tests use the
+  // hft::kill_signals::inject_*_for_test seams which flip the same
+  // atomic. Production runs on Linux (Hetzner).
   //
   // Distinct from daily_loss_kill_alert_path (which is OBSERVATIONAL
-  // and where the engine writes); this path is INPUT and is where
-  // the operator writes to kill the engine.
-  std::string kill_switch_trigger_path;
+  // and where the engine WRITES); the kill switches are operator
+  // INPUTS via signal.
   std::string databento_cache_dir = "data/databento";
   std::string databento_python = "python";
   std::string databento_l1_download_script = "scripts/local_l1_csv_provider.py";

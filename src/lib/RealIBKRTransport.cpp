@@ -7,8 +7,10 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "broker/IBKRCallbacks.hpp"
@@ -21,6 +23,7 @@
 #include "EReader.h"
 #include "EReaderOSSignal.h"
 #include "EWrapper.h"
+#include "Execution.h"
 #include "Order.h"
 #include "OrderCancel.h"
 
@@ -140,6 +143,13 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
 
   void cancel_positions_stream() override { client_.cancelPositions(); }
 
+  void request_open_orders() override {
+    // Item 17: reqAllOpenOrders fires openOrder for every order the
+    // broker knows about and terminates with openOrderEnd. One-shot
+    // -- IBKR does not stream further updates.
+    client_.reqAllOpenOrders();
+  }
+
   void request_market_data_type(int data_type) override {
     // 1 = real-time only. IBKR will respond with error 354 / 10167 if the
     // active subscriptions don't cover the requested feed; that's the
@@ -230,9 +240,27 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   void tickGeneric(TickerId, TickType, double) override {}
   void tickEFP(TickerId, TickType, double, const std::string&, double, int,
                const std::string&, double, double) override {}
-  void openOrder(OrderId, const Contract&, const Order&,
-                 const OrderState&) override {}
-  void openOrderEnd() override {}
+  void openOrder(OrderId orderId, const Contract& contract, const Order& order,
+                 const OrderState&) override {
+    if (callbacks_ == nullptr)
+      return;
+    // Translate Decimal qty -> double; map LMT/BUY-SELL action to the
+    // engine's "buy"/"sell" string. Other order types (MKT, STP, etc.)
+    // get the action verbatim - the engine only knows about limits but
+    // shouldn't crash on something exotic; the side string still
+    // distinguishes buys from sells.
+    const double qty = DecimalFunctions::decimalToDouble(order.totalQuantity);
+    const std::string side = (order.action == "BUY")    ? "buy"
+                             : (order.action == "SELL") ? "sell"
+                                                        : order.action;
+    callbacks_->on_open_order(static_cast<int>(orderId), contract.symbol, side,
+                              qty, order.lmtPrice);
+  }
+  void openOrderEnd() override {
+    if (callbacks_ != nullptr) {
+      callbacks_->on_open_order_end();
+    }
+  }
   void winError(const std::string&, int) override {}
   void updateAccountValue(const std::string&, const std::string&,
                           const std::string&, const std::string&) override {}
@@ -243,7 +271,20 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   void contractDetails(int, const ContractDetails&) override {}
   void bondContractDetails(int, const ContractDetails&) override {}
   void contractDetailsEnd(int) override {}
-  void execDetails(int, const Contract&, const Execution&) override {}
+  void execDetails(int /*reqId*/, const Contract& /*contract*/,
+                   const Execution& exec) override {
+    // Item 18 prep: cache the exec_id -> order_id map so when the
+    // following commissionAndFeesReport callback fires (which only
+    // carries the exec_id) we can resolve it back to the engine's
+    // order_id. The TWS callback ordering is:
+    //   1. orderStatus (we already handle)
+    //   2. execDetails (this -- carries orderId + execId)
+    //   3. commissionAndFeesReport (carries execId only)
+    // Keeping the map tiny (typical session has <1000 fills) and
+    // under a dedicated mutex.
+    std::lock_guard<std::mutex> lock(exec_to_order_mutex_);
+    exec_id_to_order_id_[exec.execId] = static_cast<int>(exec.orderId);
+  }
   void execDetailsEnd(int) override {}
   void error(int id, time_t, int code, const std::string& message,
              const std::string& advancedOrderRejectJson) override {
@@ -273,7 +314,27 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   void deltaNeutralValidation(int, const DeltaNeutralContract&) override {}
   void tickSnapshotEnd(int) override {}
   void marketDataType(TickerId, int) override {}
-  void commissionAndFeesReport(const CommissionAndFeesReport&) override {}
+  void commissionAndFeesReport(const CommissionAndFeesReport& report) override {
+    // Item 18: IBKR emits this once per fill leg, carrying execId only
+    // (no orderId field on the report struct). Resolve via the
+    // execDetails-built map; falls back to order_id=0 when the map
+    // doesn't have the execId yet (race: report arriving slightly
+    // ahead of execDetails). The engine's realized_commission(0)
+    // bucket captures those legs so the operator-visible total stays
+    // correct even when individual orders can't be attributed.
+    if (callbacks_ == nullptr)
+      return;
+    int order_id = 0;
+    {
+      std::lock_guard<std::mutex> lock(exec_to_order_mutex_);
+      const auto it = exec_id_to_order_id_.find(report.execId);
+      if (it != exec_id_to_order_id_.end()) {
+        order_id = it->second;
+      }
+    }
+    callbacks_->on_commission_report(report.execId, order_id,
+                                     report.commissionAndFees);
+  }
   void position(const std::string& /*account*/, const Contract& contract,
                 Decimal pos, double avg_cost) override {
     if (callbacks_ == nullptr)
@@ -381,6 +442,10 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   EReaderOSSignal signal_{2000};
   EClientSocket client_{this, &signal_};
   EReader* reader_ = nullptr;
+  // Item 18: exec_id -> order_id resolved from execDetails callbacks,
+  // consumed by commissionAndFeesReport.
+  mutable std::mutex exec_to_order_mutex_;
+  std::unordered_map<std::string, int> exec_id_to_order_id_;
 };
 
 }  // namespace

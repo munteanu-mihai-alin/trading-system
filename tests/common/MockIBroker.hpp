@@ -39,6 +39,10 @@ class MockIBroker : public IBroker {
               (const, override));
   MOCK_METHOD(double, ack_latency_ms, (int order_id), (const, override));
   MOCK_METHOD(double, fill_latency_ms, (int order_id), (const, override));
+  MOCK_METHOD(std::vector<BrokerError>, drain_errors, (), (override));
+  MOCK_METHOD(void, reissue_subscriptions, (), (override));
+  MOCK_METHOD(std::vector<BrokerPosition>, query_positions, (), (override));
+  MOCK_METHOD(std::vector<BrokerOpenOrder>, query_open_orders, (), (override));
 };
 
 }  // namespace hft::test

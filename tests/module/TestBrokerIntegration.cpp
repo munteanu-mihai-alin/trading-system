@@ -844,6 +844,34 @@ HFT_TEST(test_ibkr_client_query_positions_flushes_seeded_via_fake_transport) {
   client.disconnect();
 }
 
+HFT_TEST(test_ibkr_client_query_open_orders_flushes_seeded_via_fake_transport) {
+  // Item 17: same FakeIBKRTransport flush pattern as positions.
+  // Verifies IBKRClient -> Transport -> on_open_order* -> condvar path.
+  auto transport = std::make_unique<hft::test::FakeIBKRTransport>();
+  auto* raw = transport.get();
+  raw->seed_open_orders({
+      hft::test::FakeIBKRTransport::SimulatedOpenOrder{101, "AAPL", "buy", 10.0,
+                                                       250.0},
+      hft::test::FakeIBKRTransport::SimulatedOpenOrder{102, "NOK", "sell", 50.0,
+                                                       10.0},
+  });
+  hft::IBKRClient client(std::move(transport));
+  hft::test::require(client.connect("127.0.0.1", 4002, 1),
+                     "fake transport connect should succeed");
+  const auto orders = client.query_open_orders();
+  hft::test::require(orders.size() == 2,
+                     "IBKRClient should return both seeded open orders");
+  hft::test::require(orders[0].order_id == 101,
+                     "first open order should be id 101");
+  hft::test::require(orders[0].side == "buy",
+                     "first open order should be a buy");
+  hft::test::require_close(orders[0].qty, 10.0, 1e-9, "qty matches");
+  hft::test::require(orders[1].order_id == 102, "second open order id 102");
+  hft::test::require(orders[1].side == "sell",
+                     "second open order should be a sell");
+  client.disconnect();
+}
+
 HFT_TEST(test_live_execution_engine_empty_position_set_leaves_engine_empty) {
   // Default IBroker::query_positions() returns empty -> open_positions_
   // should be empty after start(). Regression test ensuring backtest brokers

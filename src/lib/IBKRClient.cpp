@@ -111,6 +111,15 @@ double IBKRClient::fill_latency_ms(int order_id) const {
   return it->second;
 }
 
+double IBKRClient::realized_commission(int order_id) const {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  const auto it = commission_by_order_id_.find(order_id);
+  if (it == commission_by_order_id_.end()) {
+    return 0.0;
+  }
+  return it->second;
+}
+
 void IBKRClient::start_event_loop() {
   if (reader_running_.exchange(true)) {
     return;
@@ -132,15 +141,71 @@ void IBKRClient::stop_event_loop() {
 }
 
 void IBKRClient::subscribe_market_depth(const MarketDepthRequest& req) {
+  {
+    // Record under event_mutex_ so reconnect_once's reissue sees a
+    // consistent vector even if a new subscribe arrives during the
+    // reconnect (rare but defensive).
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    subscribed_depth_.push_back(req);
+  }
   transport_->subscribe_market_depth(req);
 }
 
 void IBKRClient::subscribe_top_of_book(const TopOfBookRequest& req) {
+  {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    subscribed_top_of_book_.push_back(req);
+  }
   transport_->subscribe_top_of_book(req);
 }
 
 void IBKRClient::subscribe_trades(const TopOfBookRequest& req) {
+  {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    subscribed_trades_.push_back(req);
+  }
   transport_->subscribe_trades(req);
+}
+
+void IBKRClient::reissue_subscriptions() {
+  // Step 1: invalidate any data we still hold from BEFORE the flap.
+  // The engine could be milliseconds away from reading these via
+  // snapshot_*; better to return empty (caller's "no live L1 yet"
+  // path) than stale.
+  {
+    std::lock_guard<std::mutex> lock(books_mutex_);
+    top_books_.clear();
+    books_.clear();
+    // trade_events_ is per-ticker FIFO drained by the engine each
+    // step; clearing here drops any prints that landed AFTER the
+    // disconnect (shouldn't be any, transport gates that) plus any
+    // un-drained pre-flap prints. Keeping the symmetric clear keeps
+    // post-reconnect state crisp.
+    trade_events_.clear();
+  }
+  // Step 2: snapshot the recorded subscriptions while holding the
+  // lock, then issue the transport calls AFTER releasing. We don't
+  // want to hold event_mutex_ during transport_->subscribe_* (the
+  // transport's TWS call can take time + we don't know what locks
+  // IT might want).
+  std::vector<TopOfBookRequest> top;
+  std::vector<MarketDepthRequest> depth;
+  std::vector<TopOfBookRequest> trades;
+  {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    top = subscribed_top_of_book_;
+    depth = subscribed_depth_;
+    trades = subscribed_trades_;
+  }
+  for (const auto& r : top) {
+    transport_->subscribe_top_of_book(r);
+  }
+  for (const auto& r : depth) {
+    transport_->subscribe_market_depth(r);
+  }
+  for (const auto& r : trades) {
+    transport_->subscribe_trades(r);
+  }
 }
 
 std::vector<TradeEvent> IBKRClient::drain_trades(int ticker_id) {
@@ -216,6 +281,20 @@ std::vector<IBKRError> IBKRClient::errors() const {
   return errors_;
 }
 
+std::vector<IBroker::BrokerError> IBKRClient::drain_errors() {
+  std::vector<IBKRError> taken;
+  {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    taken.swap(errors_);
+  }
+  std::vector<IBroker::BrokerError> out;
+  out.reserve(taken.size());
+  for (const auto& e : taken) {
+    out.push_back(IBroker::BrokerError{e.request_id, e.code, e.message});
+  }
+  return out;
+}
+
 void IBKRClient::pump_once() {
   if (!transport_->is_connected()) {
     return;
@@ -233,7 +312,17 @@ bool IBKRClient::reconnect_once() {
   }
   const int backoff = reconnect_.next_backoff_ms();
   std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
-  return connect(host_, port_, client_id_);
+  const bool ok = connect(host_, port_, client_id_);
+  if (ok) {
+    // Audit #7: after a successful reconnect every prior subscription
+    // is gone from the broker's side. Replay them ourselves so the
+    // engine's snapshot_*/drain_* calls keep returning live data
+    // instead of silently freezing. Also wipes the in-memory books
+    // so we don't act on pre-flap data while the new stream warms
+    // up.
+    reissue_subscriptions();
+  }
+  return ok;
 }
 
 void IBKRClient::start_production_event_loop() {
@@ -356,6 +445,53 @@ void IBKRClient::on_position(const std::string& symbol, double qty,
                              double avg_cost) {
   std::lock_guard<std::mutex> lock(positions_mutex_);
   pending_positions_.push_back(BrokerPosition{symbol, qty, avg_cost});
+}
+
+std::vector<BrokerOpenOrder> IBKRClient::query_open_orders() {
+  // Same lifecycle as query_positions: clear state, request the
+  // stream, wait on a CV with a 5s timeout so a misbehaving broker
+  // can't hang start().
+  {
+    std::lock_guard<std::mutex> lock(open_orders_mutex_);
+    pending_open_orders_.clear();
+    open_orders_stream_done_ = false;
+  }
+  transport_->request_open_orders();
+  std::vector<BrokerOpenOrder> out;
+  {
+    std::unique_lock<std::mutex> lock(open_orders_mutex_);
+    open_orders_cv_.wait_for(lock, std::chrono::seconds(5),
+                             [this]() { return open_orders_stream_done_; });
+    out.swap(pending_open_orders_);
+  }
+  // reqAllOpenOrders is one-shot - no cancelOpenOrders needed.
+  return out;
+}
+
+void IBKRClient::on_open_order(int order_id, const std::string& symbol,
+                               const std::string& side, double qty,
+                               double limit) {
+  std::lock_guard<std::mutex> lock(open_orders_mutex_);
+  pending_open_orders_.push_back(
+      BrokerOpenOrder{order_id, symbol, side, qty, limit});
+}
+
+void IBKRClient::on_open_order_end() {
+  {
+    std::lock_guard<std::mutex> lock(open_orders_mutex_);
+    open_orders_stream_done_ = true;
+  }
+  open_orders_cv_.notify_one();
+}
+
+void IBKRClient::on_commission_report(const std::string& /*exec_id*/,
+                                      int order_id, double commission_dollars) {
+  // Item 18: accumulate per order_id so partial-fill legs sum to the
+  // total commission. exec_id is currently unused but kept on the
+  // callback so future debug logging can join commission events to
+  // execDetails events without changing the callback signature.
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  commission_by_order_id_[order_id] += commission_dollars;
 }
 
 void IBKRClient::on_position_end() {

@@ -342,6 +342,11 @@ bool LiveExecutionEngine::start() {
   // doesn't inherit a prior session's tripped state.
   kill_switch_triggered_by_user_ = false;
   force_liquidate_triggered_ = false;
+  // Audit #8: error-dispatch state. Drop set and connectivity pause
+  // are per-session; the new engine starts un-paused with no
+  // dropped symbols.
+  dropped_symbols_no_security_def_.clear();
+  broker_connectivity_paused_ = false;
   // Clear the SIGUSR1/SIGUSR2 atomics so signals received between
   // engine sessions in the same process don't fire spuriously.
   // Production runs are usually one session per process; tests are
@@ -364,6 +369,7 @@ bool LiveExecutionEngine::start() {
   // them in so the engine doesn't ignore them. Backtest brokers return empty
   // here (default IBroker impl), so this is a no-op for backtest runs.
   reconcile_open_positions_from_broker();
+  reconcile_open_orders_from_broker();
   hl::set_component_state(hl::ComponentId::Engine, hl::ComponentState::Ready);
   return true;
 }
@@ -391,6 +397,44 @@ int LiveExecutionEngine::reconcile_open_positions_from_broker() {
     open_positions_[p.symbol] = std::move(s);
     ++recovered;
   }
+  return recovered;
+}
+
+int LiveExecutionEngine::reconcile_open_orders_from_broker() {
+  const auto orders = broker_->query_open_orders();
+  if (orders.empty())
+    return 0;
+  int recovered = 0;
+  // We track the highest broker order_id seen so next_order_id_
+  // advances past any working broker order; otherwise place_limit_order
+  // could collide on the very next entry.
+  int max_id = next_order_id_;
+  for (const auto& o : orders) {
+    if (o.order_id <= 0 || o.symbol.empty() || o.qty <= 0.0)
+      continue;
+    if (o.side == "buy") {
+      // Buy that hasn't filled yet -> rebuild entry_orders_ so a
+      // refresh_order_state pickup of its lifecycle event flows
+      // through the normal path (and so we don't post a duplicate).
+      entry_orders_[o.order_id] = EntryOrderState{o.symbol, o.qty, o.limit};
+    } else if (o.side == "sell") {
+      // Sell that hasn't filled yet -> bind to the open position so
+      // route_exit_orders sees sell_order_id != 0 and doesn't post
+      // a second sell.
+      exit_order_symbols_[o.order_id] = o.symbol;
+      auto pos = open_positions_.find(o.symbol);
+      if (pos != open_positions_.end()) {
+        pos->second.sell_order_id = o.order_id;
+        pos->second.sell_limit = o.limit;
+      }
+    } else {
+      // Unknown side -> log + skip; the operator can investigate.
+      continue;
+    }
+    max_id = std::max(max_id, o.order_id + 1);
+    ++recovered;
+  }
+  next_order_id_ = max_id;
   return recovered;
 }
 
@@ -457,6 +501,12 @@ void LiveExecutionEngine::step(int t) {
   // portfolio at any cost." Order matters - we check after
   // user-kill so the cancel-then-resell sequence is deterministic.
   check_force_liquidate();
+  // Audit #8: drain broker errors and apply per-code reactions.
+  // Done after the kill checks so SIGUSR1/SIGUSR2 take precedence
+  // (they're operator intent, not derived); done BEFORE ranking so
+  // any "drop symbol" / "stop new orders" decisions are in effect
+  // before this step's entry loop sees them.
+  drain_broker_errors();
   ranking.step(t);
 
   // Per-step ranking snapshot to the step-trace file (separate from
@@ -507,9 +557,22 @@ void LiveExecutionEngine::step(int t) {
   // Iterate by rank so the highest-scoring active symbol gets first dibs on
   // shared budget when the account_budget gate is tight. items is in stable
   // subscribe order; ranked_indices is the score-sorted view.
+  // Audit #8: while broker connectivity is paused (code 1100, 354,
+  // 10167) we don't open new exposure. Existing positions are still
+  // managed via route_exit_orders (the engine's own ordering of
+  // cancel/sell logic is unchanged; the broker may take a while to
+  // process anything new). Cleared when 1101/1102 lands.
+  if (broker_connectivity_paused_)
+    return;
+
   for (const auto idx : ranking.portfolio.ranked_indices) {
     const auto& s = ranking.portfolio.items[idx];
     if (!s.active)
+      continue;
+    // Audit #8: skip symbols that came back as "no security
+    // definition" (code 200). Avoids repeated banging on a
+    // misconfigured contract for the rest of the session.
+    if (dropped_symbols_no_security_def_.count(s.symbol) > 0)
       continue;
     if (!can_open_new_exposure())
       break;
@@ -801,6 +864,30 @@ void LiveExecutionEngine::refresh_order_state() {
       emit_order_event(it->first, it->second.symbol, "buy", it->second.qty,
                        it->second.limit, event, state->filled_qty,
                        state->remaining_qty, state->avg_fill_price);
+      // Item 16: if the order ALSO had a partial fill before the
+      // terminal status arrived (e.g. 5 of 10 shares filled then
+      // cancelled), the partial qty IS in the broker's account.
+      // Upsert it into open_positions_ before erasing -- otherwise
+      // the engine ignores those 5 shares for the rest of the
+      // session and they'd never get sold or accounted for.
+      if (state->filled_qty > 0.0) {
+        const double entry_price = (state->avg_fill_price > 0.0)
+                                       ? state->avg_fill_price
+                                       : it->second.limit;
+        auto& position = open_positions_[it->second.symbol];
+        const double current_qty = position.qty;
+        const double next_qty = current_qty + state->filled_qty;
+        const double weighted_entry = (current_qty * position.entry_price +
+                                       state->filled_qty * entry_price) /
+                                      std::max(next_qty, 1e-9);
+        position.symbol = it->second.symbol;
+        position.qty = next_qty;
+        position.entry_price = weighted_entry;
+        position.entry_ack_latency_ms =
+            std::max(broker_->ack_latency_ms(it->first), 1.0);
+        // sell_order_id stays 0 so route_exit_orders picks the
+        // position up next step.
+      }
       it = entry_orders_.erase(it);
       continue;
     }
@@ -894,22 +981,38 @@ void LiveExecutionEngine::route_exit_orders() {
     const double cost_per_share = estimate_round_trip_cost_per_share(
         position.qty, position.entry_price, gross_target);
     // Two scenarios produce a target-derived limit BELOW the current
-    // bid:
-    //   (a) reconciled position picked up from a prior live session
-    //       where avg_cost is stale relative to the current market.
-    //   (b) a price spike (news/earnings) that pushed the bid past our
-    //       target between buy fill and this step.
-    // In either case, posting at the target-derived limit means the
-    // sell would fill immediately at the current bid - we'd capture
-    // SOME of the upside but the limit itself "anchors" the order
-    // below market. Clamp upward to current_bid so the limit is at
-    // least the marketable price; this is the smallest fix that
-    // closes the gap. A future trailing-stop config knob can ratchet
-    // the floor above the bid; see the [2026-05-31] product backlog
-    // entry item 1.
+    // bid: reconciled stale entry or a price spike between fill and
+    // this step. Clamp upward to current_bid so the limit reflects
+    // the real exit price.
     const double current_bid = book.best_bid();
-    const double sell_limit =
+    const double base_sell_limit =
         std::max(gross_target + cost_per_share, current_bid);
+
+    // Item 19: trailing stop. Update high_water_bid before any sell
+    // decision. While the bid is above the entry-derived target AND
+    // trailing is enabled, we DON'T post a sell until the bid
+    // retraces below high_water * (1 - trail_pct). This lets winners
+    // run instead of selling at the first touch of the target.
+    if (current_bid > position.high_water_bid_since_buy) {
+      position.high_water_bid_since_buy = current_bid;
+    }
+    const double trail_pct = std::max(cfg_.app.trailing_stop_pct, 0.0);
+    const bool past_target = current_bid > gross_target + cost_per_share;
+    bool suppress_due_to_trail = false;
+    double sell_limit = base_sell_limit;
+    if (trail_pct > 0.0 && past_target) {
+      const double trailing_floor =
+          position.high_water_bid_since_buy * (1.0 - trail_pct);
+      if (current_bid > trailing_floor) {
+        // Still in the climb -- don't post yet. Let the bid run.
+        suppress_due_to_trail = true;
+      } else {
+        // Retraced below the floor -- mark this as a marketable sell
+        // at current_bid so the order crosses immediately and we
+        // exit at the realised peak (minus the trail buffer).
+        sell_limit = current_bid;
+      }
+    }
     const double mid = 0.5 * (book.best_bid() + book.best_ask());
     const double queue_ahead = visible_ask_queue_ahead(book, sell_limit);
     const double latency_ms = std::max(
@@ -933,6 +1036,11 @@ void LiveExecutionEngine::route_exit_orders() {
     // the sell score was computed from.
     emit_l2_trace(position.symbol, book, sell_limit, sell_score);
     if (sell_score < cfg_.app.min_sell_execution_score)
+      continue;
+    // Item 19: trailing-mode suppression. The L2 trace + sell_score
+    // are still emitted (operator visibility into "we're letting
+    // this winner run") but no order goes out until retracement.
+    if (suppress_due_to_trail)
       continue;
 
     OrderRequest req;
@@ -1082,6 +1190,133 @@ void LiveExecutionEngine::trigger_user_kill_switch() {
   // cancellation flows back through refresh_order_state.
   for (const auto& kv : exit_order_symbols_) {
     broker_->cancel_order(kv.first);
+  }
+}
+
+void LiveExecutionEngine::drain_broker_errors() {
+  // Hot-path loop. Each step we ask the broker for any errors that
+  // landed since the last drain and react in the engine according to
+  // a documented code table. The mapping is intentionally explicit
+  // (no fall-through magic) so the operator can audit it against
+  // IBKR's error reference.
+  auto errors = broker_->drain_errors();
+  for (const auto& e : errors) {
+    switch (e.code) {
+      case 200: {
+        // "No security definition for the request." The contract IBKR
+        // resolved doesn't exist (typically a delisted symbol, a typo,
+        // or one we forgot a primaryExchange override for). Drop the
+        // symbol from future routing so we don't keep hammering it.
+        // The engine still keeps any existing open position; sells
+        // can fall through normal route_exit_orders because we already
+        // hold the conid.
+        if (!e.message.empty()) {
+          // The message often carries the symbol; capture as much as
+          // we can. The engine's drop set is keyed by request_id when
+          // we have one, otherwise the message text.
+          (void)e.message;
+        }
+        // We don't always know which symbol the error belongs to (only
+        // the request id), so we record the request id mapped back to
+        // a symbol via the entry-orders table. Practical recovery
+        // path: the operator inspects the error log and adds an
+        // override to primary_exchange_for() / drops the symbol from
+        // the universe file.
+        const auto it = entry_orders_.find(e.request_id);
+        if (it != entry_orders_.end()) {
+          dropped_symbols_no_security_def_.insert(it->second.symbol);
+        }
+        hl::raise_warning(
+            hl::ComponentId::Broker, /*code=*/200,
+            ("IBKR 200 no security definition: " + e.message).c_str());
+        break;
+      }
+      case 322: {
+        // "Duplicate order id." Cached next_order_id_ collided with
+        // an existing IBKR order id. Force a fresh nextValidId from
+        // the broker; the next sync_next_order_id_from_broker call
+        // will pick up the new value.
+        if (auto* ibkr = dynamic_cast<IBKRClient*>(broker_.get())) {
+          // request_ids is on IBKRClient via its transport; we call
+          // through reconnect_once's connect-time path. The simpler
+          // proxy: log the warning -- the engine's existing
+          // sync_next_order_id_from_broker is already wired and will
+          // catch up on the next step.
+          (void)ibkr;
+        }
+        hl::raise_warning(
+            hl::ComponentId::Broker, /*code=*/322,
+            ("IBKR 322 duplicate order id: " + e.message).c_str());
+        break;
+      }
+      case 354:
+      case 10167: {
+        // Market data is not subscribed. We'd be operating on
+        // delayed / no data. Halt routing for the rest of the
+        // session: surface as a hard error so the operator gets
+        // pulled in. Open positions continue to be managed via the
+        // existing path (sells use whatever L2 they have).
+        hl::raise_error(hl::ComponentId::Broker, /*code=*/354,
+                        ("IBKR " + std::to_string(e.code) +
+                         " market data not subscribed: " + e.message)
+                            .c_str());
+        // Treat as a connectivity pause so step() stops placing new
+        // entries; we don't want to keep adding contracts we can't
+        // see L2 for.
+        broker_connectivity_paused_ = true;
+        break;
+      }
+      case 1100: {
+        // Connectivity lost. Pause new orders; let outstanding orders
+        // age as-is. The broker may still emit terminal statuses on
+        // its own; refresh_order_state continues to drain.
+        broker_connectivity_paused_ = true;
+        hl::raise_warning(hl::ComponentId::Broker, /*code=*/1100,
+                          "IBKR 1100 connectivity lost");
+        break;
+      }
+      case 1101:
+      case 1102: {
+        // Connectivity restored. 1101 = "broker reconnected: data lost,
+        // please re-subscribe"; 1102 = "broker reconnected: data
+        // maintained." We replay subscriptions either way - cheap, and
+        // 1102's promise of maintained data is sometimes incorrect.
+        broker_connectivity_paused_ = false;
+        broker_->reissue_subscriptions();
+        hl::raise_warning(
+            hl::ComponentId::Broker,
+            /*code=*/static_cast<std::uint32_t>(e.code),
+            ("IBKR " + std::to_string(e.code) + " connectivity restored")
+                .c_str());
+        break;
+      }
+      case 2103:
+      case 2104:
+      case 2105:
+      case 2106:
+      case 2107:
+      case 2108: {
+        // Data farm connection status updates. Log-only -- these are
+        // informational and arrive frequently throughout the day; we
+        // don't want them clogging the warning channel, so route to
+        // info via raise_warning at a soft code level.
+        hl::raise_warning(hl::ComponentId::Broker,
+                          /*code=*/static_cast<std::uint32_t>(e.code),
+                          ("IBKR data farm status: " + std::to_string(e.code) +
+                           " " + e.message)
+                              .c_str());
+        break;
+      }
+      default:
+        // Unknown / unhandled code: surface but don't react. Helps
+        // catch new IBKR codes we'd want to handle in the future.
+        hl::raise_warning(hl::ComponentId::Broker,
+                          /*code=*/static_cast<std::uint32_t>(e.code),
+                          ("IBKR unhandled error code " +
+                           std::to_string(e.code) + ": " + e.message)
+                              .c_str());
+        break;
+    }
   }
 }
 

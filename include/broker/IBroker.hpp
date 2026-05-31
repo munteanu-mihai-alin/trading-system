@@ -86,6 +86,20 @@ struct BrokerPosition {
   double avg_cost = 0.0;
 };
 
+// One open order returned by IBroker::query_open_orders() at engine
+// startup. Used for item 17 -- without this the engine restarts with
+// an empty entry_orders_ / exit_order_symbols_ even when the broker
+// still has working orders from a prior session, leading to duplicate
+// place_limit_order calls and accidental over-exposure. side is "buy"
+// or "sell" mirroring orders.csv.
+struct BrokerOpenOrder {
+  int order_id = 0;
+  std::string symbol;
+  std::string side;
+  double qty = 0.0;
+  double limit = 0.0;
+};
+
 class IBroker {
  public:
   virtual ~IBroker() = default;
@@ -158,6 +172,48 @@ class IBroker {
   [[nodiscard]] virtual std::vector<BrokerPosition> query_positions() {
     return {};
   }
+
+  // Item 17: snapshot of orders the broker still considers open at
+  // engine startup. Mirror of query_positions; the live IBKR client
+  // implements via reqAllOpenOrders + openOrderEnd. Default empty.
+  [[nodiscard]] virtual std::vector<BrokerOpenOrder> query_open_orders() {
+    return {};
+  }
+
+  // Item 18: realized commission for a given order id, in dollars.
+  // Returned by the broker when commissionAndFeesReport callbacks
+  // have been processed. Returns 0.0 when the broker doesn't know
+  // (default backtest brokers, orders that haven't filled, etc.) -
+  // the engine treats 0.0 as "use the modelled commission" so a
+  // missing report degrades to today's behaviour.
+  [[nodiscard]] virtual double realized_commission(int /*order_id*/) const {
+    return 0.0;
+  }
+
+  // ---- Audit #8: error dispatch ----
+  // BrokerError surface that the engine polls each step via
+  // drain_errors. Codes map onto operator-meaningful reactions:
+  //   200          no security definition       -> drop symbol
+  //   322          duplicate order id           -> retry with fresh ids
+  //   354 / 10167  market data not subscribed   -> halt critical
+  //   1100         connectivity lost            -> stop new orders
+  //   1101 / 1102  connectivity restored        -> replay subscriptions
+  //   2103-2106    data farm status updates     -> log only
+  // Default brokers return an empty vector; the live IBKR client
+  // implements the real drain.
+  struct BrokerError {
+    int request_id = 0;
+    int code = 0;
+    std::string message;
+  };
+  [[nodiscard]] virtual std::vector<BrokerError> drain_errors() { return {}; }
+
+  // Audit #7+#8: called from the engine when error code 1101 or 1102
+  // arrives (Gateway connectivity restored). The live IBKRClient
+  // re-issues every recorded subscribe_top_of_book / market_depth /
+  // trades call against the transport and clears stale books in
+  // memory. Default no-op for backtest brokers.
+  virtual void reissue_subscriptions() {}
 };
 
 }  // namespace hft

@@ -233,6 +233,17 @@ struct AppConfig {
   // See agent/AGENT_HANDOFF_LOG.md [2026-05-16] Live-trading prerequisites
   // sub-item #1.
   double daily_loss_kill_usd = 0.0;
+  // Item 19: trailing-stop fraction. 0.0 (default) = off, today's
+  // behaviour. When > 0, route_exit_orders enters trailing mode for
+  // any position whose high-water bid has exceeded gross_target +
+  // cost. While in trailing mode the engine does NOT post a sell
+  // until the current bid retraces below
+  //   high_water * (1 - trailing_stop_pct).
+  // Then it submits a marketable sell at the current bid. This
+  // captures the "let winners run" upside without giving back more
+  // than `trailing_stop_pct` of the climb. Typical values 0.005 -
+  // 0.02 (0.5% - 2%).
+  double trailing_stop_pct = 0.0;
   // Where the engine writes the alert when daily_loss_kill_usd is
   // breached. Empty (default) = do not write a file (the warning is
   // still logged through the normal logging component). Typically set

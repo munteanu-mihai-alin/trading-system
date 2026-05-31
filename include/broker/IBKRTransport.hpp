@@ -44,6 +44,12 @@ class IBKRTransport {
   // even if no stream is active. Default no-op.
   virtual void cancel_positions_stream() {}
 
+  // Item 17: ask the broker for every currently-working order. Each
+  // order fires through IBKRCallbacks::on_open_order; the snapshot
+  // terminates with on_open_order_end. Real transport calls
+  // EClientSocket::reqAllOpenOrders(). One-shot, no cancel needed.
+  virtual void request_open_orders() {}
+
   // Tell the broker which market-data tier to deliver. 1 = real-time only
   // (errors out if the subscription is missing rather than silently
   // delivering 15-minute-delayed prints). IBKRClient::connect calls this

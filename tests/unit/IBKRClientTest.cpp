@@ -467,6 +467,68 @@ TEST(IBKRClient, SnapshotBookForUnknownTickerIsEmpty) {
   EXPECT_DOUBLE_EQ(book.best_ask(), 0.0);
 }
 
+// Item 18: commission report accumulates per order_id across multiple
+// fill legs (a partial-fill sequence emits multiple commission events).
+TEST(IBKRClient, OnCommissionReportAccumulatesPerOrderId) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  EXPECT_EQ(c.realized_commission(11), 0.0);
+  c.on_commission_report("exec-A", 11, 0.35);
+  c.on_commission_report("exec-B", 11, 0.18);  // partial fill leg
+  c.on_commission_report("exec-C", 12, 1.05);  // other order
+  EXPECT_NEAR(c.realized_commission(11), 0.53, 1e-9);
+  EXPECT_NEAR(c.realized_commission(12), 1.05, 1e-9);
+  EXPECT_EQ(c.realized_commission(999), 0.0);
+}
+
+// Audit #7: every subscription that was made BEFORE a flap must be
+// re-issued to the transport after reconnect_once succeeds. Without
+// this the engine runs blind on stale top_books_ / books_ while
+// thinking it's still subscribed.
+TEST(IBKRClient, ReissueSubscriptionsReplaysAllRecordedSubs) {
+  auto t = std::make_unique<NiceMockTransport>();
+  auto* raw = t.get();
+  hft::IBKRClient c(std::move(t));
+  // Record three subscriptions.
+  c.subscribe_top_of_book(hft::TopOfBookRequest{1, "AAA"});
+  c.subscribe_market_depth(hft::MarketDepthRequest{1, "AAA", 5});
+  c.subscribe_trades(hft::TopOfBookRequest{1, "AAA"});
+  c.subscribe_top_of_book(hft::TopOfBookRequest{2, "BBB"});
+
+  // After reset, asserting on the REPLAY -- transport sees each call
+  // a SECOND time.
+  EXPECT_CALL(*raw, subscribe_top_of_book(::testing::Field(
+                        &hft::TopOfBookRequest::symbol, std::string("AAA"))))
+      .Times(1);
+  EXPECT_CALL(*raw, subscribe_top_of_book(::testing::Field(
+                        &hft::TopOfBookRequest::symbol, std::string("BBB"))))
+      .Times(1);
+  EXPECT_CALL(*raw, subscribe_market_depth(::testing::_)).Times(1);
+  EXPECT_CALL(*raw, subscribe_trades(::testing::_)).Times(1);
+  c.reissue_subscriptions();
+}
+
+// Books written before the flap must NOT leak into post-reissue
+// snapshots. Pre-fix the engine could read stale L1 data while the
+// new stream was warming up.
+TEST(IBKRClient, ReissueSubscriptionsClearsStaleBooks) {
+  auto t = std::make_unique<NiceMockTransport>();
+  hft::IBKRClient c(std::move(t));
+  // Seed top_books_ + books_ with pre-flap data.
+  c.on_top_of_book_price(7, /*is_bid=*/true, 99.0);
+  c.on_top_of_book_price(7, /*is_bid=*/false, 99.5);
+  c.on_market_depth_update(7, 0, /*op=*/0, /*side=*/0, 99.0, 100.0);
+  EXPECT_TRUE(c.snapshot_top_of_book(7).valid());
+  EXPECT_DOUBLE_EQ(c.snapshot_book(7).bids[0].price, 99.0);
+
+  c.reissue_subscriptions();
+
+  EXPECT_FALSE(c.snapshot_top_of_book(7).valid())
+      << "stale L1 must be cleared so the engine waits for fresh data";
+  EXPECT_DOUBLE_EQ(c.snapshot_book(7).bids[0].price, 0.0)
+      << "stale L2 must be cleared after reissue";
+}
+
 TEST(IBKRClient, OnConnectionClosedDoesNotCrash) {
   auto t = std::make_unique<NiceMockTransport>();
   hft::IBKRClient c(std::move(t));

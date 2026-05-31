@@ -55,6 +55,23 @@ class IBKRCallbacks {
   // cancelPositions is called.
   virtual void on_position_end() {}
 
+  // Item 17: one open order from a reqAllOpenOrders stream. side is
+  // "buy" or "sell" matching the orders.csv schema. Followed by an
+  // on_open_order_end() once the broker has delivered every order.
+  virtual void on_open_order(int /*order_id*/, const std::string& /*symbol*/,
+                             const std::string& /*side*/, double /*qty*/,
+                             double /*limit*/) {}
+  virtual void on_open_order_end() {}
+
+  // Item 18: commissionAndFeesReport. IBKR emits one of these per fill
+  // (sometimes split across multiple events for one order via execId).
+  // Dollars, post-trade. The exec_id lets the engine accumulate per
+  // logical order even when the broker splits the report. Default
+  // no-op so test doubles that don't care don't have to override.
+  virtual void on_commission_report(const std::string& /*exec_id*/,
+                                    int /*order_id*/,
+                                    double /*commission_dollars*/) {}
+
   virtual void on_connection_closed() = 0;
 };
 

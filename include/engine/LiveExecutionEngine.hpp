@@ -31,6 +31,11 @@ class LiveExecutionEngine {
     int sell_order_id = 0;
     double sell_limit = 0.0;
     double sell_score = 0.0;
+    // Item 19: highest current_bid observed since the buy filled.
+    // Used to compute the trailing stop level when
+    // AppConfig::trailing_stop_pct > 0. Starts at 0; first
+    // route_exit_orders pass seeds it from the L2 best bid.
+    double high_water_bid_since_buy = 0.0;
   };
 
  private:
@@ -124,6 +129,16 @@ class LiveExecutionEngine {
   bool kill_switch_triggered_by_user_ = false;
   bool force_liquidate_triggered_ = false;
 
+  // ---- Audit #8: error-code dispatch ----
+  // Symbols the broker rejected with code 200 (no security
+  // definition). After dispatch, route_exit_orders / entry loop
+  // skip these so we don't keep banging on a contract IBKR doesn't
+  // recognise. Reset at start().
+  std::unordered_set<std::string> dropped_symbols_no_security_def_;
+  // Code 1100 sets this to true; 1101/1102 clears it. While true,
+  // step() refuses to place new orders (but still drains state).
+  bool broker_connectivity_paused_ = false;
+
   [[nodiscard]] bool can_route_order(const Stock& stock) const;
   [[nodiscard]] bool has_open_exposure(const std::string& symbol) const;
   [[nodiscard]] int open_exposure_symbol_count() const;
@@ -152,6 +167,12 @@ class LiveExecutionEngine {
   // the number of positions recovered (0 when the broker has no positions
   // or when query_positions() is the IBroker default empty implementation).
   int reconcile_open_positions_from_broker();
+  // Item 17: snapshot of broker-side open orders at start(). Without
+  // this the engine restarts with empty entry_orders_ /
+  // exit_order_symbols_ and might place a duplicate buy or sell for
+  // an order that's actually still working at IBKR. Returns the count
+  // recovered.
+  int reconcile_open_orders_from_broker();
   void refresh_order_state();
   void route_exit_orders();
   // Per-step drain of broker trade prints into Stock::hawkes, gated on
@@ -251,6 +272,10 @@ class LiveExecutionEngine {
   // Sets force_liquidate_triggered_. Logs reason + per-position
   // notional sold.
   void trigger_force_liquidate();
+  // Audit #8: drain broker errors once per step, dispatching the
+  // engine-side reaction. Codes and reactions are documented at the
+  // implementation site.
+  void drain_broker_errors();
 
  public:
   RankingEngine ranking;
@@ -322,6 +347,17 @@ class LiveExecutionEngine {
   // having to call step() (which would also drive ranking + entry
   // logic). Useful for hermetic exit-only tests.
   void route_exit_orders_for_test() { route_exit_orders(); }
+  // Test-only: drive refresh_order_state directly. Used to exercise
+  // entry-fill / cancel / partial-fill bookkeeping without setting
+  // up the entire ranking + entry loop.
+  void refresh_order_state_for_test() { refresh_order_state(); }
+  // Test-only: drop an entry-order record so refresh_order_state has
+  // something to walk. Production code records this through
+  // place_limit_order; tests use this to skip the entry loop.
+  void inject_entry_order_for_test(int order_id, const std::string& symbol,
+                                   double qty, double limit) {
+    entry_orders_[order_id] = EntryOrderState{symbol, qty, limit};
+  }
   // Force one round of the kill-alert evaluation against current state.
   // Equivalent to what step() does just after refresh_order_state.
   void check_daily_loss_kill_alert_for_test() { check_daily_loss_kill_alert(); }
@@ -329,6 +365,21 @@ class LiveExecutionEngine {
   void check_user_kill_switch_for_test() { check_user_kill_switch(); }
   // Force one round of the force-liquidate poll. Test-only seam.
   void check_force_liquidate_for_test() { check_force_liquidate(); }
+  // Force one round of broker-error dispatch. Test-only seam.
+  void drain_broker_errors_for_test() { drain_broker_errors(); }
+  // Audit #8: symbols dropped because IBKR returned no security
+  // definition (code 200). Visible to tests + the end-of-run summary;
+  // populated from drain_broker_errors. Resets at start().
+  [[nodiscard]] const std::unordered_set<std::string>&
+  dropped_symbols_for_no_security_def() const {
+    return dropped_symbols_no_security_def_;
+  }
+  // Whether code 1100 (connectivity lost) is currently in effect.
+  // Engine pauses placement until 1101/1102 (connectivity restored)
+  // clears it.
+  [[nodiscard]] bool broker_connectivity_paused() const {
+    return broker_connectivity_paused_;
+  }
 };
 
 }  // namespace hft

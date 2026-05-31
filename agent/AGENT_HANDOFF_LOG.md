@@ -4,6 +4,51 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-06-01] - Production hardening: audits #7/#8 + items 16/17/18/19 #Done
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `c75b496 feat: production hardening -- audits #7+#8, items 16/17/18/19`.
+
+What landed (6 changes, one commit because the IBroker / IBKRTransport / MockIBroker / MockIBKRTransport / FakeIBKRTransport all grow at once):
+
+- **Audit #7: replay subscriptions on reconnect.** IBKRClient records every subscribe (top/depth/trades) under `event_mutex_`. `reconnect_once` calls `reissue_subscriptions()` after a successful reconnect, which clears stale `top_books_`/`books_`/`trade_events_` and re-issues every recorded subscribe against the new transport session. Also exposed via the new `IBroker::reissue_subscriptions()` so the engine can call it generically from the error-code dispatch when 1101/1102 arrives.
+- **Audit #8: error-code dispatch.** `IBKRClient::drain_errors()` translates `IBKRError` -> `IBroker::BrokerError`. `LiveExecutionEngine::drain_broker_errors` runs each step and switches on the code: 200 = drop symbol; 322 = warn + sync next valid id; 354/10167 = raise_error + pause connectivity; 1100 = pause connectivity; 1101/1102 = clear pause + replay subs; 2103-2108 = log only; default = warn. While `broker_connectivity_paused_` is true the entry loop stops opening new exposure (existing positions continue to be managed via route_exit_orders).
+- **Item 16: PartiallyFilled-then-Cancelled handling.** `refresh_order_state`'s terminal-status branch now upserts `open_positions_` when `state->filled_qty > 0` before erasing the entry order. Pre-fix a partial fill that got cancelled silently left the engine thinking it owned 0 of N shares the broker actually held.
+- **Item 17: open-order reconciliation at start.** `IBroker::query_open_orders` + `IBKRTransport::request_open_orders` + `IBKRCallbacks::on_open_order` + `on_open_order_end`. `IBKRClient` implements the blocking call (mirror of `query_positions`). `LiveExecutionEngine::start` calls `reconcile_open_orders_from_broker` after positions: working buys go into `entry_orders_`, working sells into `exit_order_symbols_` AND bind to the matched position's `sell_order_id`; `next_order_id_` advances past the highest seen broker id so the very next `place_limit_order` doesn't collide.
+- **Item 18: commissionAndFeesReport wiring.** `IBKRCallbacks::on_commission_report(exec_id, order_id, commission_dollars)` + `IBroker::realized_commission(order_id)`. `RealIBKRTransport::execDetails` populates an `exec_id -> order_id` map (the `CommissionAndFeesReport` struct only carries exec_id, not order_id). `IBKRClient` accumulates per `order_id` so multi-leg partial fills sum correctly. Default returns 0 for backtest brokers; the engine treats 0 as "use modelled cost" so backtests keep their current behaviour.
+- **Item 19: trailing-stop knob.** `AppConfig::trailing_stop_pct` (default 0 = off, today's behaviour). `OpenPositionState` grows `high_water_bid_since_buy`. `route_exit_orders` ratchets the high-water on each pass; while `bid > target+cost` AND `bid > high_water * (1 - trail_pct)` the engine SUPPRESSES the sell (lets winners run, still emits L2 trace for operator visibility). On retracement below the trailing floor it submits a marketable sell at `current_bid`. The `trail=0` default preserves the item 1 plain bid-clamp behaviour exactly.
+
+Test counts:
+- 171 gtests pass (was 158; +13 across 9 new tests):
+  - `IBKRClient.ReissueSubscriptionsReplaysAllRecordedSubs`
+  - `IBKRClient.ReissueSubscriptionsClearsStaleBooks`
+  - `IBKRClient.OnCommissionReportAccumulatesPerOrderId`
+  - `LiveExecutionEngine.ErrorDispatchCode200DropsSymbol`
+  - `LiveExecutionEngine.ErrorDispatchCode354PausesConnectivity`
+  - `LiveExecutionEngine.ErrorDispatchCode1100Pauses1101Resumes`
+  - `LiveExecutionEngine.ErrorDispatchDataFarmCodesLogOnly`
+  - `LiveExecutionEngine.RefreshOrderStateCapturesPartialFillOnCancel`
+  - `LiveExecutionEngine.RefreshOrderStateNoPositionForBareCancel`
+  - `LiveExecutionEngine.ReconcileOpenOrdersAdoptsBuyAndSellWorkingOrders`
+  - `LiveExecutionEngine.TrailingStopSuppressesSellWhileBidClimbs`
+  - `LiveExecutionEngine.TrailingStopFiresOnRetracement`
+  - `LiveExecutionEngine.TrailingStopDisabledByDefault`
+- Catch2 still green, plus a new HFT_TEST: `test_ibkr_client_query_open_orders_flushes_seeded_via_fake_transport`.
+
+State for the live-trading checklist:
+- Audit #7 ✅ (was the last hard-blocker for endurance runs)
+- Audit #8 ✅ (was the last hard-blocker for endurance runs)
+- Items 16/17/18 ✅ (the three "observation" follow-ups from the audit doc)
+- Item 19 ✅ (the trailing-stop knob; ships disabled, opt-in per config)
+
+Remaining items in the [2026-05-31] product backlog: 2 (bracket orders), 3 (multi-slot; user said skip), 6/8/9/12 (mobile app + backend, multi-week), 7 phase 1 (systemd), 11 (warmup), 13 (RTH scheduling). None of these are code-side blockers for the first paper smoke.
+
+Suggested commit (already done): `c75b496`.
+
 ## [2026-05-31] - Product backlog items 1, 4, 5, 10 + kill-switch signals #Done
 
 Model / agent:

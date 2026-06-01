@@ -4,6 +4,67 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-06-01] - Hetzner ops + mobile backend + warmup framework #Done
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `e61f8f0 feat(ops): Hetzner production hardening + mobile backend + warmup`.
+
+What landed:
+
+**Hetzner ops cluster (items E-I from the live-trading checklist + backlog item 7):**
+- `scripts/systemd/hft_app.service` -- auto-restart, SIGINT-on-stop, append-logs, OnFailure notifier.
+- `scripts/systemd/hft_app.logrotate` -- daily, 14-day retention, copytruncate.
+- `scripts/systemd/hft_app-rth-start.timer` + `-stop.timer` -- Mon..Fri 09:25 ET / 16:00 ET via `OnCalendar` with `America/New_York` timezone (DST-correct).
+- `scripts/systemd/hft-notify@.service` -- OnFailure instance template.
+- `scripts/notify.sh` -- Telegram bot + ntfy.sh push, both optional, sources `/etc/hft/notify.env`.
+- `scripts/hft_monitor.py` + `scripts/systemd/hft_monitor.service` -- long-lived watchdog polling disk / mem / `hft_app` RSS / liveness; throttled alerts via `/var/run/hft_monitor.state`.
+- `agent/IB_GATEWAY_OPS.md` -- nightly reset playbook, 2FA flow, IBC config, manual reconnect steps, error code -> action table.
+- `scripts/systemd/install.sh` -- idempotent installer; copies units to `/etc/systemd/system/`, creates `/etc/hft/{notify,monitor}.env` stubs.
+
+**Backend for the future mobile app (items 8 + 9):**
+- `scripts/backend/api.py` -- FastAPI. Endpoints: `GET /health`, `/runs`, `/runs/{id}`, `/live/status`, `/databento/credits`, `GET /backtests`, `POST /backtests` (spawns `hft_backtest.sh` via `systemd-run`), `POST /chat` (501 stub).
+- Bearer auth via `X-HFT-Token` matched against `/etc/hft/api.env`'s `API_TOKEN`.
+- `scripts/systemd/hft_backend.service` -- binds 127.0.0.1:8088, behind wireguard / SSH tunnel.
+- `scripts/backend/requirements.txt`.
+
+**Mobile app design (items 6 + 9 + parts of 12):**
+- `agent/MOBILE_APP_DESIGN.md` -- architecture, per-screen spec, framework recommendation (React Native + Expo), frozen v1 endpoint contract, what's blocked / next.
+
+**Warmup framework (item 11):**
+- `AppConfig::warmup_state_path` knob (default empty = cold start).
+- `LiveExecutionEngine::seed_warmup_state_from_file` -- tolerant key=value parser, `SYMBOL.field` schema, populates Hawkes lambda / OU mu / hit_count / ou_initialized for symbols in the universe. Warns when warmup is older than 6h.
+- Called from `initialize_universe` so main.cpp gets it automatically when the path is set.
+- `scripts/warmup_engine.py` -- skeleton emitter (the real Databento-driven Hawkes/OU fit is the next step; engine side is wired so the work can land independently).
+
+Test counts:
+- 173 gtests (was 171; +2 for `SeedWarmupStateFromFileLoadsKnownSymbols` + `SeedWarmupStateFromFileMissingFileIsGraceful`). Catch2 still green.
+
+What's NOT in this commit:
+- Real Databento-driven Hawkes/OU fit in `warmup_engine.py` (still emits placeholder values).
+- `POST /chat` LLM wiring (returns 501; needs `/etc/hft/llm.env` + Anthropic API call).
+- The mobile app itself (design doc only). React Native + Expo scaffolding is the next thread when the app implementer picks it up.
+- Installation on Hetzner. Files are in the repo; `bash scripts/systemd/install.sh` as root on Hetzner deploys them. **Operator action.**
+- NYSE holiday handling in the RTH timer (engine starts on holidays, idles, exits clean). Could add a pre-check script later.
+
+Live-trading checklist refresh after this batch:
+
+| Stage | Status |
+|---|---|
+| Code-side blockers for paper smoke | ✅ all done (engine + ops + backend) |
+| Operator setup (run on Hetzner) | ⏳ run `bash scripts/systemd/install.sh` as root, edit `/etc/hft/notify.env`, install IBC, set up wireguard + bearer token |
+| L1 sub activation in IBKR ($4.50/mo) | ⏳ user manual |
+| Symbol-contract probe + overrides | ⏳ run `scripts/ibkr_symbol_contract_probe.py` against Gateway, patch `primary_exchange_for` |
+| First paper smoke (1 RTH session) | ⏳ blocked on the above |
+| Multi-day endurance + L2 funding ($500+ NLV, $41.50/mo subs) | ⏳ user-funding gated |
+| Mobile frontend (item 6 UI) | ⏳ design done, code TBD when picked up |
+| Warmup real fit (item 11 Python) | ⏳ skeleton done, real fit TBD |
+
+Suggested commit (already done): `e61f8f0`.
+
 ## [2026-06-01] - Production hardening: audits #7/#8 + items 16/17/18/19 #Done
 
 Model / agent:

@@ -1230,6 +1230,61 @@ TEST(LiveExecutionEngine, StepTraceContextWindowZeroPathIsNoop) {
 // is restarted. Triggered by the OPERATOR creating a file at the
 // configured path.
 
+// ---- Item 11: warmup state loader ----
+// The engine reads the warmup file produced by
+// scripts/warmup_engine.py and seeds Hawkes lambda + OU mu +
+// hit_count + ou_initialized for each known symbol. Unknown
+// symbols are ignored; malformed lines don't crash.
+TEST(LiveExecutionEngine, SeedWarmupStateFromFileLoadsKnownSymbols) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.initialize_universe(8);
+
+  const std::string sym0 = engine.ranking.portfolio.items[0].symbol;
+  const std::string sym1 = engine.ranking.portfolio.items[1].symbol;
+
+  const std::string path = "tmp_warmup_state_loads.txt";
+  {
+    std::ofstream f(path, std::ios::trunc);
+    f << "# header\n";
+    f << "produced_at_ns=" << 1L << "\n";
+    f << "window_hours=3\n";
+    f << sym0 << ".hawkes_lambda=12.5\n";
+    f << sym0 << ".ou_mu=215.4\n";
+    f << sym0 << ".hit_count=7\n";
+    f << sym0 << ".ou_initialized=1\n";
+    f << sym1 << ".hawkes_lambda=4.2\n";
+    f << "UNKNOWN_SYMBOL.hawkes_lambda=999.9\n";
+    f << "garbage line no equals\n";
+  }
+  const int updated = engine.seed_warmup_state_from_file_for_test(path);
+  EXPECT_EQ(updated, 2)
+      << "expected sym0 + sym1 updated; UNKNOWN ignored, garbage skipped";
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].hawkes.lambda, 12.5);
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].ou.mu, 215.4);
+  EXPECT_EQ(engine.ranking.portfolio.items[0].hit_count, 7);
+  EXPECT_TRUE(engine.ranking.portfolio.items[0].ou_initialized);
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[1].hawkes.lambda, 4.2);
+  std::remove(path.c_str());
+}
+
+TEST(LiveExecutionEngine, SeedWarmupStateFromFileMissingFileIsGraceful) {
+  auto broker = std::make_unique<NiceMock<hft_test::MockIBroker>>();
+  hft::LiveExecutionEngine engine(make_paper_config(), std::move(broker));
+  engine.initialize_universe(5);
+  // Snapshot the cold-start values.
+  const double cold_lambda = engine.ranking.portfolio.items[0].hawkes.lambda;
+  const double cold_mu = engine.ranking.portfolio.items[0].ou.mu;
+  const int n = engine.seed_warmup_state_from_file_for_test(
+      "this_file_definitely_does_not_exist.txt");
+  EXPECT_EQ(n, 0);
+  // Cold-start values must be preserved when the warmup file is
+  // missing -- engine shouldn't synthesise anything from thin air.
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].hawkes.lambda,
+                   cold_lambda);
+  EXPECT_DOUBLE_EQ(engine.ranking.portfolio.items[0].ou.mu, cold_mu);
+}
+
 // ---- Item 17: open-order reconciliation at start ----
 // If the broker is still working orders from a prior session, the
 // engine MUST adopt them into entry_orders_ / exit_order_symbols_ so

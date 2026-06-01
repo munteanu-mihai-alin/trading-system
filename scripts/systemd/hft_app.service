@@ -1,0 +1,58 @@
+# systemd unit for the live HFT engine.
+#
+# Install on Hetzner with scripts/systemd/install.sh; that script
+# copies this file to /etc/systemd/system/, reloads the daemon, and
+# enables the unit + timer + monitor companions.
+#
+# Day-to-day operator commands:
+#   systemctl start hft_app                # manual start (off-schedule)
+#   systemctl stop hft_app                 # graceful stop (SIGINT first)
+#   systemctl status hft_app               # current state + last lines of log
+#   journalctl -u hft_app -f               # follow log
+#   kill -USR1 $(pgrep -f bin/hft_app)     # freeze trader (cancel + refuse new)
+#   kill -USR2 $(pgrep -f bin/hft_app)     # force liquidate at best_bid
+#
+# Auto-restart is enabled but bounded: at most 5 starts in 60s before
+# systemd gives up and stops (StartLimit). On failure the OnFailure=
+# hook fires the notifier so the operator gets a Telegram / ntfy
+# alert. Logs are append-mode'd to a stable path so the logrotate
+# config can copytruncate without needing SIGHUP.
+
+[Unit]
+Description=HFT engine (live trading)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mnt/HC_Volume_105581071/trading-system
+Environment=LD_LIBRARY_PATH=/mnt/HC_Volume_105581071/trading-system/dependencies/linux/install/lib
+ExecStart=/mnt/HC_Volume_105581071/trading-system/bin/hft_app
+
+# Restart policy: on any non-clean exit, wait 10 s and try again.
+# Clean exits (operator stop, RTH-close timer) are NOT retried.
+Restart=on-failure
+RestartSec=10s
+
+# Stop policy: SIGINT first so the engine can:
+#   - drain pending order events
+#   - emit session_end markers in the CSVs
+#   - close logs cleanly
+# SIGKILL after 30 s if the engine ignores SIGINT.
+KillSignal=SIGINT
+TimeoutStopSec=30s
+KillMode=mixed
+
+# Output goes to journald AND to fixed paths so the logrotate config
+# can rotate them. The fixed paths are the same ones operators tail.
+StandardOutput=append:/mnt/HC_Volume_105581071/trading-system/logs/hft_app.log
+StandardError=append:/mnt/HC_Volume_105581071/trading-system/logs/hft_app.err
+
+# Failure notifier. The %n placeholder expands to "hft_app.service".
+OnFailure=hft-notify@%n.service
+
+[Install]
+WantedBy=multi-user.target

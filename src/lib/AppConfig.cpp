@@ -158,6 +158,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.daily_loss_kill_usd = std::stod(val);
       } else if (key == "trailing_stop_pct") {
         cfg.trailing_stop_pct = std::stod(val);
+      } else if (key == "warmup_state_path") {
+        cfg.warmup_state_path = val;
       } else if (key == "daily_loss_kill_alert_path") {
         cfg.daily_loss_kill_alert_path = val;
       } else if (key == "step_trace_context_window") {

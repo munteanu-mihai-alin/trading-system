@@ -276,6 +276,13 @@ class LiveExecutionEngine {
   // engine-side reaction. Codes and reactions are documented at the
   // implementation site.
   void drain_broker_errors();
+  // Item 11: read a `warmup_state` file produced by
+  // scripts/warmup_engine.py and seed Hawkes lambda / OU mu /
+  // hit_count for each symbol in ranking.portfolio.items. Returns
+  // the number of symbols whose state was actually updated. Quiet
+  // on parse errors (warns; doesn't fail engine init) -- a missing
+  // warmup is recoverable, just cold-start.
+  int seed_warmup_state_from_file(const std::string& path);
 
  public:
   RankingEngine ranking;
@@ -367,6 +374,11 @@ class LiveExecutionEngine {
   void check_force_liquidate_for_test() { check_force_liquidate(); }
   // Force one round of broker-error dispatch. Test-only seam.
   void drain_broker_errors_for_test() { drain_broker_errors(); }
+  // Test-only seam: drive the warmup loader explicitly. Production
+  // code goes through initialize_universe.
+  int seed_warmup_state_from_file_for_test(const std::string& path) {
+    return seed_warmup_state_from_file(path);
+  }
   // Audit #8: symbols dropped because IBKR returned no security
   // definition (code 200). Visible to tests + the end-of-run summary;
   // populated from drain_broker_errors. Resets at start().

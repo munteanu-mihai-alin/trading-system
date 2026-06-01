@@ -233,6 +233,31 @@ struct AppConfig {
   // See agent/AGENT_HANDOFF_LOG.md [2026-05-16] Live-trading prerequisites
   // sub-item #1.
   double daily_loss_kill_usd = 0.0;
+  // Item 11: path to a `warmup_state.json` produced by
+  // scripts/warmup_engine.py. When non-empty, LiveExecutionEngine::
+  // start() reads the file and seeds Hawkes lambda, OU mu, and
+  // hit_count for each symbol so the engine has useful scores from
+  // the very first step. Empty (default) = today's cold-start
+  // behaviour (Hawkes/OU/hit_count = 0 until live data arrives).
+  //
+  // The warmup file is per-session: generate it before each live
+  // launch from the last ~N hours of historical data. Stale warmup
+  // is worse than no warmup (mean-revert calculations against a
+  // long-ago mu mis-route entries), so the engine warns if the
+  // file's `produced_at_ns` is older than 6 hours.
+  //
+  // Schema (warmup_state.json):
+  //   {
+  //     "produced_at_ns": 1717267200000000000,
+  //     "window_hours":   3,
+  //     "symbols": {
+  //       "AAPL": {"hawkes_lambda": 12.5, "ou_mu": 215.4,
+  //                "hit_count": 0, "ou_initialized": true},
+  //       ...
+  //     }
+  //   }
+  std::string warmup_state_path;
+
   // Item 19: trailing-stop fraction. 0.0 (default) = off, today's
   // behaviour. When > 0, route_exit_orders enters trailing mode for
   // any position whose high-water bid has exceeded gross_target +

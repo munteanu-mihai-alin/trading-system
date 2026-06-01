@@ -1,0 +1,15 @@
+# Failure notifier template. systemd's instance syntax (%i) is the
+# upstream unit name -- when hft_app.service fails, systemd starts
+# hft-notify@hft_app.service.
+#
+# OnFailure semantics: this fires WHENEVER hft_app exits non-zero,
+# whether at startup or after running for hours. The Restart=on-failure
+# policy in hft_app.service may attempt to bring it back; that's
+# orthogonal to this notifier.
+
+[Unit]
+Description=Notify operator that %i failed
+
+[Service]
+Type=oneshot
+ExecStart=/mnt/HC_Volume_105581071/trading-system/scripts/notify.sh "%i hit a failure state" "crash"

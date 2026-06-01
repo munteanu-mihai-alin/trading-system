@@ -1,0 +1,11 @@
+# Backend deps. Installed on Hetzner with:
+#   pip install -r scripts/backend/requirements.txt
+#
+# Pinned-loose: we don't have CI for this yet, so the version ranges
+# track stable releases without locking us out of security patches.
+
+fastapi>=0.111
+uvicorn[standard]>=0.30
+# databento is optional - only needed for the /databento/credits
+# endpoint. The api.py handles the missing-import case gracefully.
+# databento>=0.40

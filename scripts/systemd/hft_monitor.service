@@ -1,0 +1,22 @@
+# Long-lived watchdog for the HFT engine. Polls disk / mem / hft_app
+# RSS / liveness and fires scripts/notify.sh on threshold breaches.
+# Independent of the engine: if hft_app crashes, this monitor stays
+# up and triggers the notifier even when systemd's own OnFailure
+# couldn't (e.g. SIGKILL'd).
+
+[Unit]
+Description=HFT engine watchdog (disk, mem, RSS, liveness)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/mnt/HC_Volume_105581071/trading-system/scripts/hft_monitor.py
+Restart=always
+RestartSec=15s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

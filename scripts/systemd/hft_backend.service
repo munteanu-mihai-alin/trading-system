@@ -1,0 +1,25 @@
+# Long-lived FastAPI backend that the mobile app talks to.
+#
+# Binds 127.0.0.1:8088 only -- access from outside Hetzner goes
+# through SSH tunnel or wireguard; the API itself is not hardened
+# for public internet.
+
+[Unit]
+Description=HFT backend API (mobile app + ops)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mnt/HC_Volume_105581071/trading-system
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/hft/api.env
+ExecStart=/usr/bin/uvicorn scripts.backend.api:app --host 127.0.0.1 --port 8088
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

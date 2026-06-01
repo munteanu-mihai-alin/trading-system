@@ -1,0 +1,17 @@
+# Daily stop of hft_app at 16:00 America/New_York (NYSE RTH close).
+#
+# Pairs with hft_app-rth-start.timer. The stop unit is a one-shot
+# that just runs `systemctl stop hft_app.service`. Because the main
+# unit's Restart=on-failure ignores clean exits, this stop sticks
+# until the next start.timer firing.
+
+[Unit]
+Description=Stop hft_app at NYSE RTH close (Mon-Fri 16:00 ET)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:00:00 America/New_York
+Persistent=true
+Unit=hft_app-rth-stop.service
+
+[Install]
+WantedBy=timers.target

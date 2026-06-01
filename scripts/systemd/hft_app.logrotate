@@ -1,0 +1,29 @@
+# logrotate config for the HFT engine.
+#
+# Install on Hetzner:
+#   sudo cp scripts/systemd/hft_app.logrotate /etc/logrotate.d/hft_app
+#
+# Rotates `hft_app.log` and `hft_app.err` (the stdout/stderr append
+# files the systemd unit writes), plus every per-launch CPP backtest
+# log under logs/. 14-day retention with gzip compression on the
+# delayed roll so today's + yesterday's stay plain-text for quick tail.
+#
+# `copytruncate` truncates the original file in place after the copy,
+# which means the engine doesn't have to re-open its stdout/stderr
+# (or receive a SIGHUP) to keep writing. Tradeoff: a very brief
+# window where new writes could race the truncate, lose ~ms of log.
+# Acceptable for ops monitoring.
+
+/mnt/HC_Volume_105581071/trading-system/logs/*.log
+/mnt/HC_Volume_105581071/trading-system/logs/*.err
+{
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+    create 0644 root root
+}

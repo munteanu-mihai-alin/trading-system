@@ -115,6 +115,18 @@ if [[ -n "$CONFIG_FILE" ]]; then
     exit 1
   fi
   run scp -o BatchMode=yes "$CONFIG_FILE" "hetzner:$HETZNER_DIR/config.ini"
+  # If the config references a symbol_universe_path file, ship it too -
+  # the broker on Hetzner resolves it relative to its own workdir, so
+  # the file must exist there.
+  SYM_PATH=$(grep '^symbol_universe_path=' "$CONFIG_FILE" | head -1 | cut -d= -f2-)
+  if [[ -n "$SYM_PATH" ]]; then
+    if [[ -f "$SYM_PATH" ]]; then
+      ssh_run "mkdir -p \$(dirname '$SYM_PATH')"
+      run scp -o BatchMode=yes "$SYM_PATH" "hetzner:$HETZNER_DIR/$SYM_PATH"
+    else
+      echo "WARN: symbol_universe_path=$SYM_PATH referenced in config but not found locally" >&2
+    fi
+  fi
 fi
 
 # ----- stage 2: apply overrides via sed on the in-place config -----------

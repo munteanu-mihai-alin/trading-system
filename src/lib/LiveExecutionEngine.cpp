@@ -400,6 +400,92 @@ int LiveExecutionEngine::reconcile_open_positions_from_broker() {
   return recovered;
 }
 
+int LiveExecutionEngine::seed_warmup_state_from_file(const std::string& path) {
+  // Item 11: tolerant key-value parser. Skips comments and blank
+  // lines. Keys are either bare config keys (`produced_at_ns`,
+  // `window_hours`) or `SYMBOL.field` where field is one of
+  // `hawkes_lambda`, `ou_mu`, `hit_count`, `ou_initialized`.
+  std::ifstream in(path);
+  if (!in.is_open()) {
+    hl::raise_warning(hl::ComponentId::Engine, /*code=*/9,
+                      ("warmup_state file unreadable: " + path).c_str());
+    return 0;
+  }
+  std::int64_t produced_at_ns = 0;
+  int updated_symbols = 0;
+  std::unordered_set<std::string> seen_symbols;
+  // Build a lookup so we don't O(N^2) over items per line.
+  std::unordered_map<std::string, std::size_t> symbol_to_index;
+  for (std::size_t i = 0; i < ranking.portfolio.items.size(); ++i) {
+    symbol_to_index[ranking.portfolio.items[i].symbol] = i;
+  }
+  std::string line;
+  while (std::getline(in, line)) {
+    while (!line.empty() &&
+           (line.back() == '\r' || line.back() == '\n' || line.back() == ' '))
+      line.pop_back();
+    if (line.empty() || line[0] == '#')
+      continue;
+    const auto eq = line.find('=');
+    if (eq == std::string::npos)
+      continue;
+    const std::string key = line.substr(0, eq);
+    const std::string val = line.substr(eq + 1);
+    if (key == "produced_at_ns") {
+      try {
+        produced_at_ns = std::stoll(val);
+      } catch (...) {
+        produced_at_ns = 0;
+      }
+      continue;
+    }
+    if (key == "window_hours") {
+      continue;  // informational; warmup_engine.py uses it
+    }
+    const auto dot = key.find('.');
+    if (dot == std::string::npos)
+      continue;
+    const std::string sym = key.substr(0, dot);
+    const std::string field = key.substr(dot + 1);
+    const auto it = symbol_to_index.find(sym);
+    if (it == symbol_to_index.end())
+      continue;  // symbol not in universe; ignore
+    auto& s = ranking.portfolio.items[it->second];
+    try {
+      if (field == "hawkes_lambda") {
+        s.hawkes.lambda = std::stod(val);
+      } else if (field == "ou_mu") {
+        s.ou.mu = std::stod(val);
+        s.ou_initialized = true;
+      } else if (field == "hit_count") {
+        s.hit_count = std::stoi(val);
+      } else if (field == "ou_initialized") {
+        s.ou_initialized = (val == "1" || val == "true");
+      } else {
+        continue;  // unknown field
+      }
+    } catch (...) {
+      continue;  // bad value, skip
+    }
+    if (seen_symbols.insert(sym).second) {
+      ++updated_symbols;
+    }
+  }
+  // Warn if the warmup is stale (>6h old). Cold start would be
+  // better than a stale OU mu in many regimes.
+  if (produced_at_ns > 0) {
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    constexpr std::int64_t kStaleNs = 6LL * 60 * 60 * 1'000'000'000LL;
+    if (now_ns - produced_at_ns > kStaleNs) {
+      hl::raise_warning(hl::ComponentId::Engine, /*code=*/10,
+                        "warmup_state is older than 6h; consider regenerating");
+    }
+  }
+  return updated_symbols;
+}
+
 int LiveExecutionEngine::reconcile_open_orders_from_broker() {
   const auto orders = broker_->query_open_orders();
   if (orders.empty())
@@ -469,6 +555,12 @@ void LiveExecutionEngine::initialize_universe(int n_stocks) {
     ranking.initialize(list, n_stocks);
   } else {
     ranking.initialize(n_stocks);
+  }
+  // Item 11: seed Hawkes / OU / hit_count from a warmup_state file
+  // produced by scripts/warmup_engine.py. Quietly does nothing when
+  // the config knob is empty - default cold-start behaviour.
+  if (!cfg_.app.warmup_state_path.empty()) {
+    seed_warmup_state_from_file(cfg_.app.warmup_state_path);
   }
   hl::set_component_state(hl::ComponentId::Universe, hl::ComponentState::Ready);
 }

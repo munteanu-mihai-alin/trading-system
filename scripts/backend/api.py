@@ -356,6 +356,51 @@ def backtest_detail(job_id: str, req: Request):
     raise HTTPException(status_code=404, detail="job not found")
 
 
+@app.post("/kill")
+def kill_signal(req: Request):
+    """Delivers SIGUSR1 to every hft_app process. The engine treats it
+    as "freeze trader": cancel every open entry+exit, refuse new orders,
+    keep open positions in place. Idempotent (already-frozen sessions
+    just log the second signal).
+    """
+    _require_token(req)
+    return _send_signal_to_hft_app("USR1")
+
+
+@app.post("/liquidate")
+def liquidate_signal(req: Request):
+    """Delivers SIGUSR2 to every hft_app process. The engine treats it
+    as "force liquidate": freeze trader + post marketable sells at
+    best_bid for every open position. Use when something is wrong
+    enough that holding is riskier than the immediate exit prints.
+    """
+    _require_token(req)
+    return _send_signal_to_hft_app("USR2")
+
+
+def _send_signal_to_hft_app(signal: str) -> Dict[str, Any]:
+    """Common implementation for /kill and /liquidate. Looks up the
+    pid via pgrep so we don't depend on systemctl returning the right
+    thing for a process that systemd may not own (manual launch).
+    """
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", HFT_APP_PATTERN],
+            capture_output=True, text=True, check=False,
+        )
+        pids = [p for p in out.stdout.strip().splitlines() if p]
+        if not pids:
+            return {"sent_to": [], "reason": "no hft_app running"}
+        # `kill -USR1 1234 5678` -- works on bash and POSIX kill.
+        subprocess.run(
+            ["kill", f"-{signal}", *pids],
+            capture_output=True, text=True, check=False,
+        )
+        return {"sent_to": pids, "signal": signal}
+    except FileNotFoundError:
+        return {"sent_to": [], "reason": "pgrep / kill unavailable"}
+
+
 @app.post("/chat")
 def chat(payload: Dict[str, Any], req: Request):
     """Proxy to Claude / OpenAI / Cursor for incident investigation.

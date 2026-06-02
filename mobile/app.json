@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "HFT Console",
+    "slug": "hft-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#0d1117",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.hft.console"
+    },
+    "android": {
+      "package": "com.hft.console",
+      "adaptiveIcon": {
+        "backgroundColor": "#0d1117"
+      }
+    },
+    "newArchEnabled": true,
+    "extra": {
+      "_comment": "Backend URL + API token live in SecureStore at runtime, not here."
+    }
+  }
+}

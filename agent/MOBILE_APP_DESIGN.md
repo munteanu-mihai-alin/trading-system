@@ -1,9 +1,10 @@
 # Mobile app design
 
-Status: **design only**. The backend (`scripts/backend/api.py`)
-exists today; the iOS/Android client does not. This document is the
-spec the next implementer (or future agent) reads before writing
-the app.
+Status: **scaffolded under `mobile/`**. React Native + Expo +
+TypeScript. Five working screens: Login, Live, Runs, Run detail,
+Launch. The backend (`scripts/backend/api.py`) is the contract.
+This document is the spec + the deferred-work tracker; the running
+code is in `mobile/`.
 
 Origin: backlog items 6, 9, and parts of 12 in the [2026-05-31]
 product backlog entry.

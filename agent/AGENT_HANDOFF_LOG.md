@@ -4,6 +4,74 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-06-02] - Backtest-launcher daemon + queue + binary versioning + bracket-orders #Skipped
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `88dcf7f feat(ops): backtest-launcher daemon + queue + binary versioning + monitor`. Followed by a small `chore: ignore backend __pycache__` (the pycache slipped into the previous commit; now gitignored).
+
+User direction (verbatim): "Mark bracket orders also as explicitly skipped. Do daemon, systemd, backtest launcher daemon."
+
+What landed:
+
+**Backtest-launcher daemon (item 8):**
+- `scripts/hft_backtest_launcher.py` -- long-running queue-watching daemon. Atomic rename transitions `incoming/ -> running/ -> done/`. Per-job `*.result.json` next to the moved spec. Recovers stuck jobs on startup by marking failed (safer than re-running; protects Databento spend). Liveness written to `/var/run/hft_backtest_launcher.state` via tmp+rename so torn reads can't get half a JSON.
+- Binary versioning: scans `bin/incoming/*.tar.gz` each iteration, extracts to `bin/versions/<id>/`, archives the tarball to `bin/incoming/_applied/`. Job's `binary_version` field selects which version via `HFT_BIN` env var.
+- `scripts/hft_backtest.sh` -- now honors `$HFT_BIN`. Default `bin/hft_app` so plain manual invocations are unchanged.
+- `scripts/systemd/hft_backtest_launcher.service` -- `Restart=always`, journal logging.
+
+**Monitor extension:**
+- `scripts/hft_monitor.py` now watches sibling units (`hft_backend.service`, `hft_backtest_launcher.service`) via `systemctl is-active`. Alerts on "failed" / "inactive".
+- New launcher heartbeat check: when the launcher unit is active but its state file is older than `LAUNCHER_STATE_STALE_SEC` (default 300s), the monitor flags the loop as wedged. Distinct from "exited" -- a unit could be up while its inner loop hangs.
+
+**Backend refactor:**
+- `scripts/backend/api.py` `POST /backtests` writes `queue/incoming/<id>.job.json` instead of spawning systemd-run directly. Decoupling = the API is responsive even when no launcher exists; the launcher runs independently; testing each in isolation is straightforward.
+- `GET /backtests` reads `queue/{incoming,running,done}/` + launcher state file.
+- New `GET /backtests/{id}` returns spec + (when done) result.json.
+
+**Install updates:**
+- `scripts/systemd/install.sh` -- installs + enables + starts the launcher and backend units alongside the existing RTH timers + monitor.
+
+**Bracket orders (backlog item 2): #Skipped.**
+Per user decision, bracket orders are not pursued. Sequential buy-then-sell flow stays. The "one-step window" between buy fill and sell posting hasn't shown up as a meaningful PnL leak in any backtest; complexity (OCA semantics + need to MODIFY the sell on actual avg_fill_price) isn't justified. Keeping the door open as a future feature flag.
+
+Smoke-tested locally:
+- Dropped a fake `test-001.job.json` into a tmp repo's `queue/incoming/`.
+- Created a stub `scripts/hft_backtest.sh` that just echoes its args.
+- Ran `python scripts/hft_backtest_launcher.py --once --repo /tmp/launcher_smoke`.
+- Result: job correctly transitioned `incoming -> done`, `result.json` written, queue state.json updated. The recorded `returncode=-2` "not a valid Win32 application" is just bash-on-Windows; the queue mechanics are validated.
+
+Tests unchanged (no C++ touched in this commit; the launcher + monitor are Python). 173 gtests still pass per the previous batch.
+
+Backlog status after this batch:
+
+| Item | Status |
+|---|---|
+| 1 sell_limit guard | ✅ shipped (`d00332a`) |
+| 2 bracket orders | ⛔ **#Skipped** (this commit) |
+| 3 multi-slot | ⛔ #Skipped (earlier) |
+| 4 step-by-step docs | ✅ shipped |
+| 5 fill_latency | ✅ shipped |
+| 6 mobile app | ⏳ design doc done, frontend code TBD |
+| 7 daemon/systemd | ✅ shipped (`e61f8f0` + `88dcf7f`) -- all four phases (kill switch, force-liquidate, restart, mem/disk monitor) |
+| 8 backtest launcher daemon | ✅ shipped (this commit) -- queue + binary versioning + monitor integration |
+| 9 app launch with params + chat | ⏳ backend done; chat endpoint stubbed; frontend TBD |
+| 10 HTML report | ✅ shipped |
+| 11 warmup | ⏳ engine side wired, Python fit TBD |
+| 12 app improvement ideas | ⏳ design doc captures; specific instrumentation TBD |
+| 13 RTH scheduling | ✅ shipped (`e61f8f0`) |
+
+Remaining code work for the first paper smoke (still operational):
+- `scripts/ibkr_symbol_contract_probe.py` run against live Gateway (10 min, depends on Gateway being up).
+- Patch `primary_exchange_for(symbol)` from probe results (~10 LOC).
+- `bash scripts/systemd/install.sh` as root on Hetzner.
+- Activate the 3 L1 subscriptions in IBKR Account Mgmt ($4.50/mo).
+
+Suggested commits (already done): `88dcf7f`, followed by the small pycache-gitignore chore.
+
 ## [2026-06-01] - Hetzner ops + mobile backend + warmup framework #Done
 
 Model / agent:

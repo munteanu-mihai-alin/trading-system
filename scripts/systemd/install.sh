@@ -36,6 +36,9 @@ install -m 0644 "$SCR/hft_app-rth-stop.timer"    "$SYS/hft_app-rth-stop.timer"
 install -m 0644 "$SCR/hft_app-rth-stop.service"  "$SYS/hft_app-rth-stop.service"
 install -m 0644 "$SCR/hft-notify@.service"       "$SYS/hft-notify@.service"
 install -m 0644 "$SCR/hft_monitor.service"       "$SYS/hft_monitor.service"
+install -m 0644 "$SCR/hft_backend.service"       "$SYS/hft_backend.service"
+install -m 0644 "$SCR/hft_backtest_launcher.service" \
+                                                 "$SYS/hft_backtest_launcher.service"
 
 echo "==> installing logrotate config"
 install -m 0644 "$SCR/hft_app.logrotate" /etc/logrotate.d/hft_app
@@ -78,13 +81,17 @@ fi
 echo "==> chmod helper scripts"
 chmod +x "$REPO/scripts/notify.sh"
 chmod +x "$REPO/scripts/hft_monitor.py"
+chmod +x "$REPO/scripts/hft_backtest_launcher.py"
+chmod +x "$REPO/scripts/backend/api.py"
 
 echo "==> systemctl daemon-reload + enable"
 systemctl daemon-reload
 systemctl enable hft_app-rth-start.timer hft_app-rth-stop.timer \
-                 hft_monitor.service
+                 hft_monitor.service \
+                 hft_backend.service hft_backtest_launcher.service
 systemctl start hft_app-rth-start.timer hft_app-rth-stop.timer \
-                hft_monitor.service
+                hft_monitor.service \
+                hft_backend.service hft_backtest_launcher.service
 
 echo "==> done. operator quick-reference:"
 cat <<'EOF'

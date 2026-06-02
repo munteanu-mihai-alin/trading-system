@@ -192,6 +192,8 @@ Backlog captured from the 2026-05-31 user review. Order preserves the user's num
 
 ### 2. Bracket orders: place sell at same time as buy
 
+**Status (decided 2026-06-01): #Skipped — not pursued.** Per the user: bracket orders / OCA aren't worth the complexity at our scale. The current sequential flow (buy fills, then route_exit_orders posts the sell on the next step) is fine in practice; the "one-step window" between fill and sell-placement hasn't shown up as a meaningful PnL leak in any backtest. Keeping the option open as a future feature flag should we ever observe the gap materially. No code change.
+
 **Current behaviour:**
 - Strict sequential flow. Engine places buy limit, waits for terminal Filled status, then on the next step `route_exit_orders` sees the now-open position and places the sell limit. Window between fill and sell-placement is one step (~ms-to-seconds depending on broker).
 

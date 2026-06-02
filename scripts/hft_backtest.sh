@@ -168,7 +168,11 @@ fi
 ssh_run "rm -f reports/decisions.csv reports/orders.csv reports/step_trace.csv reports/l2_trace.csv"
 
 # Capture the timestamped log path; the launched binary writes there.
-LAUNCH_RESULT="$(ssh_capture "LOG=logs/cpp_backtest_\$(date +%Y%m%dT%H%M%S).log; nohup env LD_LIBRARY_PATH=$LIB_PATH bin/hft_app > \$LOG 2>&1 & disown; sleep 2; echo \"PID=\$(pgrep -fx '.*/bin/hft_app$' | head -1)\"; echo \"LOG=\$LOG\"")"
+# HFT_BIN env var (set by the launcher daemon when a job pins a binary
+# version) overrides the default bin/hft_app. Defaults to bin/hft_app
+# when unset so plain manual invocations still work.
+HFT_BIN_PATH="${HFT_BIN:-bin/hft_app}"
+LAUNCH_RESULT="$(ssh_capture "LOG=logs/cpp_backtest_\$(date +%Y%m%dT%H%M%S).log; nohup env LD_LIBRARY_PATH=$LIB_PATH $HFT_BIN_PATH > \$LOG 2>&1 & disown; sleep 2; echo \"PID=\$(pgrep -fx '.*/hft_app$' | head -1)\"; echo \"LOG=\$LOG\"")"
 echo "$LAUNCH_RESULT"
 
 # ----- stage 4: optionally wait for completion ---------------------------

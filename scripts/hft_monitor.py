@@ -51,6 +51,16 @@ DEFAULT_CONFIG = {
     # When true, an absent hft_app process triggers an alert. Disable
     # while we're outside RTH or doing maintenance.
     "EXPECT_RUNNING": "false",
+    # Sibling daemons we want to know are up. Each is a systemd unit
+    # name; the monitor calls `systemctl is-active <unit>` once per
+    # tick and alerts when the status changes to "failed" / "inactive".
+    "SIBLING_UNITS": "hft_backend.service,hft_backtest_launcher.service",
+    # The launcher writes its own liveness state here; if the file is
+    # older than this many seconds the monitor treats it as wedged
+    # (different from "exited" -- the unit might be up but the loop
+    # might be hung).
+    "LAUNCHER_STATE_FILE": "/var/run/hft_backtest_launcher.state",
+    "LAUNCHER_STATE_STALE_SEC": "300",
 }
 
 
@@ -154,6 +164,34 @@ def notify(script: str, message: str, tag: str) -> None:
         print(f"hft_monitor: notify failed: {exc}", file=sys.stderr)
 
 
+def systemd_is_active(unit: str) -> str:
+    """Returns systemctl's textual is-active status (active / inactive /
+    failed / activating / unknown). Empty string when systemctl is
+    unavailable (dev box).
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True, check=False,
+        )
+        return out.stdout.strip()
+    except FileNotFoundError:
+        return ""
+
+
+def launcher_state_age_sec(path: str) -> Optional[float]:
+    """Returns seconds since the launcher's state file was last
+    written, or None when the file doesn't exist (launcher never
+    started in this session)."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        return time.time() - p.stat().st_mtime
+    except Exception:
+        return None
+
+
 def check_once(cfg: Dict[str, str], state: State) -> None:
     cooldown = int(cfg["ALERT_COOLDOWN_SEC"])
     notify_script = cfg["NOTIFY_SCRIPT"]
@@ -204,6 +242,41 @@ def check_once(cfg: Dict[str, str], state: State) -> None:
                     "error",
                 )
                 state.mark_alerted("rss")
+
+    # Sibling daemons: hft_backend + hft_backtest_launcher. These
+    # don't have their own monitor; we surface their systemctl status
+    # so a failed backend doesn't go unnoticed.
+    for unit in [u.strip() for u in cfg["SIBLING_UNITS"].split(",") if u.strip()]:
+        status = systemd_is_active(unit)
+        if not status:
+            continue  # systemctl unavailable; nothing to report
+        if status in ("failed", "inactive"):
+            key = f"sibling_{unit}"
+            if state.can_alert(key, cooldown):
+                notify(
+                    notify_script,
+                    f"{unit} is {status}",
+                    "error",
+                )
+                state.mark_alerted(key)
+
+    # Launcher heartbeat: state file should be touched at least once
+    # per LAUNCHER_STATE_STALE_SEC. If the file is older OR missing
+    # while the unit is active, the loop is wedged.
+    launcher_status = systemd_is_active("hft_backtest_launcher.service")
+    if launcher_status == "active":
+        age = launcher_state_age_sec(cfg["LAUNCHER_STATE_FILE"])
+        stale = float(cfg["LAUNCHER_STATE_STALE_SEC"])
+        if age is not None and age > stale:
+            if state.can_alert("launcher_wedged", cooldown):
+                notify(
+                    notify_script,
+                    f"hft_backtest_launcher state file is "
+                    f"{age:.0f}s old (threshold {stale:.0f}s) -- "
+                    f"loop may be wedged",
+                    "error",
+                )
+                state.mark_alerted("launcher_wedged")
 
 
 def main(argv: list[str]) -> int:

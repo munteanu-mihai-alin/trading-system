@@ -56,6 +56,8 @@ REPO_ROOT = Path(
 RUNS_DIR = REPO_ROOT / "reports" / "runs"
 LOGS_DIR = REPO_ROOT / "logs"
 HFT_APP_PATTERN = "bin/hft_app"
+QUEUE_DIR = REPO_ROOT / "queue"
+LAUNCHER_STATE_FILE = Path("/var/run/hft_backtest_launcher.state")
 
 
 app = FastAPI(title="HFT Backend", version="0.1.0")
@@ -249,7 +251,9 @@ def databento_credits(req: Request):
 
 @app.post("/backtests")
 def launch_backtest(payload: Dict[str, Any], req: Request):
-    """Launch a new backtest. Mirrors scripts/hft_backtest.sh flags.
+    """Enqueue a new backtest. The launcher daemon
+    (scripts/hft_backtest_launcher.py) picks the job up from
+    queue/incoming/ and runs it.
 
     Body:
       {
@@ -258,82 +262,98 @@ def launch_backtest(payload: Dict[str, Any], req: Request):
         "target_profit_pct": 0.008,
         "start":  "2024-08-02T13:30:00Z",
         "end":    "2024-08-09T20:00:00Z",
-        "symbols": "config/symbols_yen.txt"
+        "symbols": "config/symbols_yen.txt",
+        "binary_version": "v14"        # optional
       }
     All keys optional except `config`.
 
-    Forks a `scripts/hft_backtest.sh` invocation under systemd-run so
-    the supervisor sees it. Returns the systemd-run unit name; the
-    operator (or future GET /backtests endpoint) polls journalctl for
-    status.
+    Returns the job id assigned. The job moves through
+      queue/incoming -> queue/running -> queue/done
+    as the launcher processes it. Poll GET /backtests for state.
     """
     _require_token(req)
     cfg = payload.get("config")
     if not cfg:
         raise HTTPException(status_code=400, detail="config is required")
-    args = [str(REPO_ROOT / "scripts" / "hft_backtest.sh"), "--config", cfg]
-    for k_in, k_out in (
-        ("target_profit_pct", "--target"),
-        ("label", "--label"),
-        ("start", "--start"),
-        ("end", "--end"),
-        ("symbols", "--symbols"),
-    ):
-        v = payload.get(k_in)
-        if v is not None:
-            args += [k_out, str(v)]
-    # Spawn via systemd-run so the backtest runs as a transient unit
-    # the supervisor can monitor independently. --collect cleans up
-    # the unit on success.
-    unit_name = f"hft-backtest-{payload.get('label', 'unnamed')}"
-    sysrun_cmd = [
-        "systemd-run", "--user=root", "--unit", unit_name,
-        "--working-directory", str(REPO_ROOT), "--collect",
-        *args,
-    ]
-    try:
-        out = subprocess.run(
-            sysrun_cmd, capture_output=True, text=True, check=False,
-        )
-    except FileNotFoundError:
-        # systemd-run not present (e.g. local dev). Fall back to plain
-        # subprocess so the endpoint is at least testable on a
-        # developer laptop.
-        out = subprocess.Popen(args, cwd=str(REPO_ROOT))
-        return {"unit": None, "pid": out.pid, "transient": False}
+    # id = label + a wall-clock suffix so two requests with the same
+    # label don't collide on disk.
+    import time as _t
+    label = payload.get("label", "unnamed")
+    job_id = f"{label}-{int(_t.time())}"
+    job = dict(payload)
+    job["id"] = job_id
+    job["enqueued_at"] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+    incoming = QUEUE_DIR / "incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    job_path = incoming / f"{job_id}.job.json"
+    job_path.write_text(json.dumps(job, indent=2))
     return {
-        "unit": unit_name,
-        "stdout": out.stdout,
-        "stderr": out.stderr,
-        "returncode": out.returncode,
+        "id": job_id,
+        "queued_at": job["enqueued_at"],
+        "queue_path": str(job_path),
     }
 
 
 @app.get("/backtests")
 def list_backtests(req: Request):
-    """List currently-running transient backtest units."""
+    """List queued / running / recently-done backtests by reading the
+    launcher's state file + queue directories.
+    """
     _require_token(req)
-    try:
-        out = subprocess.run(
-            ["systemctl", "list-units", "--type=service", "--all",
-             "--plain", "--no-legend", "hft-backtest-*"],
-            capture_output=True, text=True, check=False,
-        )
-        if out.returncode != 0:
-            return {"units": []}
-        units = []
-        for line in out.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                units.append({
-                    "name": parts[0],
-                    "load": parts[1],
-                    "active": parts[2],
-                    "sub": parts[3],
-                })
-        return {"units": units}
-    except FileNotFoundError:
-        return {"units": [], "reason": "systemctl not available"}
+    queued: List[str] = []
+    running: List[str] = []
+    done: List[str] = []
+    inc = QUEUE_DIR / "incoming"
+    run = QUEUE_DIR / "running"
+    dn = QUEUE_DIR / "done"
+    if inc.is_dir():
+        queued = sorted(p.name for p in inc.glob("*.job.json"))
+    if run.is_dir():
+        running = sorted(p.name for p in run.glob("*.job.json"))
+    if dn.is_dir():
+        # Newest 25 done.
+        done = sorted(
+            (p.name for p in dn.glob("*.job.json")),
+            reverse=True,
+        )[:25]
+    launcher_state: Dict[str, Any] = {}
+    if LAUNCHER_STATE_FILE.exists():
+        try:
+            launcher_state = json.loads(LAUNCHER_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {
+        "queued": queued,
+        "running": running,
+        "done": done,
+        "launcher": launcher_state,
+    }
+
+
+@app.get("/backtests/{job_id}")
+def backtest_detail(job_id: str, req: Request):
+    """Detail of a single job. Returns the job spec + result (when
+    available) + a path to the per-run report folder if archived."""
+    _require_token(req)
+    if "/" in job_id or job_id.startswith(".."):
+        raise HTTPException(status_code=400, detail="bad id")
+    # Find the job in any of the three buckets.
+    for bucket in ("running", "incoming", "done"):
+        p = QUEUE_DIR / bucket / f"{job_id}.job.json"
+        if p.is_file():
+            try:
+                spec = json.loads(p.read_text())
+            except Exception:
+                spec = {}
+            out: Dict[str, Any] = {"id": job_id, "bucket": bucket, "spec": spec}
+            res = QUEUE_DIR / "done" / f"{job_id}.result.json"
+            if res.is_file():
+                try:
+                    out["result"] = json.loads(res.read_text())
+                except Exception:
+                    pass
+            return out
+    raise HTTPException(status_code=404, detail="job not found")
 
 
 @app.post("/chat")

@@ -1,0 +1,29 @@
+# Long-running backtest launcher daemon (item 8).
+#
+# Picks up *.job.json files dropped into queue/incoming/ by the
+# backend's POST /backtests, spawns scripts/hft_backtest.sh, tracks
+# state in /var/run/hft_backtest_launcher.state. Also scans
+# bin/incoming/ for new CI binary artifacts and extracts them into
+# bin/versions/<id>/ so jobs can pin a version.
+#
+# Monitored by hft_monitor.service: if the launcher dies, the state
+# file goes stale and the monitor fires an alert.
+
+[Unit]
+Description=HFT backtest launcher (queue-driven)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mnt/HC_Volume_105581071/trading-system
+Environment=HFT_REPO=/mnt/HC_Volume_105581071/trading-system
+ExecStart=/mnt/HC_Volume_105581071/trading-system/scripts/hft_backtest_launcher.py
+Restart=always
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,190 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-06-02] - Mobile app scaffold (React Native + Expo) #Done
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `9a7f041 feat(mobile): React Native + Expo scaffold + /kill + /liquidate`.
+
+User direction: tried weighing C++ options (Qt 6, rawdrawandroid, Dear ImGui) but settled on React Native for the balance of effort vs polish. Backlog item 6 (mobile app) now has the frontend scaffold to match the backend that landed in `e61f8f0`.
+
+What landed:
+
+**`mobile/` -- five working TypeScript screens**:
+- `App.tsx` -- root, wraps SafeAreaProvider + AuthProvider.
+- `src/state/AuthContext.tsx` -- SecureStore-backed bearer-token + URL store. Encrypted at rest on iOS Keychain / Android Keystore.
+- `src/api/client.ts` -- `fetch` wrapper that injects `X-HFT-Token`. AuthError -> auto-logout; ApiError surfaces body for debugging.
+- `src/api/types.ts` -- mirrors backend response shapes.
+- `src/components/primitives.tsx` -- Card / Stat / PrimaryButton / Loading / ErrorView. Dark-mode tokens match `report.html`.
+- `src/navigation/RootNavigator.tsx` -- Login (unauthenticated) or bottom tabs (Live / Runs / Launch). Runs nests a stack (list -> detail).
+- Screens:
+  - `Login` -- URL + token inputs, "Test connection" hits `/health`.
+  - `LiveStatus` -- polls `/live/status` every 10s, pull-to-refresh. Two destructive buttons (long-press confirm via Alert.alert): "Freeze trader" -> POST `/kill` (SIGUSR1), "Force liquidate" -> POST `/liquidate` (SIGUSR2).
+  - `RunsList` -- `/runs`, per-row PnL color.
+  - `RunDetail` -- `/runs/{id}` headline metrics (10 cherry-picked keys) + orders.csv head.
+  - `LaunchBacktest` -- preset chips (Yen / COVID / 10-day), target_profit_pct + label, POST `/backtests`.
+
+**Backend additions (scripts/backend/api.py)**:
+- `POST /kill` -- pgrep + `kill -USR1` every hft_app pid.
+- `POST /liquidate` -- same but SIGUSR2.
+- Both return `{sent_to: [pids], signal}` or `{sent_to: [], reason}`.
+
+**Docs**:
+- `mobile/README.md` -- setup, dev workflow, EAS build instructions, deferred work.
+- `agent/MOBILE_APP_DESIGN.md` -- status header bumped to "scaffolded under `mobile/`".
+
+Deferred follow-ups (all documented in `mobile/README.md`):
+- WebView for the per-run `report.html`.
+- Push notifications via FCM/APNS (today: notify.sh -> ntfy.sh / Telegram).
+- Chat tab against `POST /chat` (backend stubbed 501; need `/etc/hft/llm.env` + Anthropic API).
+- Symbol-universe picker on the Launch form.
+- In-flight backtest tail view.
+- Charts.
+
+Operator workflow (paste-able):
+```bash
+cd mobile && npm install && npm start
+# scan QR code from Expo Go on phone
+# Login screen: paste wireguard backend URL + /etc/hft/api.env's API_TOKEN
+# Test connection -> Save -> tabs
+
+# When you want a real APK / IPA (not Expo Go):
+eas-cli build --profile preview --platform android      # APK
+eas-cli build --profile preview --platform ios          # IPA (needs Apple dev acct)
+```
+
+Suggested commit (already done): `9a7f041`.
+
+## [2026-06-02] - Deferred: deploy services + scripts to Hetzner #todo
+
+Source state at deferral:
+- All files exist in the repo; nothing has been copied to Hetzner yet. The C++ engine has been deployed before via `scripts/hft_backtest.sh`'s SCP-based mechanism. The ops layer (systemd units, monitor, backend, launcher) has NOT been installed.
+
+This is **operator work** -- needs root on Hetzner, network reachability, and decisions about per-deployment secrets (Telegram tokens, API tokens). Order of operations below; each step is independent and can be done across multiple sessions.
+
+### Step 0 -- prerequisite check
+
+```bash
+ssh hetzner 'cat /etc/os-release | head -2'           # confirm Ubuntu / Debian
+ssh hetzner 'systemctl --version | head -1'           # >= 245 (we use OnCalendar w/ tz)
+ssh hetzner 'which logrotate'                         # confirm /usr/sbin/logrotate exists
+ssh hetzner 'which python3 && python3 --version'      # >= 3.11
+ssh hetzner 'which curl jq'                           # used by notify.sh
+ssh hetzner 'ls -la /mnt/HC_Volume_105581071/trading-system/bin/hft_app'
+```
+If any of these are missing, install them first (`apt install logrotate jq` etc.).
+
+### Step 1 -- SCP / git-pull the latest repo to Hetzner
+
+If the Hetzner clone is git-wired (recommended):
+```bash
+ssh hetzner 'cd /mnt/HC_Volume_105581071/trading-system && git fetch && git pull --ff-only origin main'
+```
+If it's SCP-only, the existing `scripts/hft_backtest.sh` pattern still works; pick whichever fits your workflow.
+
+### Step 2 -- run the installer
+
+```bash
+ssh hetzner 'sudo bash /mnt/HC_Volume_105581071/trading-system/scripts/systemd/install.sh'
+```
+This is **idempotent** -- re-running just refreshes the unit files. It will:
+- Copy 7 systemd unit files into `/etc/systemd/system/`
+- Copy the logrotate config into `/etc/logrotate.d/hft_app`
+- Create `/etc/hft/notify.env` + `/etc/hft/monitor.env` stubs (if missing)
+- chmod +x on the helper scripts
+- daemon-reload + enable + start the timers + monitor + backend + launcher units
+- Print operator quick-reference
+
+### Step 3 -- configure secrets
+
+```bash
+ssh hetzner 'sudo nano /etc/hft/notify.env'
+```
+Paste either / both:
+- `TG_BOT_TOKEN=...` + `TG_CHAT_ID=...` (Telegram, recommended)
+- `NTFY_TOPIC=...` (ntfy.sh push)
+
+Then:
+```bash
+ssh hetzner 'sudo systemctl restart hft_monitor.service'
+ssh hetzner 'sudo bash /mnt/HC_Volume_105581071/trading-system/scripts/notify.sh "deploy smoke test" "info"'
+# Phone should buzz / ping.
+```
+
+Backend API token (for the mobile / web client to authenticate):
+```bash
+ssh hetzner 'sudo bash -c "echo API_TOKEN=$(openssl rand -hex 32) > /etc/hft/api.env"'
+ssh hetzner 'sudo systemctl restart hft_backend.service'
+# Note the token; the future app embeds it as X-HFT-Token.
+ssh hetzner 'sudo cat /etc/hft/api.env'
+```
+
+### Step 4 -- install Python deps for the backend
+
+```bash
+ssh hetzner 'cd /mnt/HC_Volume_105581071/trading-system && python3 -m venv .venv-backend && .venv-backend/bin/pip install -r scripts/backend/requirements.txt'
+```
+Then update `scripts/systemd/hft_backend.service` (or use an `EnvironmentFile=` override) to point at the venv's uvicorn. Reload:
+```bash
+ssh hetzner 'sudo systemctl daemon-reload && sudo systemctl restart hft_backend.service'
+ssh hetzner 'sudo journalctl -u hft_backend.service -n 30'   # confirm uvicorn boot
+ssh hetzner 'curl -s http://127.0.0.1:8088/health'           # {"ok": true, ...}
+```
+
+### Step 5 -- install IBC (IB Controller) per `agent/IB_GATEWAY_OPS.md`
+
+Out of scope for this entry; the doc has the full procedure. Confirm:
+```bash
+ssh hetzner 'systemctl status ibgateway.service'
+ssh hetzner 'ss -ltn | grep -E "4001|4002"'                  # Gateway listening
+```
+
+### Step 6 -- run the symbol-contract probe
+
+Only after the Gateway is up + reachable:
+```bash
+ssh hetzner 'cd /mnt/HC_Volume_105581071/trading-system && .venv-ibkr/bin/python scripts/ibkr_symbol_contract_probe.py'
+```
+Capture the output; add discovered overrides to `primary_exchange_for(symbol)` in `src/lib/SymbolUniverse.cpp` (~10 LOC), push, redeploy the binary.
+
+### Step 7 -- activate L1 subscriptions in IBKR Account Mgmt
+
+Manual. $4.50/mo. Walk through:
+- NYSE Network A/CTA L1
+- NYSE American/BATS/ARCA/IEX Network B L1
+- NASDAQ Network C/UTP L1
+
+See sub-item 7 of the [2026-05-16] umbrella entry for the canonical list.
+
+### Step 8 -- first paper smoke
+
+```bash
+ssh hetzner 'sudo systemctl start hft_app'           # off-schedule launch
+ssh hetzner 'journalctl -u hft_app -f'               # follow
+# In another shell, test the kill switches:
+ssh hetzner 'kill -USR1 $(pgrep -f bin/hft_app)'     # freeze
+ssh hetzner 'kill -USR2 $(pgrep -f bin/hft_app)'     # liquidate
+```
+
+### Smoke checklist (paste-able)
+
+- [ ] Step 0 prereqs all green
+- [ ] Step 1 repo pulled
+- [ ] Step 2 installer ran clean
+- [ ] Step 3 notify.sh push received on phone
+- [ ] Step 3 `curl /health` returns 200
+- [ ] Step 4 uvicorn venv up
+- [ ] Step 5 Gateway + IBC running
+- [ ] Step 6 probe completed; overrides patched + redeployed
+- [ ] Step 7 L1 subs active (verify in Account Mgmt -> Subscriptions)
+- [ ] Step 8 hft_app starts, journals normally, SIGUSR1 freezes, SIGUSR2 liquidates
+
+When all 8 boxes tick, the RTH timer takes over and the engine auto-launches Mon..Fri 09:25 ET. Until then keep the timer disabled or just `systemctl stop hft_app-rth-start.timer` if you want full manual control.
+
 ## [2026-06-02] - Backtest-launcher daemon + queue + binary versioning + bracket-orders #Skipped
 
 Model / agent:

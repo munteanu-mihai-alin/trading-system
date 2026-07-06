@@ -1,10 +1,14 @@
 # Mobile app design
 
-Status: **scaffolded under `mobile/`**. React Native + Expo +
-TypeScript. Five working screens: Login, Live, Runs, Run detail,
-Launch. The backend (`scripts/backend/api.py`) is the contract.
-This document is the spec + the deferred-work tracker; the running
-code is in `mobile/`.
+Status: **scaffolded, code lives in the sibling repo `D:/hft-mobile/`**
+(kept out of this repo because it has its own Node toolchain, Expo
+release cycle, and TypeScript build; the C++ / Python worlds don't
+share dependencies with it). React Native + Expo + TypeScript. Five
+working screens: Login, Live, Runs, Run detail, Launch. The backend
+(`scripts/backend/api.py` in this repo) is the contract.
+
+This document remains the design spec + deferred-work tracker; the
+running code is in `../hft-mobile/`.
 
 Origin: backlog items 6, 9, and parts of 12 in the [2026-05-31]
 product backlog entry.

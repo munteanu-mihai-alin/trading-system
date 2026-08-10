@@ -1431,8 +1431,7 @@ void LiveExecutionEngine::trigger_force_liquidate() {
   trigger_user_kill_switch();
 
   std::ostringstream line;
-  line << "force liquidate triggered via SIGUSR2"
-       << " step=" << current_step_t_
+  line << "force liquidate triggered via SIGUSR2" << " step=" << current_step_t_
        << " open_positions=" << open_positions_.size();
   if (!cfg_.app.run_label.empty()) {
     line << " label=" << cfg_.app.run_label;

@@ -39,7 +39,7 @@ void install_kill_signal_handlers() {
   // sigaction is preferred over signal() because it doesn't reset
   // the handler after firing (so a second SIGUSR1 after the first
   // still flips the atomic) and is portable across POSIX variants.
-  struct sigaction sa{};
+  struct sigaction sa {};
   sa.sa_handler = &on_sigusr1;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART;

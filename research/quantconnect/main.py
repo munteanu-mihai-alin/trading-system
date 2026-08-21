@@ -67,6 +67,13 @@ TRAILING_STOP_PCT = 0.0
 
 BAR_RESOLUTION = Resolution.MINUTE
 
+# Backtest window + display name. Keep as constants so set_name() in
+# initialize() always encodes the period into the run name -- any time
+# you sweep the window, the run label updates automatically.
+STRATEGY_NAME = "HawkesOU-MR"
+START_DATE = (2026, 1, 1)
+END_DATE = (2026, 8, 21)
+
 
 class SymbolState:
     def __init__(self):
@@ -90,11 +97,16 @@ class SymbolState:
         self.high_water_bid = 0.0
 
 
-class HftMeanReversion(QCAlgorithm):
+class HftHawkesOuMR(QCAlgorithm):
     def initialize(self):
-        # 2026 year-to-date.
-        self.set_start_date(2026, 1, 1)
-        self.set_end_date(2026, 8, 21)
+        self.set_start_date(*START_DATE)
+        self.set_end_date(*END_DATE)
+        # e.g. HawkesOU-MR_20260101_20260821 -- visible in the QC UI so
+        # sweeps across different windows stay distinguishable at a glance.
+        start_tag = "{:04d}{:02d}{:02d}".format(*START_DATE)
+        end_tag = "{:04d}{:02d}{:02d}".format(*END_DATE)
+        self.set_name(f"{STRATEGY_NAME}_{start_tag}_{end_tag}")
+
         self.set_cash(5000)
         self.set_time_zone(TimeZones.NEW_YORK)
 

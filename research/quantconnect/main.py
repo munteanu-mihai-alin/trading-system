@@ -92,9 +92,9 @@ class SymbolState:
 
 class HftMeanReversion(QCAlgorithm):
     def initialize(self):
-        # Yen-unwind adversarial window from the source config.
-        self.set_start_date(2024, 8, 2)
-        self.set_end_date(2024, 8, 9)
+        # 2026 year-to-date.
+        self.set_start_date(2026, 1, 1)
+        self.set_end_date(2026, 8, 21)
         self.set_cash(5000)
         self.set_time_zone(TimeZones.NEW_YORK)
 

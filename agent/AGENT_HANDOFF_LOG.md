@@ -4,6 +4,37 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-08-21] - Mobile app extracted to sibling repo #Done
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- `main` at `8d49ceb chore(mobile): extract mobile app into sibling repo D:/hft-mobile/`.
+
+User direction: cleanly separate mobile release cadence from the engine so the
+Node/npm toolchain, `git log` signal, and CI don't drag on this repo. The
+React Native scaffold shares zero dependencies with C++ or the Python ops
+layer, so a sibling repo is the right seam.
+
+What landed (`8d49ceb`):
+- Deletes the entire `mobile/` tree from this repo (12 TypeScript files,
+  `package.json`, `babel.config.js`, `app.json`, `.gitignore`, `README.md`).
+- Bumps `agent/MOBILE_APP_DESIGN.md` header to point at `../hft-mobile/` as the
+  authoritative code location. No functional change to the C++ engine or the
+  Python ops layer.
+- Backend contract (`scripts/backend/api.py`) unchanged -- `/kill`,
+  `/liquidate`, `/live/status`, `/runs`, `/runs/{id}`, `/health`, `/backtests`
+  all still expose the shapes the app talks to.
+
+New location:
+- `D:/hft-mobile/` -- own git log, own EAS build pipeline, own README covering
+  setup / dev workflow / deferred WebView + push + Chat tab work.
+
+Follow-ups in this repo: none. Any mobile UX churn now lands in the sibling
+repo without touching this one.
+
 ## [2026-06-02] - Mobile app scaffold (React Native + Expo) #Done
 
 Model / agent:

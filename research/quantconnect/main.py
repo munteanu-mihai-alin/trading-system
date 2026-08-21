@@ -14,14 +14,14 @@
 #      effect since C++ clamps the sell limit up to the current bid.
 #   2. Ranking cadence. C++ ranks every L1 top-of-book update (~64x/sec
 #      per symbol on MBP-1). QC's cheapest useful cadence is Minute; the
-#      default here is Minute. Flip BAR_RESOLUTION to Resolution.Second
+#      default here is Minute. Flip BAR_RESOLUTION to Resolution.SECOND
 #      for a closer analogue (much more expensive to backtest).
 #   3. Hawkes event trigger. C++ uses "mid moved >= 2.5 bps since last
 #      firing" as the event proxy (DatabentoBacktestBroker doesn't emit
 #      trades). Same proxy applied here to bar-close mids. Intensity is
 #      NOT decayed on read -- matches C++, which only updates on event.
 #   4. Entry price. C++ places a marketable limit at the L1 ask
-#      (`entry_limit_mode=ask`). QC MarketOrder gives us marketable-at-fill;
+#      (`entry_limit_mode=ask`). QC market_order gives us marketable-at-fill;
 #      slippage model absorbs the microstructure difference.
 #   5. Costs. QC applies its own equity fee + slippage model. C++ has an
 #      explicit commission/half-spread/impact block; magnitudes are
@@ -65,7 +65,7 @@ HAWKES_MID_CHANGE_THRESHOLD_BPS = 2.5
 # Trailing stop off by default (matches yen config).
 TRAILING_STOP_PCT = 0.0
 
-BAR_RESOLUTION = Resolution.Minute
+BAR_RESOLUTION = Resolution.MINUTE
 
 
 class SymbolState:
@@ -91,24 +91,26 @@ class SymbolState:
 
 
 class HftMeanReversion(QCAlgorithm):
-    def Initialize(self):
+    def initialize(self):
         # Yen-unwind adversarial window from the source config.
-        self.SetStartDate(2024, 8, 2)
-        self.SetEndDate(2024, 8, 9)
-        self.SetCash(5000)
-        self.SetTimeZone(TimeZones.NewYork)
+        self.set_start_date(2024, 8, 2)
+        self.set_end_date(2024, 8, 9)
+        self.set_cash(5000)
+        self.set_time_zone(TimeZones.NEW_YORK)
 
         self.symbols = {}
         for tk in UNIVERSE:
-            eq = self.AddEquity(tk, BAR_RESOLUTION,
-                                dataNormalizationMode=DataNormalizationMode.Raw)
-            self.symbols[eq.Symbol] = SymbolState()
+            eq = self.add_equity(
+                tk, BAR_RESOLUTION,
+                data_normalization_mode=DataNormalizationMode.RAW,
+            )
+            self.symbols[eq.symbol] = SymbolState()
 
         # Give OU a full half-life to prime before any trading.
-        self.SetWarmUp(timedelta(minutes=60))
+        self.set_warm_up(timedelta(minutes=60))
 
-    def OnData(self, data: Slice):
-        now = self.Time
+    def on_data(self, data: Slice):
+        now = self.time
 
         for symbol, st in self.symbols.items():
             new_mid = self._mid_from_slice(data, symbol)
@@ -120,7 +122,7 @@ class HftMeanReversion(QCAlgorithm):
             st.mid = new_mid
             st.score = st.hawkes_lambda
 
-        if self.IsWarmingUp:
+        if self.is_warming_up:
             return
 
         self._route_entries()
@@ -131,12 +133,12 @@ class HftMeanReversion(QCAlgorithm):
     def _mid_from_slice(self, data, symbol):
         # Prefer L1 mid from QuoteBar; fall back to trade close if quotes
         # aren't in this slice.
-        if data.QuoteBars.ContainsKey(symbol):
-            qb = data.QuoteBars[symbol]
-            if qb.Bid is not None and qb.Ask is not None:
-                return 0.5 * (qb.Bid.Close + qb.Ask.Close)
-        if data.Bars.ContainsKey(symbol):
-            return data.Bars[symbol].Close
+        if symbol in data.quote_bars:
+            qb = data.quote_bars[symbol]
+            if qb.bid is not None and qb.ask is not None:
+                return 0.5 * (qb.bid.close + qb.ask.close)
+        if symbol in data.bars:
+            return data.bars[symbol].close
         return None
 
     def _update_hawkes(self, st, new_mid, now):
@@ -184,8 +186,8 @@ class HftMeanReversion(QCAlgorithm):
                         reverse=True)
         top_k = ranked[:TOP_K]
 
-        held = {s for s, _ in self.symbols.items() if self.Portfolio[s].Invested}
-        committed = sum(self.Portfolio[s].AbsoluteHoldingsCost for s in held)
+        held = {s for s in self.symbols if self.portfolio[s].invested}
+        committed = sum(self.portfolio[s].absolute_holdings_cost for s in held)
         pending_buys = self._pending_buy_symbols()
 
         for symbol, st in top_k:
@@ -205,14 +207,14 @@ class HftMeanReversion(QCAlgorithm):
             if qty <= 0:
                 continue
 
-            self.MarketOrder(symbol, qty)
+            self.market_order(symbol, qty)
             committed += qty * st.mid
 
     def _update_trailing_stops(self, data):
         if TRAILING_STOP_PCT <= 0.0:
             return
         for symbol, st in self.symbols.items():
-            if not self.Portfolio[symbol].Invested or st.entry_price <= 0.0:
+            if not self.portfolio[symbol].invested or st.entry_price <= 0.0:
                 continue
             bid = self._bid_from_slice(data, symbol)
             if bid is None:
@@ -226,44 +228,44 @@ class HftMeanReversion(QCAlgorithm):
             if bid > floor:
                 continue
             if st.exit_ticket is not None:
-                st.exit_ticket.Cancel("trailing stop retrace -- crossing to market")
-            self.MarketOrder(symbol, -self.Portfolio[symbol].Quantity)
+                st.exit_ticket.cancel("trailing stop retrace -- crossing to market")
+            self.market_order(symbol, -self.portfolio[symbol].quantity)
 
     def _bid_from_slice(self, data, symbol):
-        if data.QuoteBars.ContainsKey(symbol):
-            qb = data.QuoteBars[symbol]
-            if qb.Bid is not None:
-                return qb.Bid.Close
-        if data.Bars.ContainsKey(symbol):
-            return data.Bars[symbol].Close
+        if symbol in data.quote_bars:
+            qb = data.quote_bars[symbol]
+            if qb.bid is not None:
+                return qb.bid.close
+        if symbol in data.bars:
+            return data.bars[symbol].close
         return None
 
     def _pending_buy_symbols(self):
         pending = set()
-        for order in self.Transactions.GetOpenOrders():
-            if order.Direction == OrderDirection.Buy:
-                pending.add(order.Symbol)
+        for order in self.transactions.get_open_orders():
+            if order.direction == OrderDirection.BUY:
+                pending.add(order.symbol)
         return pending
 
     # ---- Fill handling ----
 
-    def OnOrderEvent(self, order_event: OrderEvent):
-        if order_event.Status != OrderStatus.Filled:
+    def on_order_event(self, order_event: OrderEvent):
+        if order_event.status != OrderStatus.FILLED:
             return
 
-        symbol = order_event.Symbol
+        symbol = order_event.symbol
         if symbol not in self.symbols:
             return
         st = self.symbols[symbol]
 
-        if order_event.Direction == OrderDirection.Buy:
-            st.entry_price = float(order_event.FillPrice)
+        if order_event.direction == OrderDirection.BUY:
+            st.entry_price = float(order_event.fill_price)
             st.high_water_bid = st.entry_price
-            qty = float(order_event.FillQuantity)
+            qty = float(order_event.fill_quantity)
             target = st.entry_price * (1.0 + TARGET_PROFIT_PCT)
             # Passive limit at target. QC crosses this as soon as bid >= target,
             # matching C++'s clamped sell-limit semantics.
-            st.exit_ticket = self.LimitOrder(symbol, -qty, target)
+            st.exit_ticket = self.limit_order(symbol, -qty, target)
         else:
             st.entry_price = 0.0
             st.high_water_bid = 0.0

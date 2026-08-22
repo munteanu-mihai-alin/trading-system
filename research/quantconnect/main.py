@@ -1,21 +1,27 @@
 # QuantConnect entry point. Switches which strategy runs.
 #
-# To swap strategies: uncomment exactly ONE of the imports below,
-# comment the others. The active _Strategy is what Algorithm inherits
-# from, and QC picks Algorithm up as the algorithm class.
+# QC's cloud runner does not always put the project directory on
+# sys.path, so `from HawkesOU_MR import ...` fails with
+# "No module named 'HawkesOU_MR'". The sys.path.insert below fixes it
+# so sibling files in the same project directory become importable.
+#
+# To switch strategies: uncomment exactly ONE of the imports below,
+# comment the others. `Algorithm` inherits from whichever _Strategy
+# is active, and QC picks it up as the algorithm class.
 #
 # Each strategy file is self-contained: its own constants, universe,
 # signal parameters, state class, and QCAlgorithm subclass. Nothing
 # lives in this file except the switch and the trivial subclass.
-#
-# File / class map:
-#   HawkesOU_MR              -> HftHawkesOuMR              (baseline)
-#   HawkesOU_MR_Reinvest_Wide -> HftHawkesOuMrReinvestWide (reinvest + wide gate)
-#   HawkesOU_MR_Reinvest_Open -> HftHawkesOuMrReinvestOpen (reinvest, no gate)
 
-from HawkesOU_MR                 import HftHawkesOuMR              as _Strategy
-# from HawkesOU_MR_Reinvest_Wide  import HftHawkesOuMrReinvestWide  as _Strategy
-# from HawkesOU_MR_Reinvest_Open  import HftHawkesOuMrReinvestOpen  as _Strategy
+from AlgorithmImports import *
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from HawkesOU_MR                import HftHawkesOuMR              as _Strategy
+# from HawkesOU_MR_Reinvest_Wide import HftHawkesOuMrReinvestWide as _Strategy
+# from HawkesOU_MR_Reinvest_Open import HftHawkesOuMrReinvestOpen as _Strategy
 
 
 class Algorithm(_Strategy):

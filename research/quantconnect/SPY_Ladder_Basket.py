@@ -53,8 +53,8 @@ BAR_RESOLUTION = Resolution.MINUTE
 # ==== Backtest window + run label ====
 
 STRATEGY_NAME = "SPY-Ladder-Basket"
-START_DATE = (2026, 1, 1)
-END_DATE = (2026, 8, 21)
+START_DATE = (2025, 1, 1)
+END_DATE = (2026, 8, 22)
 STARTING_CASH = 4200
 
 

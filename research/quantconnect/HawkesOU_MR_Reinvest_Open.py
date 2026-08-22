@@ -41,7 +41,7 @@ TRADE_NOTIONAL = 500.0
 INITIAL_TOP_K = 3
 INITIAL_BUDGET = 1500.0
 BUDGET_INCREMENT = 500.0
-TARGET_PROFIT_PCT = 0.008
+TARGET_PROFIT_PCT = 0.025
 
 # ==== Signal parameters ====
 # NOTE: OU_HALFLIFE_SECONDS / OU_BUY_THRESHOLD_PCT removed -- gate gone.
@@ -58,8 +58,8 @@ BAR_RESOLUTION = Resolution.MINUTE
 # ==== Backtest window + run label ====
 
 STRATEGY_NAME = "HawkesOU-MR-Reinvest-Open"
-START_DATE = (2026, 1, 1)
-END_DATE = (2026, 8, 21)
+START_DATE = (2025, 1, 1)
+END_DATE = (2026, 8, 22)
 STARTING_CASH = 1700
 
 

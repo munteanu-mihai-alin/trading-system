@@ -36,7 +36,7 @@ TRADE_NOTIONAL = 500.0
 INITIAL_TOP_K = 5              # widened from 3
 INITIAL_BUDGET = 1500.0
 BUDGET_INCREMENT = 500.0
-TARGET_PROFIT_PCT = 0.008
+TARGET_PROFIT_PCT = 0.025
 
 # ==== Signal parameters ====
 
@@ -55,8 +55,8 @@ BAR_RESOLUTION = Resolution.MINUTE
 # ==== Backtest window + run label ====
 
 STRATEGY_NAME = "HawkesOU-MR-Reinvest-Wide"
-START_DATE = (2026, 1, 1)
-END_DATE = (2026, 8, 21)
+START_DATE = (2025, 1, 1)
+END_DATE = (2026, 8, 22)
 STARTING_CASH = 1700
 
 

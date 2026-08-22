@@ -49,7 +49,7 @@ UNIVERSE = [
 TOP_K = 3
 TRADE_NOTIONAL = 500.0
 ACCOUNT_BUDGET = 1500.0
-TARGET_PROFIT_PCT = 0.008
+TARGET_PROFIT_PCT = 0.025
 
 # Mean-reversion gate: buy only when mid <= ou_mu * (1 + threshold).
 # threshold=0.0 means "at or below the trailing OU mean".
@@ -71,8 +71,8 @@ BAR_RESOLUTION = Resolution.MINUTE
 # initialize() always encodes the period into the run name -- any time
 # you sweep the window, the run label updates automatically.
 STRATEGY_NAME = "HawkesOU-MR"
-START_DATE = (2026, 1, 1)
-END_DATE = (2026, 8, 21)
+START_DATE = (2025, 1, 1)
+END_DATE = (2026, 8, 22)
 STARTING_CASH = 1700
 
 

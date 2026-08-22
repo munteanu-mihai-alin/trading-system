@@ -111,6 +111,14 @@ class HftSpyLadder(QCAlgorithm):
         self.chunk_notional = float(STARTING_CASH) / NUM_LOTS
         self.lots = [Lot() for _ in range(NUM_LOTS)]
 
+        # Order-id -> lot maps. Populated at market_order / limit_order
+        # return time (captured as int) so on_order_event can look up
+        # the originating lot by integer key -- more robust than
+        # comparing OrderTicket.order_id against OrderEvent.order_id,
+        # which can silently mismatch on QC's cloud runner.
+        self.pending_buys = {}
+        self.pending_sells = {}
+
         # Day-scoped dip reference.
         self.daily_high = 0.0
         self.current_trading_day = None
@@ -171,36 +179,31 @@ class HftSpyLadder(QCAlgorithm):
             # Notional too small for a whole share at current price.
             # User can grow chunk_notional or switch TICKER.
             return False
-        lot.buy_ticket = self.market_order(self.symbol, qty)
+        ticket = self.market_order(self.symbol, qty)
+        lot.buy_ticket = ticket
+        self.pending_buys[int(ticket.order_id)] = lot
         return True
 
     def on_order_event(self, order_event: OrderEvent):
         if order_event.status != OrderStatus.FILLED:
             return
-        if order_event.symbol != self.symbol:
-            return
+        oid = int(order_event.order_id)
 
-        lot = self._find_lot_by_ticket(order_event.order_id)
-        if lot is None:
-            return
-
-        if order_event.direction == OrderDirection.BUY:
+        lot = self.pending_buys.pop(oid, None)
+        if lot is not None:
             lot.entry_price = float(order_event.fill_price)
             lot.qty = float(order_event.fill_quantity)
             lot.buy_ticket = None
             target = lot.entry_price * (1.0 + TARGET_PROFIT_PCT)
-            lot.sell_ticket = self.limit_order(self.symbol, -lot.qty, target)
-        else:
+            sell_ticket = self.limit_order(self.symbol, -lot.qty, target)
+            lot.sell_ticket = sell_ticket
+            self.pending_sells[int(sell_ticket.order_id)] = lot
+            return
+
+        lot = self.pending_sells.pop(oid, None)
+        if lot is not None:
             # Target sell filled -- lot is free. Next entry comes from
             # either a dip trigger (on_data) or the next scheduled event.
             lot.qty = 0.0
             lot.entry_price = 0.0
             lot.sell_ticket = None
-
-    def _find_lot_by_ticket(self, order_id):
-        for lot in self.lots:
-            if lot.buy_ticket is not None and lot.buy_ticket.order_id == order_id:
-                return lot
-            if lot.sell_ticket is not None and lot.sell_ticket.order_id == order_id:
-                return lot
-        return None

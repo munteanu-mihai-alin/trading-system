@@ -23,6 +23,7 @@ from HawkesOU_MR                import HftHawkesOuMR              as _Strategy
 # from HawkesOU_MR_Reinvest_Wide import HftHawkesOuMrReinvestWide as _Strategy
 # from HawkesOU_MR_Reinvest_Open import HftHawkesOuMrReinvestOpen as _Strategy
 # from SPY_Ladder                import HftSpyLadder               as _Strategy
+# from SPY_Ladder_Basket         import HftSpyLadderBasket         as _Strategy
 
 
 class Algorithm(_Strategy):

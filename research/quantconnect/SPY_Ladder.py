@@ -41,24 +41,23 @@ from AlgorithmImports import *
 
 
 TICKER = "SPLG"
-NUM_LOTS = 6
-TARGET_PROFIT_PCT = 0.005
+NUM_LOTS = 4
+CHUNK_NOTIONAL = 1000.0    # $ per lot; 4 * 1000 = $4000 deployed max
+TARGET_PROFIT_PCT = 0.003
 
 # Dip re-entry: after a lot has been used at least once, on_data will
 # re-enter it once the current price is this fraction below the day's
 # high-water. Set 0.0 to re-enter every bar regardless of price.
-DIP_BUY_THRESHOLD_PCT = 0.004
+DIP_BUY_THRESHOLD_PCT = 0.001
 
 # Initial-ramp + fallback entry times, one lot per event. NY hours;
 # avoids the first 30 minutes (opening auction volatility) and the
 # last hour (close auction risk).
 ENTRY_TIMES = [
     (10, 0),
-    (11, 0),
-    (12, 0),
+    (11, 30),
     (13, 0),
-    (14, 0),
-    (15, 0),
+    (14, 30),
 ]
 
 BAR_RESOLUTION = Resolution.MINUTE
@@ -68,7 +67,7 @@ BAR_RESOLUTION = Resolution.MINUTE
 STRATEGY_NAME = "SPY-Ladder"
 START_DATE = (2026, 1, 1)
 END_DATE = (2026, 8, 21)
-STARTING_CASH = 1700
+STARTING_CASH = 4200
 
 
 class Lot:
@@ -108,7 +107,7 @@ class HftSpyLadder(QCAlgorithm):
         )
         self.symbol = equity.symbol
 
-        self.chunk_notional = float(STARTING_CASH) / NUM_LOTS
+        self.chunk_notional = float(CHUNK_NOTIONAL)
         self.lots = [Lot() for _ in range(NUM_LOTS)]
 
         # Order-id -> lot maps. Populated at market_order / limit_order

@@ -4,6 +4,116 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-08-22] - QuantConnect strategy ports (HawkesOU-MR family) #todo (uncommitted)
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Working tree only. `main` still at `8d49ceb`. New files live under
+  `research/quantconnect/` and are also present on Hetzner
+  (`/mnt/HC_Volume_105581071/trading-system/research/quantconnect/`).
+  Nothing staged or committed yet -- user was iterating in the QC IDE by
+  copy-paste and has NOT run `git add`/`git commit`.
+
+User direction: port this repo's C++ HFT engine to a QuantConnect Python
+strategy so it can be smoke-tested quickly without local infra. Iterate on
+the entry conditions and reinvestment logic to see whether a more permissive
+variant can push trade count up without wrecking the ratios.
+
+What landed (all uncommitted, working-tree only):
+
+**`research/quantconnect/HawkesOU-MR.py`** -- the base port.
+- Faithful mirror of `config.databento_backtest.yen.ini` with L2-specific
+  bits removed (QC's equity feed is L1). Signal reduces to Hawkes intensity
+  ranking + OU trailing-mean entry gate + fixed +0.8% (or +2.5%) target exit.
+- Compromises spelled out in a big header comment (no L2 depth, no
+  microprice, Minute bars vs L1 ticks, market-order entries in place of
+  marketable-limit, QC's fee model in place of the C++ cost block, etc).
+- Modern QC snake_case API (`initialize`, `on_data`, `on_order_event`,
+  `set_start_date`, `add_equity`, `market_order`, etc.) -- IMPORTANT: do NOT
+  use the old PascalCase API, QC's Python client rejects it.
+- Enums uppercase: `Resolution.MINUTE`, `DataNormalizationMode.RAW`,
+  `OrderStatus.FILLED`, `OrderDirection.BUY`, `TimeZones.NEW_YORK`.
+- Distinct run label via `self.set_name(f"{STRATEGY_NAME}_{start_tag}_"
+  f"{end_tag}_target_profit{TARGET_PROFIT_PCT}")`. Example:
+  `HawkesOU-MR_20260101_20260821_target_profit0.008`.
+- Backtest window default: 2026-01-01 -> 2026-08-21 (YTD).
+- Universe: the 49 yen-window symbols (SNDK excluded, matches source config).
+- Sizing constants:
+  - `TRADE_NOTIONAL=500`, `ACCOUNT_BUDGET=1500`, `TOP_K=3`, i.e. 3 concurrent
+    slots at $500 each.
+  - `STARTING_CASH=1700` -- deliberately just above `ACCOUNT_BUDGET` to give
+    ~13% headroom for slippage + fee draw + in-flight orders, without
+    diluting the reported Net Profit % with idle cash.
+
+**`research/quantconnect/HawkesOU-MR-Reinvest-Wide.py`** -- variant #1.
+- Base: HawkesOU-MR + reinvest schedule + WIDER entry gate.
+- Reinvest: every $500 of realized profit (`self.portfolio.total_profit`)
+  unlocks another slot: `INITIAL_TOP_K + slots_gained`,
+  `INITIAL_BUDGET + slots_gained * BUDGET_INCREMENT`. Never shrinks (drawdown
+  just delays the next unlock).
+- Entry loosening:
+  - `OU_BUY_THRESHOLD_PCT: 0.0 -> 0.003` (allow buys up to 30 bps ABOVE the
+    30-min OU trailing mean).
+  - `INITIAL_TOP_K: 3 -> 5` (consider deeper into Hawkes ranking).
+- Character preserved: still mean-reversion, just more permissive.
+
+**`research/quantconnect/HawkesOU-MR-Reinvest-Open.py`** -- variant #2.
+- Base: HawkesOU-MR-Reinvest, OU gate DROPPED entirely.
+- No `OU_HALFLIFE_SECONDS` / `OU_BUY_THRESHOLD_PCT` / `_update_ou` /
+  `ou_mu` / `ou_initialized` -- all stripped.
+- Warm-up shortened to 15 min (was 60 min for OU priming).
+- `INITIAL_TOP_K` stays at 3.
+- Character change: no longer mean-reversion, now pure Hawkes-activity
+  chasing. Expected higher trade volume + different risk profile.
+
+**Backtest findings so far (2026-01-01 -> 2026-08-21 window, HawkesOU-MR):**
+- `tp=0.008 cash=5000`: 224 orders, Net $213, Sharpe 0.43, PSR 32%.
+- `tp=0.008 cash=1700`: same trades, Net% jumps to 12.5% (idle-cash dilution
+  removed), Sharpe 1.20, PSR 51%, Expectancy -0.009 (negative!).
+- `tp=0.025 cash=5000`: 92 orders, Net $366, Sharpe 1.38, PSR 57%.
+- `tp=0.025 cash=1700`: same trades, Net% 21.5%, Sharpe 2.30, Sortino 3.20,
+  PSR 74%, Alpha +24.6%, IR +2.12. Expectancy 0.
+- Fees are hitting the $1.00-per-order minimum on every trade (QC default
+  US-equity model: $0.005/share, $1.00 min). At $500 notional / ~$50 share ->
+  10 shares -> $0.05 in per-share fees, so the $1 min binds. Cutting fee
+  drag = cutting order count OR raising TRADE_NOTIONAL.
+- 100% win rate is a definitional artifact: strategy never sells at a loss;
+  positions that fail to hit target just sit open (`Unrealized: -$22.57`
+  observed). Any regime where names don't drift up would strand capital in
+  losers indefinitely.
+
+**Delta from Reinvest variants -- what to look for when user runs them:**
+- Wide: should double-ish the order count, ratios probably compress a bit.
+- Open: should trade dramatically more but flip win rate down (no OU filter,
+  buying random top-Hawkes names). If PSR + Sharpe hold up despite that,
+  the OU gate was probably too strict; if they collapse, OU was doing real
+  work.
+
+Deferred / not done:
+- QC GitHub sync via `lean` CLI in GH Actions was drafted (workflow file +
+  COMMIT_SHA-injection plumbing) but SCRAPPED because QC API tokens require
+  a paid tier (user is on free). Reverted the workflow + the COMMIT_SHA
+  constant. If the user upgrades, `git log` on this session has the
+  original plumbing to reinstate. Current flow: copy-paste from GitHub.
+- Time-based exit / stop loss: discussed but not implemented. Would honestly
+  reveal the tail risk the "never sell at a loss" mechanic hides.
+- Comparison against a SPY buy-and-hold benchmark for the same window.
+- No downstream orchestration in `scripts/backend/api.py` for the QC files
+  -- they're standalone research artifacts.
+
+Suggested next actions (for whoever picks this up):
+1. `git add research/quantconnect/ agent/AGENT_HANDOFF_LOG.md` and commit
+   these three .py files + this handoff entry. Nothing else should be in
+   the diff (verify with `git status`).
+2. Run Wide + Open in QC and collect their JSON results into `Downloads/`;
+   diff their stats against the tp=0.025 HawkesOU-MR baseline (Net$,
+   Sharpe, PSR, Expectancy, Fees, Order Count).
+3. If Open shows losses, add a time-based exit (close after N bars if
+   target not hit) -- honest tail exposure.
+
 ## [2026-08-21] - Mobile app extracted to sibling repo #Done
 
 Model / agent:

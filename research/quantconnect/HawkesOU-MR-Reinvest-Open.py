@@ -1,27 +1,24 @@
-# HawkesOU-MR-Reinvest -- variant of HawkesOU-MR that compounds realized
-# profits into additional trading slots.
+# HawkesOU-MR-Reinvest-Open -- HawkesOU-MR-Reinvest with the mean-
+# reversion gate removed.
 #
-# Base strategy: see ../hawkes-ou-mr/main.py. Same universe, same signal
-# (Hawkes intensity ranking + OU mean-reversion entry gate), same target
-# profit, same compromises vs the C++ engine.
+# Base: HawkesOU-MR-Reinvest (reinvest schedule, universe, sizing, exit,
+# and all other logic identical). Same compromises vs the C++ engine.
 #
 # Delta from base:
-#   Every $500 of realized profit unlocks:
-#     - one additional trading slot (max_open_symbols grows by 1)
-#     - one additional ranking candidate (top_k grows by 1)
-#     - $500 additional deployable budget
+#   - OU mean-reversion gate DROPPED. No "buy only when mid <= trailing
+#     mean" filter. Any top-k Hawkes-ranked candidate is eligible.
+#   - OU state is not tracked (no longer needed).
+#   - INITIAL_TOP_K stays at 3. The dropped gate is what lets more
+#     entries fire; per-bar candidate depth unchanged.
 #
-#   Intent: the base strategy caps deployment at $1500 forever, so
-#   accumulated wins pile up as idle cash. Here, wins get reinvested
-#   into more concurrent positions, letting the strategy compound.
+# Character change: no longer mean-reversion. This is pure Hawkes
+# intensity chasing -- enter the most "active" names, exit at target.
+# Expect meaningfully higher trade volume AND meaningfully different
+# risk profile: you're now buying names that are moving (in either
+# direction), not names that have overshot to the downside.
 #
-#   Growth is stepwise (integer $500 buckets of realized_profit), so
-#   the effective caps update only when a full slot's worth is banked.
-#   Never shrinks -- a drawdown does not close positions or reduce
-#   caps, it just delays the next slot unlock.
-#
-# Entry conditions are UNCHANGED in this file. Tuning those is a
-# follow-up.
+# Reinvest schedule still applies: every $500 realized profit adds
+# another slot and another top-k candidate.
 
 from AlgorithmImports import *
 import math
@@ -42,14 +39,12 @@ UNIVERSE = [
 
 TRADE_NOTIONAL = 500.0
 INITIAL_TOP_K = 3
-INITIAL_BUDGET = 1500.0        # starting deployable notional -- 3 slots
-BUDGET_INCREMENT = 500.0       # one new slot unlocks per this much realized profit
+INITIAL_BUDGET = 1500.0
+BUDGET_INCREMENT = 500.0
 TARGET_PROFIT_PCT = 0.008
 
-# ==== Signal parameters (unchanged from base) ====
-
-OU_HALFLIFE_SECONDS = 1800.0
-OU_BUY_THRESHOLD_PCT = 0.0
+# ==== Signal parameters ====
+# NOTE: OU_HALFLIFE_SECONDS / OU_BUY_THRESHOLD_PCT removed -- gate gone.
 
 HAWKES_MU = 10.0
 HAWKES_ALPHA = 5.0
@@ -62,7 +57,7 @@ BAR_RESOLUTION = Resolution.MINUTE
 
 # ==== Backtest window + run label ====
 
-STRATEGY_NAME = "HawkesOU-MR-Reinvest"
+STRATEGY_NAME = "HawkesOU-MR-Reinvest-Open"
 START_DATE = (2026, 1, 1)
 END_DATE = (2026, 8, 21)
 STARTING_CASH = 1700
@@ -70,13 +65,10 @@ STARTING_CASH = 1700
 
 class SymbolState:
     def __init__(self):
+        # Hawkes only -- no OU state, no mean-reversion gate.
         self.hawkes_lambda = HAWKES_MU
         self.last_hawkes_event_time = None
         self.last_mid_at_event = 0.0
-
-        self.ou_mu = 0.0
-        self.ou_initialized = False
-        self.last_ou_update_time = None
 
         self.mid = 0.0
         self.score = 0.0
@@ -86,7 +78,7 @@ class SymbolState:
         self.high_water_bid = 0.0
 
 
-class HftHawkesOuMrReinvest(QCAlgorithm):
+class HftHawkesOuMrReinvestOpen(QCAlgorithm):
     def initialize(self):
         self.set_start_date(*START_DATE)
         self.set_end_date(*END_DATE)
@@ -107,7 +99,9 @@ class HftHawkesOuMrReinvest(QCAlgorithm):
             )
             self.symbols[eq.symbol] = SymbolState()
 
-        self.set_warm_up(timedelta(minutes=60))
+        # Hawkes needs a few observations to elevate above mu -- short
+        # warm-up is enough since OU is no longer in the picture.
+        self.set_warm_up(timedelta(minutes=15))
 
     def on_data(self, data: Slice):
         now = self.time
@@ -118,7 +112,6 @@ class HftHawkesOuMrReinvest(QCAlgorithm):
                 continue
 
             self._update_hawkes(st, new_mid, now)
-            self._update_ou(st, new_mid, now)
             st.mid = new_mid
             st.score = st.hawkes_lambda
 
@@ -131,9 +124,6 @@ class HftHawkesOuMrReinvest(QCAlgorithm):
     # ---- Reinvestment schedule ----
 
     def _current_caps(self):
-        # Realized profit only -- ignores unrealized so a stalled loser
-        # cannot unlock new slots. Never negative; drawdown just delays
-        # the next unlock.
         realized = max(0.0, float(self.portfolio.total_profit))
         slots_gained = int(realized // BUDGET_INCREMENT)
         top_k = INITIAL_TOP_K + slots_gained
@@ -171,22 +161,6 @@ class HftHawkesOuMrReinvest(QCAlgorithm):
         st.last_hawkes_event_time = now
         st.last_mid_at_event = new_mid
 
-    def _update_ou(self, st, new_mid, now):
-        if st.last_ou_update_time is None:
-            st.ou_mu = new_mid
-            st.ou_initialized = True
-            st.last_ou_update_time = now
-            return
-
-        dt = (now - st.last_ou_update_time).total_seconds()
-        if dt <= 0.0:
-            return
-
-        tau = OU_HALFLIFE_SECONDS / math.log(2.0)
-        alpha = 1.0 - math.exp(-dt / tau)
-        st.ou_mu = (1.0 - alpha) * st.ou_mu + alpha * new_mid
-        st.last_ou_update_time = now
-
     # ---- Order routing ----
 
     def _route_entries(self):
@@ -204,11 +178,10 @@ class HftHawkesOuMrReinvest(QCAlgorithm):
         for symbol, st in candidates:
             if symbol in held or symbol in pending_buys:
                 continue
-            if st.mid <= 0.0 or not st.ou_initialized:
+            if st.mid <= 0.0:
                 continue
 
-            if st.mid > st.ou_mu * (1.0 + OU_BUY_THRESHOLD_PCT):
-                continue
+            # No mean-reversion gate -- any candidate qualifies.
 
             if committed + TRADE_NOTIONAL > budget:
                 break

@@ -133,6 +133,14 @@ class HftSpyLadder(QCAlgorithm):
             )
 
     def on_data(self, data: Slice):
+        # Belt-and-braces: poll each ticket's status. If on_order_event
+        # fired correctly for a lot, its buy_ticket / sell_ticket is
+        # already None and this pass is a no-op for that lot. If the
+        # event silently missed (QC order-id attribute mismatch or
+        # similar), polling catches the fill on the next bar and does
+        # the follow-up work.
+        self._sync_ticket_fills()
+
         if self.symbol not in data.bars:
             return
         price = float(data.bars[self.symbol].close)
@@ -169,6 +177,26 @@ class HftSpyLadder(QCAlgorithm):
                 if self._enter_lot(lot):
                     lot.has_been_scheduled = True
                 return
+
+    def _sync_ticket_fills(self):
+        for lot in self.lots:
+            bt = lot.buy_ticket
+            if bt is not None and bt.status == OrderStatus.FILLED:
+                self.pending_buys.pop(int(bt.order_id), None)
+                lot.entry_price = float(bt.average_fill_price)
+                lot.qty = float(bt.quantity_filled)
+                lot.buy_ticket = None
+                target = lot.entry_price * (1.0 + TARGET_PROFIT_PCT)
+                sell_ticket = self.limit_order(self.symbol, -lot.qty, target)
+                lot.sell_ticket = sell_ticket
+                self.pending_sells[int(sell_ticket.order_id)] = lot
+
+            st = lot.sell_ticket
+            if st is not None and st.status == OrderStatus.FILLED:
+                self.pending_sells.pop(int(st.order_id), None)
+                lot.qty = 0.0
+                lot.entry_price = 0.0
+                lot.sell_ticket = None
 
     def _enter_lot(self, lot):
         price = float(self.securities[self.symbol].price)

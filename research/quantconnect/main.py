@@ -73,6 +73,7 @@ BAR_RESOLUTION = Resolution.MINUTE
 STRATEGY_NAME = "HawkesOU-MR"
 START_DATE = (2026, 1, 1)
 END_DATE = (2026, 8, 21)
+STARTING_CASH = 5000
 
 
 class SymbolState:
@@ -105,9 +106,9 @@ class HftHawkesOuMR(QCAlgorithm):
         # sweeps across different windows stay distinguishable at a glance.
         start_tag = "{:04d}{:02d}{:02d}".format(*START_DATE)
         end_tag = "{:04d}{:02d}{:02d}".format(*END_DATE)
-        self.set_name(f"{STRATEGY_NAME}_{start_tag}_{end_tag}")
+        self.set_name(f"{STRATEGY_NAME}_{start_tag}_{end_tag}_target_profit{TARGET_PROFIT_PCT}")
 
-        self.set_cash(5000)
+        self.set_cash(STARTING_CASH)
         self.set_time_zone(TimeZones.NEW_YORK)
 
         self.symbols = {}

@@ -1,24 +1,19 @@
-# HawkesOU-MR-Reinvest-Open -- HawkesOU-MR-Reinvest with the mean-
-# reversion gate removed.
+# HawkesOU-MR-WideGate-Top5 -- HawkesOU-MR with a looser entry funnel.
 #
-# Base: HawkesOU-MR-Reinvest (reinvest schedule, universe, sizing, exit,
-# and all other logic identical). Same compromises vs the C++ engine.
+# Base: HawkesOU-MR (universe, sizing, exit, reinvest schedule, all
+# other logic identical). Same compromises vs the C++ engine.
 #
 # Delta from base:
-#   - OU mean-reversion gate DROPPED. No "buy only when mid <= trailing
-#     mean" filter. Any top-k Hawkes-ranked candidate is eligible.
-#   - OU state is not tracked (no longer needed).
-#   - INITIAL_TOP_K stays at 3. The dropped gate is what lets more
-#     entries fire; per-bar candidate depth unchanged.
+#   - OU_BUY_THRESHOLD_PCT: 0.0 -> 0.003. Buys allowed up to 30 bps
+#     above the 30-min trailing OU mean (base: must be at-or-below the
+#     mean). Keeps the mean-reversion character but tolerates the
+#     small overshoot that dominates uptrending regimes.
+#   - INITIAL_TOP_K: 3 -> 5. Considers 5 candidates per bar instead of
+#     3. Deeper into the Hawkes ranking; per-trade signal quality a
+#     little worse, but more shots on goal each step.
 #
-# Character change: no longer mean-reversion. This is pure Hawkes
-# intensity chasing -- enter the most "active" names, exit at target.
-# Expect meaningfully higher trade volume AND meaningfully different
-# risk profile: you're now buying names that are moving (in either
-# direction), not names that have overshot to the downside.
-#
-# Reinvest schedule still applies: every $500 realized profit adds
-# another slot and another top-k candidate.
+# Reinvest is ON (same as base): every $500 realized profit unlocks
+# one additional trading slot + one additional ranking candidate.
 
 from AlgorithmImports import *
 import math
@@ -38,13 +33,15 @@ UNIVERSE = [
 # ==== Sizing & reinvest schedule ====
 
 TRADE_NOTIONAL = 500.0
-INITIAL_TOP_K = 3
+INITIAL_TOP_K = 5              # widened from 3
 INITIAL_BUDGET = 1500.0
 BUDGET_INCREMENT = 500.0
 TARGET_PROFIT_PCT = 0.025
 
 # ==== Signal parameters ====
-# NOTE: OU_HALFLIFE_SECONDS / OU_BUY_THRESHOLD_PCT removed -- gate gone.
+
+OU_HALFLIFE_SECONDS = 1800.0
+OU_BUY_THRESHOLD_PCT = 0.003   # widened from 0.0 (30 bps above mean OK)
 
 HAWKES_MU = 10.0
 HAWKES_ALPHA = 5.0
@@ -57,7 +54,7 @@ BAR_RESOLUTION = Resolution.MINUTE
 
 # ==== Backtest window + run label ====
 
-STRATEGY_NAME = "HawkesOU-MR-Reinvest-Open"
+STRATEGY_NAME = "HawkesOU-MR-WideGate-Top5"
 START_DATE = (2025, 1, 1)
 END_DATE = (2026, 8, 22)
 STARTING_CASH = 1700
@@ -65,10 +62,13 @@ STARTING_CASH = 1700
 
 class SymbolState:
     def __init__(self):
-        # Hawkes only -- no OU state, no mean-reversion gate.
         self.hawkes_lambda = HAWKES_MU
         self.last_hawkes_event_time = None
         self.last_mid_at_event = 0.0
+
+        self.ou_mu = 0.0
+        self.ou_initialized = False
+        self.last_ou_update_time = None
 
         self.mid = 0.0
         self.score = 0.0
@@ -78,7 +78,7 @@ class SymbolState:
         self.high_water_bid = 0.0
 
 
-class HftHawkesOuMrReinvestOpen(QCAlgorithm):
+class HftHawkesOuMrWide(QCAlgorithm):
     def initialize(self):
         self.set_start_date(*START_DATE)
         self.set_end_date(*END_DATE)
@@ -99,9 +99,7 @@ class HftHawkesOuMrReinvestOpen(QCAlgorithm):
             )
             self.symbols[eq.symbol] = SymbolState()
 
-        # Hawkes needs a few observations to elevate above mu -- short
-        # warm-up is enough since OU is no longer in the picture.
-        self.set_warm_up(timedelta(minutes=15))
+        self.set_warm_up(timedelta(minutes=60))
 
     def on_data(self, data: Slice):
         now = self.time
@@ -112,6 +110,7 @@ class HftHawkesOuMrReinvestOpen(QCAlgorithm):
                 continue
 
             self._update_hawkes(st, new_mid, now)
+            self._update_ou(st, new_mid, now)
             st.mid = new_mid
             st.score = st.hawkes_lambda
 
@@ -161,6 +160,22 @@ class HftHawkesOuMrReinvestOpen(QCAlgorithm):
         st.last_hawkes_event_time = now
         st.last_mid_at_event = new_mid
 
+    def _update_ou(self, st, new_mid, now):
+        if st.last_ou_update_time is None:
+            st.ou_mu = new_mid
+            st.ou_initialized = True
+            st.last_ou_update_time = now
+            return
+
+        dt = (now - st.last_ou_update_time).total_seconds()
+        if dt <= 0.0:
+            return
+
+        tau = OU_HALFLIFE_SECONDS / math.log(2.0)
+        alpha = 1.0 - math.exp(-dt / tau)
+        st.ou_mu = (1.0 - alpha) * st.ou_mu + alpha * new_mid
+        st.last_ou_update_time = now
+
     # ---- Order routing ----
 
     def _route_entries(self):
@@ -178,10 +193,11 @@ class HftHawkesOuMrReinvestOpen(QCAlgorithm):
         for symbol, st in candidates:
             if symbol in held or symbol in pending_buys:
                 continue
-            if st.mid <= 0.0:
+            if st.mid <= 0.0 or not st.ou_initialized:
                 continue
 
-            # No mean-reversion gate -- any candidate qualifies.
+            if st.mid > st.ou_mu * (1.0 + OU_BUY_THRESHOLD_PCT):
+                continue
 
             if committed + TRADE_NOTIONAL > budget:
                 break

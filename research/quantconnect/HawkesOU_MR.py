@@ -30,6 +30,15 @@
 #   6. Trailing stop OFF (matches yen config: `trailing_stop_pct` unset).
 #   7. Universe frozen to the 49 yen-window symbols; SNDK excluded per
 #      the source config. All other symbol_universe_path drift not tracked.
+#
+# Reinvest schedule (ON by default):
+#   Every BUDGET_INCREMENT of realized profit unlocks one additional
+#   trading slot (+1 to INITIAL_TOP_K and +BUDGET_INCREMENT to
+#   INITIAL_BUDGET). Uses portfolio.total_profit (realized only) so a
+#   stalled unrealized loser cannot inflate slot counts. Never shrinks
+#   -- drawdown just delays the next unlock. Variants:
+#     - HawkesOU-MR-WideGate-Top5 (HawkesOU_MR_Wide.py): looser entry
+#     - HawkesOU-MR-NoGate (HawkesOU_MR_Open.py): no OU gate
 
 from AlgorithmImports import *
 import math
@@ -46,9 +55,10 @@ UNIVERSE = [
     "UMC", "VST", "WDC", "XPEV",
 ]
 
-TOP_K = 3
+INITIAL_TOP_K = 3
 TRADE_NOTIONAL = 500.0
-ACCOUNT_BUDGET = 1500.0
+INITIAL_BUDGET = 1500.0        # starting deployable notional -- 3 slots
+BUDGET_INCREMENT = 500.0       # one new slot unlocks per this much realized profit
 TARGET_PROFIT_PCT = 0.025
 
 # Mean-reversion gate: buy only when mid <= ou_mu * (1 + threshold).
@@ -193,17 +203,31 @@ class HftHawkesOuMR(QCAlgorithm):
 
     # ---- Order routing ----
 
+    def _current_caps(self):
+        # Reinvest schedule. Every BUDGET_INCREMENT of REALIZED profit
+        # unlocks one additional trading slot + one additional ranking
+        # candidate. Ignores unrealized so a stalled loser cannot
+        # unlock new slots. Never shrinks; drawdown just delays the
+        # next unlock.
+        realized = max(0.0, float(self.portfolio.total_profit))
+        slots_gained = int(realized // BUDGET_INCREMENT)
+        top_k = INITIAL_TOP_K + slots_gained
+        budget = INITIAL_BUDGET + slots_gained * BUDGET_INCREMENT
+        return top_k, budget
+
     def _route_entries(self):
+        top_k, budget = self._current_caps()
+
         ranked = sorted(self.symbols.items(),
                         key=lambda kv: kv[1].score,
                         reverse=True)
-        top_k = ranked[:TOP_K]
+        candidates = ranked[:top_k]
 
         held = {s for s in self.symbols if self.portfolio[s].invested}
         committed = sum(self.portfolio[s].absolute_holdings_cost for s in held)
         pending_buys = self._pending_buy_symbols()
 
-        for symbol, st in top_k:
+        for symbol, st in candidates:
             if symbol in held or symbol in pending_buys:
                 continue
             if st.mid <= 0.0 or not st.ou_initialized:
@@ -213,7 +237,7 @@ class HftHawkesOuMR(QCAlgorithm):
             if st.mid > st.ou_mu * (1.0 + OU_BUY_THRESHOLD_PCT):
                 continue
 
-            if committed + TRADE_NOTIONAL > ACCOUNT_BUDGET:
+            if committed + TRADE_NOTIONAL > budget:
                 break
 
             qty = int(TRADE_NOTIONAL / st.mid)

@@ -20,8 +20,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from HawkesOU_MR                import HftHawkesOuMR              as _Strategy
-# from HawkesOU_MR_Reinvest_Wide import HftHawkesOuMrReinvestWide as _Strategy
-# from HawkesOU_MR_Reinvest_Open import HftHawkesOuMrReinvestOpen as _Strategy
+# from HawkesOU_MR_Wide          import HftHawkesOuMrWide          as _Strategy
+# from HawkesOU_MR_Open          import HftHawkesOuMrOpen          as _Strategy
 # from SPY_Ladder                import HftSpyLadder               as _Strategy
 # from SPY_Ladder_Basket         import HftSpyLadderBasket         as _Strategy
 

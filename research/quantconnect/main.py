@@ -29,6 +29,7 @@ from HawkesOU_MR                import HftHawkesOuMR              as _Strategy
 # from TimesFM_OU_MR             import HftTimesFmOuMR             as _Strategy
 # from TimesFM_MR_PredExit       import HftTimesFmMrPredExit       as _Strategy
 # from ChronosBolt_MR_MultiSignal import HftChronosBoltMrMultiSignal as _Strategy
+# from Chronos2_MR_MultiFeature   import HftChronos2MrMultiFeature   as _Strategy
 
 
 class Algorithm(_Strategy):

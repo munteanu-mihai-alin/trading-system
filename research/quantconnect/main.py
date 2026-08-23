@@ -24,6 +24,7 @@ from HawkesOU_MR                import HftHawkesOuMR              as _Strategy
 # from HawkesOU_MR_Open          import HftHawkesOuMrOpen          as _Strategy
 # from SPY_Ladder                import HftSpyLadder               as _Strategy
 # from SPY_Ladder_Basket         import HftSpyLadderBasket         as _Strategy
+# from ChronosOU_MR              import HftChronosOuMR             as _Strategy
 
 
 class Algorithm(_Strategy):

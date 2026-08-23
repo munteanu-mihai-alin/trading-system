@@ -140,9 +140,14 @@ class HftChronosOuMR(QCAlgorithm):
             )
             self.symbols[eq.symbol] = SymbolState()
 
-        # Warm up long enough to accumulate CHRONOS_CONTEXT_LEN daily
-        # closes plus a buffer for the OU estimator.
-        self.set_warm_up(timedelta(days=CHRONOS_CONTEXT_LEN + 10))
+        # Warm up long enough to accumulate CHRONOS_CONTEXT_LEN TRADING
+        # closes. 1 calendar week ~ 5 trading days, so multiplying by
+        # 1.6 (= 7/5 + safety) covers weekends + holidays comfortably.
+        # Prior version used CHRONOS_CONTEXT_LEN + 10 calendar days,
+        # which yielded only ~52 trading closes -- Chronos couldn't
+        # predict for the first ~3 weeks of the run.
+        warmup_calendar_days = int(CHRONOS_CONTEXT_LEN * 1.6) + 10
+        self.set_warm_up(timedelta(days=warmup_calendar_days))
 
         # Load Chronos once. Fail soft: if the package or model download
         # isn't available in this QC environment, the strategy still
@@ -223,8 +228,12 @@ class HftChronosOuMR(QCAlgorithm):
                 context = torch.tensor(
                     history[-CHRONOS_CONTEXT_LEN:], dtype=torch.float32
                 )
+                # Positional -- some chronos-forecasting versions renamed
+                # the first parameter (e.g. `context` -> `inputs`), and
+                # passing by keyword raises TypeError. Positional works
+                # across versions.
                 forecast = self.chronos.predict(
-                    context=context,
+                    context,
                     prediction_length=CHRONOS_PREDICTION_LEN,
                     num_samples=CHRONOS_NUM_SAMPLES,
                 )

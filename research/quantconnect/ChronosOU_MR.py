@@ -214,14 +214,16 @@ class HftChronosOuMR(QCAlgorithm):
         if self.is_warming_up:
             return
 
-        n_scored = 0
-        n_positive = 0
-        n_failed = 0
-        n_insufficient = 0
+        # Diagnostic counters -- uncomment along with the log block at
+        # the bottom of this method to re-enable per-day summary logs.
+        # n_scored = 0
+        # n_positive = 0
+        # n_failed = 0
+        # n_insufficient = 0
         for symbol, st in self.symbols.items():
             history = st.daily_closes
             if len(history) < CHRONOS_CONTEXT_LEN or st.mid <= 0.0:
-                n_insufficient += 1
+                # n_insufficient += 1
                 continue
 
             try:
@@ -240,31 +242,29 @@ class HftChronosOuMR(QCAlgorithm):
                 # forecast shape: [batch=1, num_samples, prediction_length]
                 predicted_price = float(forecast[0, :, 0].mean().item())
                 st.score = (predicted_price - st.mid) / st.mid
-                n_scored += 1
-                if st.score > 0.0:
-                    n_positive += 1
-            except Exception as e:
+                # n_scored += 1
+                # if st.score > 0.0:
+                #     n_positive += 1
+            except Exception:
                 # Individual-symbol failure doesn't break the batch.
                 st.score = 0.0
-                n_failed += 1
-                if n_failed <= 2:
-                    self.log(f"Chronos predict failed for {symbol}: {e}")
+                # n_failed += 1
+                # if n_failed <= 2:
+                #     self.log(f"Chronos predict failed for {symbol}: {e}")
 
-        # Per-day diagnostic: counts + top-5 raw scores so we can see
-        # whether Chronos is producing meaningful signal or just noise
-        # around zero. Look for lines like:
-        #   Chronos day 2026-01-05: scored=49 positive=3 failed=0 insufficient=0
-        #   top5=[+0.0084 +0.0051 +0.0012 -0.0018 -0.0034]
-        scores = [st.score for st in self.symbols.values() if st.score != 0.0]
-        top5 = sorted(scores, reverse=True)[:5]
-        bot5 = sorted(scores)[:5]
-        top5_str = " ".join(f"{s:+.4f}" for s in top5)
-        bot5_str = " ".join(f"{s:+.4f}" for s in bot5)
-        self.log(
-            f"Chronos day {self.time.date()}: "
-            f"scored={n_scored} positive={n_positive} failed={n_failed} "
-            f"insufficient={n_insufficient} top5=[{top5_str}] bot5=[{bot5_str}]"
-        )
+        # ---- Diagnostic logging (disabled) ----
+        # Re-enable to trace per-day scoring behaviour. Watch out for
+        # QC's 10 KB/day log cap on the free tier.
+        # scores = [st.score for st in self.symbols.values() if st.score != 0.0]
+        # top5 = sorted(scores, reverse=True)[:5]
+        # bot5 = sorted(scores)[:5]
+        # top5_str = " ".join(f"{s:+.4f}" for s in top5)
+        # bot5_str = " ".join(f"{s:+.4f}" for s in bot5)
+        # self.log(
+        #     f"Chronos day {self.time.date()}: "
+        #     f"scored={n_scored} positive={n_positive} failed={n_failed} "
+        #     f"insufficient={n_insufficient} top5=[{top5_str}] bot5=[{bot5_str}]"
+        # )
 
     # ---- OU trailing mean ----
 

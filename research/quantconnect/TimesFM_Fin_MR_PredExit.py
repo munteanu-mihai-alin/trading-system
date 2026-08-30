@@ -1,33 +1,58 @@
-# TimesFM-MR-PredExit -- TimesFM ranking with no OU gate and
-# model-driven sell target.
+# TimesFM-Fin-MR-PredExit -- variant of TimesFM_MR_PredExit that uses
+# Preferred Networks' financial fine-tune of TimesFM (`pfnet/timesfm-
+# 1.0-200m-fin`) instead of Google's vanilla checkpoint.
 #
-# Base skeleton: Chronos_MR_PredExit (universe, sizing, reinvest,
-# predicted-price sell target with never-sell-at-loss fallback).
-# Only the model swap differs (Chronos-t5-tiny -> TimesFM 200M).
+# Base: TimesFM_MR_PredExit (universe, sizing, reinvest, no OU gate,
+# sell at model-predicted price with never-sell-at-loss fallback).
 #
-# Delta from Chronos_MR_PredExit:
-#   - Model: google/timesfm-1.0-200m instead of chronos-t5-tiny.
-#   - Batched prediction (all 49 symbols in one forecast call).
-#   - No sampling; point forecast used directly as predicted price.
+# WHY THIS EXISTS:
+#   Google's `google/timesfm-1.0-200m` was pretrained on generic time
+#   series (energy, weather, retail, etc.). PFN fine-tuned the same
+#   200M-param architecture on TOPIX500 + S&P500 daily/hourly stock
+#   series + crypto + FX through 2022-12-31. Their reported Sharpe
+#   on long-horizon S&P500 daily strategies:
+#     - Base google/timesfm-1.0-200m : 0.42
+#     - pfnet/timesfm-1.0-200m-fin   : 1.68
+#   (Source: arXiv 2412.09880 -- Preferred Networks tech blog.)
 #
-# Compared to TimesFM_OU_MR: same model, but no OU gate + sell target
-# from TimesFM's predicted price (not fixed +2.5%).
+# TWO CRITICAL DIFFERENCES vs the vanilla TimesFM_MR_PredExit file:
+#
+#   1. PREPROCESSING. The fine-tune expects inputs in log-space and
+#      returns outputs in log-space:
+#           x_in = log(x + 1)
+#           forecast_log = model(x_in)
+#           forecast     = exp(forecast_log) - 1
+#      Skipping this makes the model useless (predictions in the wrong
+#      numeric scale). Vanilla TimesFM doesn't need this.
+#
+#   2. CHECKPOINT LOAD PATH. Known unresolved bug (HF discussion #1,
+#      open Apr 2025+): the HF repo ships pytorch_model.bin +
+#      model.safetensors, but timesfm's `load_from_checkpoint(repo_id=)`
+#      expects `torch_model.ckpt`. We snapshot_download the repo
+#      manually, then attempt load. If it fails, the log tells you
+#      exactly what to try (usually a rename or format conversion).
+#
+# ENVIRONMENT REQUIREMENTS (same as vanilla TimesFM):
+#   - `timesfm` Python package (NOT in QC's default library set --
+#     paid tier + Custom Environment required).
+#   - `torch`, `jax`, `huggingface_hub`.
+#   - Python 3.10 (hard constraint from timesfm pkg).
+#   On QC free tier this will fail-soft (scores stay at 0, strategy
+#   loads but never trades) -- same failure mode as our earlier
+#   TimesFM run.
+#
+# LICENSE: Apache-2.0 (both timesfm package and the pfnet weights).
 
 from AlgorithmImports import *
 import math
 
-_TIMESFM_IMPORT_ERROR = None
-_TIMESFM_VERSION = None
-_TIMESFM_PATH = None
 try:
     import numpy as np
     import timesfm
+    from huggingface_hub import snapshot_download
     _TIMESFM_AVAILABLE = True
-    _TIMESFM_VERSION = getattr(timesfm, "__version__", "unknown")
-    _TIMESFM_PATH = getattr(timesfm, "__file__", "unknown")
-except Exception as _e:
+except Exception:
     _TIMESFM_AVAILABLE = False
-    _TIMESFM_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 
 UNIVERSE = [
@@ -45,14 +70,15 @@ INITIAL_BUDGET = 1500.0
 BUDGET_INCREMENT = 500.0
 TARGET_PROFIT_PCT = 0.025
 
-TIMESFM_MODEL = "google/timesfm-1.0-200m"
-TIMESFM_CONTEXT_LEN = 64
-TIMESFM_HORIZON = 1
+TIMESFM_MODEL = "pfnet/timesfm-1.0-200m-fin"
+TIMESFM_CONTEXT_LEN = 64                        # trading closes used per prediction
+TIMESFM_MODEL_CONTEXT = 512                     # architecture's max context (left-pad if shorter)
+TIMESFM_HORIZON = 1                             # 1-day-ahead forecast
 
 TRAILING_STOP_PCT = 0.0
 BAR_RESOLUTION = Resolution.MINUTE
 
-STRATEGY_NAME = "TimesFM-MR-PredExit"
+STRATEGY_NAME = "TimesFM-Fin-MR-PredExit"
 START_DATE = (2025, 1, 1)
 END_DATE = (2026, 8, 22)
 STARTING_CASH = 1700
@@ -68,7 +94,7 @@ class SymbolState:
         self.exit_ticket = None
 
 
-class HftTimesFmMrPredExit(QCAlgorithm):
+class HftTimesFmFinMrPredExit(QCAlgorithm):
     def initialize(self):
         self.set_start_date(*START_DATE)
         self.set_end_date(*END_DATE)
@@ -94,68 +120,38 @@ class HftTimesFmMrPredExit(QCAlgorithm):
         warmup_calendar_days = int(TIMESFM_CONTEXT_LEN * 1.6) + 10
         self.set_warm_up(timedelta(days=warmup_calendar_days))
 
-        # ---- Library-availability diagnostics ----
-        # Report exactly what's known about the timesfm install so a
-        # future run's Logs tab tells us whether the package is
-        # missing, at an unexpected version, or in an unexpected path.
-        if not _TIMESFM_AVAILABLE:
-            self.log(f"timesfm import FAILED: {_TIMESFM_IMPORT_ERROR}")
-            self.log("  -> scores stay at 0; strategy will not trade")
-            self.log("  -> package likely not in QC's default env (free tier)")
-            self.log("  -> paid tier: add via Project -> Libraries (Custom Env)")
-        else:
-            self.log(f"timesfm import OK: version={_TIMESFM_VERSION}")
-            self.log(f"  path={_TIMESFM_PATH}")
-            # Log a handful of module attributes so we can see which
-            # API surface is installed (v1 uses TimesFm; recent v2 uses
-            # TimesFmHparams + TimesFmCheckpoint dataclasses).
-            try:
-                attrs = [a for a in dir(timesfm) if not a.startswith("_")]
-                self.log(f"  attrs (first 20): {attrs[:20]}")
-                has_v1 = "TimesFm" in attrs
-                has_v2 = "TimesFmHparams" in attrs and "TimesFmCheckpoint" in attrs
-                self.log(f"  api-shape: v1-style TimesFm={has_v1} v2-style hparams/ckpt={has_v2}")
-            except Exception as attr_err:
-                self.log(f"  attr inspection failed: {attr_err}")
-
         self.tfm = None
         if _TIMESFM_AVAILABLE:
-            # ---- Attempt A: v1-style explicit constructor ----
             try:
-                self.log("TimesFM: attempting v1-style constructor...")
+                # Build the model architecture (same 200M-param spec as
+                # google/timesfm-1.0-200m).
                 self.tfm = timesfm.TimesFm(
-                    context_len=512,
-                    horizon_len=TIMESFM_HORIZON,
+                    context_len=TIMESFM_MODEL_CONTEXT,
+                    horizon_len=128,     # architecture default; we index first
                     input_patch_len=32,
                     output_patch_len=128,
                     num_layers=20,
                     model_dims=1280,
                     backend="cpu",
                 )
-                self.tfm.load_from_checkpoint(repo_id=TIMESFM_MODEL)
-                self.log(f"TimesFM loaded (v1 path): {TIMESFM_MODEL}")
-            except Exception as e_v1:
-                self.log(f"TimesFM v1-style failed: {type(e_v1).__name__}: {e_v1}")
-                self.tfm = None
-                # ---- Attempt B: v2-style hparams/checkpoint dataclasses ----
+                # Try direct repo_id load first (works if HF checkpoint
+                # bug ever gets fixed upstream).
                 try:
-                    self.log("TimesFM: attempting v2-style hparams constructor...")
-                    self.tfm = timesfm.TimesFm(
-                        hparams=timesfm.TimesFmHparams(
-                            backend="cpu",
-                            per_core_batch_size=32,
-                            horizon_len=TIMESFM_HORIZON,
-                            context_len=512,
-                        ),
-                        checkpoint=timesfm.TimesFmCheckpoint(
-                            huggingface_repo_id=TIMESFM_MODEL,
-                        ),
-                    )
-                    self.log(f"TimesFM loaded (v2 path): {TIMESFM_MODEL}")
-                except Exception as e_v2:
-                    self.log(f"TimesFM v2-style failed: {type(e_v2).__name__}: {e_v2}")
-                    self.log("Both constructor forms failed; scores stay at 0")
-                    self.tfm = None
+                    self.tfm.load_from_checkpoint(repo_id=TIMESFM_MODEL)
+                    self.log(f"TimesFM-Fin loaded (repo_id path): {TIMESFM_MODEL}")
+                except Exception as direct_err:
+                    self.log(f"repo_id load failed ({direct_err}); trying snapshot_download workaround...")
+                    local_dir = snapshot_download(repo_id=TIMESFM_MODEL)
+                    # Attempt load from local path -- timesfm may still
+                    # complain about the expected filename; if so the
+                    # error surfaces and can be triaged from the log.
+                    self.tfm.load_from_checkpoint(checkpoint_path=local_dir)
+                    self.log(f"TimesFM-Fin loaded (snapshot path): {local_dir}")
+            except Exception as e:
+                self.log(f"TimesFM-Fin load failed: {e}")
+                self.tfm = None
+        else:
+            self.log("timesfm / huggingface_hub not installed; scores stay at 0")
 
         first_symbol = next(iter(self.symbols.keys()))
         self.schedule.on(
@@ -190,28 +186,38 @@ class HftTimesFmMrPredExit(QCAlgorithm):
         if self.tfm is None or self.is_warming_up:
             return
 
+        # Batch: one forecast call for all eligible symbols.
         batch_syms = []
         batch_inputs = []
         for symbol, st in self.symbols.items():
             if len(st.daily_closes) < TIMESFM_CONTEXT_LEN or st.mid <= 0.0:
                 continue
             batch_syms.append(st)
-            batch_inputs.append(
-                np.array(st.daily_closes[-TIMESFM_CONTEXT_LEN:], dtype=np.float32)
+            # Log-space preprocessing (required by the pfnet fine-tune).
+            # Take last TIMESFM_CONTEXT_LEN closes, apply log(x+1).
+            raw = np.array(
+                st.daily_closes[-TIMESFM_CONTEXT_LEN:], dtype=np.float32
             )
+            log_series = np.log(raw + 1.0)
+            batch_inputs.append(log_series)
 
         if not batch_inputs:
             return
 
         try:
-            point_forecast, _ = self.tfm.forecast(
+            # TimesFM 1.0 batched forecast API.
+            point_forecast, _quantile_forecast = self.tfm.forecast(
                 inputs=batch_inputs,
                 freq=[0] * len(batch_inputs),
             )
-            for st, predicted in zip(batch_syms, point_forecast):
-                st.predicted_price = float(predicted[0])
+            # point_forecast shape: [num_series, horizon_len=128]
+            for st, log_pred in zip(batch_syms, point_forecast):
+                # Take just the first horizon step and invert the
+                # log preprocessing: price = exp(log_pred) - 1.
+                log_next = float(log_pred[0])
+                st.predicted_price = float(np.exp(log_next) - 1.0)
         except Exception as e:
-            self.log(f"TimesFM forecast batch failed: {e}")
+            self.log(f"TimesFM-Fin forecast batch failed: {e}")
 
     def _current_return(self, st):
         if st.predicted_price <= 0.0 or st.mid <= 0.0:
@@ -270,8 +276,6 @@ class HftTimesFmMrPredExit(QCAlgorithm):
         if order_event.direction == OrderDirection.BUY:
             st.entry_price = float(order_event.fill_price)
             qty = float(order_event.fill_quantity)
-            # Never sell below entry * (1 + target) -- same safety as
-            # Chronos_MR_PredExit.
             fallback = st.entry_price * (1.0 + TARGET_PROFIT_PCT)
             target = max(st.predicted_price, fallback)
             st.exit_ticket = self.limit_order(symbol, -qty, target)

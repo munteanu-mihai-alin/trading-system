@@ -26,8 +26,11 @@ from HawkesOU_MR                import HftHawkesOuMR              as _Strategy
 # from SPY_Ladder_Basket         import HftSpyLadderBasket         as _Strategy
 # from ChronosOU_MR              import HftChronosOuMR             as _Strategy
 # from Chronos_MR_PredExit       import HftChronosMrPredExit       as _Strategy
+# from Chronos_MH_Weighted       import HftChronosMhWeighted       as _Strategy
+# from Chronos_MH_Consensus      import HftChronosMhConsensus      as _Strategy
 # from TimesFM_OU_MR             import HftTimesFmOuMR             as _Strategy
 # from TimesFM_MR_PredExit       import HftTimesFmMrPredExit       as _Strategy
+# from TimesFM_Fin_MR_PredExit   import HftTimesFmFinMrPredExit    as _Strategy
 # from ChronosBolt_MR_MultiSignal import HftChronosBoltMrMultiSignal as _Strategy
 # from Chronos2_MR_MultiFeature   import HftChronos2MrMultiFeature   as _Strategy
 

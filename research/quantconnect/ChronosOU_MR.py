@@ -325,10 +325,12 @@ class HftChronosOuMR(QCAlgorithm):
             if st.mid <= 0.0 or not st.ou_initialized:
                 continue
 
-            # Require a positive predicted return: if Chronos thinks
-            # the name is going down, skip. Also drops the "zero score"
-            # case when Chronos isn't loaded.
-            if st.score <= 0.0:
+            # Require the predicted return to clear the target profit
+            # (not just be positive). Ensures we only enter when Chronos
+            # forecasts a move worth at least what we're aiming for.
+            # Also naturally handles the "zero score" case when Chronos
+            # isn't loaded (0 < TARGET_PROFIT_PCT).
+            if st.score < TARGET_PROFIT_PCT:
                 continue
 
             # OU mean-reversion gate (unchanged from base HawkesOU-MR).

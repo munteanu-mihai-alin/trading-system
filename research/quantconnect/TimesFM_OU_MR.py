@@ -238,7 +238,10 @@ class HftTimesFmOuMR(QCAlgorithm):
                 continue
             if st.mid <= 0.0 or not st.ou_initialized:
                 continue
-            if st.score <= 0.0:
+            # Require the predicted return to clear the target profit
+            # (not just be positive). Ensures we only enter when TimesFM
+            # forecasts a move worth at least what we're aiming for.
+            if st.score < TARGET_PROFIT_PCT:
                 continue
             if st.mid > st.ou_mu * (1.0 + OU_BUY_THRESHOLD_PCT):
                 continue

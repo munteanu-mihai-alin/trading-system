@@ -213,6 +213,9 @@ class HftChronosOuMR(QCAlgorithm):
             return
         if self.is_warming_up:
             return
+        # Skip inference entirely if we can't act on the results.
+        if not self._has_free_slot():
+            return
 
         # Diagnostic counters -- uncomment along with the log block at
         # the bottom of this method to re-enable per-day summary logs.
@@ -285,6 +288,15 @@ class HftChronosOuMR(QCAlgorithm):
         st.last_ou_update_time = now
 
     # ---- Reinvestment schedule ----
+
+    def _has_free_slot(self):
+        # Cheap capacity check used to short-circuit expensive daily
+        # inference when we have no room to enter another position.
+        # Mirrors the budget test in _route_entries.
+        _, budget = self._current_caps()
+        held = {s for s in self.symbols if self.portfolio[s].invested}
+        committed = sum(self.portfolio[s].absolute_holdings_cost for s in held)
+        return committed + TRADE_NOTIONAL <= budget
 
     def _current_caps(self):
         realized = max(0.0, float(self.portfolio.total_profit))

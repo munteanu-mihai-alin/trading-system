@@ -161,6 +161,9 @@ class HftChronosMhWeighted(QCAlgorithm):
     def _run_daily_forecast(self):
         if self.chronos is None or self.is_warming_up:
             return
+        # Skip inference entirely if we can't act on the results.
+        if not self._has_free_slot():
+            return
 
         for symbol, st in self.symbols.items():
             history = st.daily_closes
@@ -196,6 +199,15 @@ class HftChronosMhWeighted(QCAlgorithm):
         r5  = self._return_at(st.pred_5d,  st.mid)
         r10 = self._return_at(st.pred_10d, st.mid)
         return WEIGHT_1D * r1 + WEIGHT_5D * r5 + WEIGHT_10D * r10
+
+    def _has_free_slot(self):
+        # Cheap capacity check used to short-circuit expensive daily
+        # inference when we have no room to enter another position.
+        # Mirrors the budget test in _route_entries.
+        _, budget = self._current_caps()
+        held = {s for s in self.symbols if self.portfolio[s].invested}
+        committed = sum(self.portfolio[s].absolute_holdings_cost for s in held)
+        return committed + TRADE_NOTIONAL <= budget
 
     def _current_caps(self):
         realized = max(0.0, float(self.portfolio.total_profit))

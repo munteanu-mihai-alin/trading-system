@@ -160,6 +160,9 @@ class HftTimesFmOuMR(QCAlgorithm):
     def _run_daily_forecast(self):
         if self.tfm is None or self.is_warming_up:
             return
+        # Skip inference entirely if we can't act on the results.
+        if not self._has_free_slot():
+            return
 
         # Batch: collect every symbol with enough history + a valid mid.
         batch_syms = []
@@ -202,6 +205,15 @@ class HftTimesFmOuMR(QCAlgorithm):
         alpha = 1.0 - math.exp(-dt / tau)
         st.ou_mu = (1.0 - alpha) * st.ou_mu + alpha * new_mid
         st.last_ou_update_time = now
+
+    def _has_free_slot(self):
+        # Cheap capacity check used to short-circuit expensive daily
+        # inference when we have no room to enter another position.
+        # Mirrors the budget test in _route_entries.
+        _, budget = self._current_caps()
+        held = {s for s in self.symbols if self.portfolio[s].invested}
+        committed = sum(self.portfolio[s].absolute_holdings_cost for s in held)
+        return committed + TRADE_NOTIONAL <= budget
 
     def _current_caps(self):
         realized = max(0.0, float(self.portfolio.total_profit))

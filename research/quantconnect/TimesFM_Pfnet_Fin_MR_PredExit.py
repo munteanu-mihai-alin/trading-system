@@ -78,7 +78,7 @@ TIMESFM_HORIZON = 1                             # 1-day-ahead forecast
 TRAILING_STOP_PCT = 0.0
 BAR_RESOLUTION = Resolution.MINUTE
 
-STRATEGY_NAME = "TimesFM-Fin-MR-PredExit"
+STRATEGY_NAME = "TimesFM-Pfnet-Fin-MR-PredExit"
 START_DATE = (2025, 1, 1)
 END_DATE = (2026, 8, 22)
 STARTING_CASH = 1700
@@ -94,7 +94,7 @@ class SymbolState:
         self.exit_ticket = None
 
 
-class HftTimesFmFinMrPredExit(QCAlgorithm):
+class HftTimesFmPfnetFinMrPredExit(QCAlgorithm):
     def initialize(self):
         self.set_start_date(*START_DATE)
         self.set_end_date(*END_DATE)
@@ -185,6 +185,9 @@ class HftTimesFmFinMrPredExit(QCAlgorithm):
     def _run_daily_forecast(self):
         if self.tfm is None or self.is_warming_up:
             return
+        # Skip inference entirely if we can't act on the results.
+        if not self._has_free_slot():
+            return
 
         # Batch: one forecast call for all eligible symbols.
         batch_syms = []
@@ -223,6 +226,15 @@ class HftTimesFmFinMrPredExit(QCAlgorithm):
         if st.predicted_price <= 0.0 or st.mid <= 0.0:
             return 0.0
         return (st.predicted_price - st.mid) / st.mid
+
+    def _has_free_slot(self):
+        # Cheap capacity check used to short-circuit expensive daily
+        # inference when we have no room to enter another position.
+        # Mirrors the budget test in _route_entries.
+        _, budget = self._current_caps()
+        held = {s for s in self.symbols if self.portfolio[s].invested}
+        committed = sum(self.portfolio[s].absolute_holdings_cost for s in held)
+        return committed + TRADE_NOTIONAL <= budget
 
     def _current_caps(self):
         realized = max(0.0, float(self.portfolio.total_profit))

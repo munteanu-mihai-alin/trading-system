@@ -13,6 +13,7 @@
 #include "broker/LocalSimBroker.hpp"
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
+#include "engine/Chronos2ExecutionEngine.hpp"
 #include "engine/LiveExecutionEngine.hpp"
 #include "log/logging_state.hpp"
 #include "models/symbol_universe.hpp"
@@ -34,7 +35,61 @@ int main() {
   std::cout << "Config loaded. mode=" << live_cfg.mode_name()
             << " steps=" << cfg.steps << " universe_size=" << cfg.universe_size
             << " host=" << cfg.host << " client_id=" << cfg.client_id
-            << std::endl;
+            << " strategy_mode=" << cfg.strategy_mode << std::endl;
+
+  // ---- Strategy dispatch: fork the routing entirely per user config ----
+  // "chronos2_mr_pred_exit" runs a separate engine (Chronos2ExecutionEngine).
+  // Default "hawkes_ou_mr" falls through to the existing LiveExecutionEngine
+  // path below.
+  if (cfg.strategy_mode == "chronos2_mr_pred_exit") {
+    std::cout << "Dispatching to Chronos2ExecutionEngine "
+                 "(chronos2_mr_pred_exit strategy)" << std::endl;
+
+    std::unique_ptr<hft::IBroker> broker2;
+    if (cfg.mode == hft::BrokerMode::DatabentoBacktest) {
+      std::cout << "Creating Databento backtest broker" << std::endl;
+      broker2 = std::make_unique<hft::DatabentoBacktestBroker>(cfg);
+    } else {
+      std::cout << "Creating local simulated broker" << std::endl;
+      broker2 = std::make_unique<hft::LocalSimBroker>();
+    }
+
+    hft::Chronos2ExecutionEngine engine2(live_cfg, std::move(broker2));
+    std::cout << "Starting Chronos2 engine..." << std::endl;
+    if (!engine2.start()) {
+      std::cerr << "Failed to start Chronos2 engine" << std::endl;
+      hl::set_app_state(hl::AppState::Fatal);
+      hl::shutdown_logging();
+      return 1;
+    }
+
+    // Universe: same source rules as the default engine (hard-coded
+    // yen-window list; file-based override via symbol_universe_path
+    // is TODO for the Chronos2 path).
+    const int uni_size = std::clamp(
+        cfg.universe_size, 0,
+        static_cast<int>(hft::kSymbolCompanyList.size()));
+    engine2.initialize_universe(hft::kSymbolCompanyList, uni_size);
+    engine2.subscribe_live_books();
+
+    hl::set_app_state(hl::AppState::Live);
+    std::cout << "Running " << cfg.steps << " Chronos2 engine steps..."
+              << std::endl;
+    for (int t = 0; t < cfg.steps; ++t) {
+      engine2.step(t);
+    }
+    engine2.stop();
+    std::cout << "Chronos2 engine stopped. realized_pnl="
+              << engine2.realized_pnl()
+              << " bonus_budget=" << engine2.bonus_budget()
+              << " open_positions=" << engine2.open_positions().size()
+              << std::endl;
+
+    hl::set_app_state(hl::AppState::ShuttingDown);
+    hl::shutdown_logging();
+    return 0;
+  }
+  // else: fall through to the default LiveExecutionEngine path below.
 
   std::unique_ptr<hft::IBroker> broker;
   hft::IBKRClient* raw_ibkr = nullptr;

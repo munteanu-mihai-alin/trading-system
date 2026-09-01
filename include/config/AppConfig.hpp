@@ -304,6 +304,44 @@ struct AppConfig {
   std::string databento_start;
   std::string databento_end;
 
+  // ==== Strategy dispatch ====
+  //
+  // main.cpp reads this to decide which execution engine to
+  // instantiate. Values:
+  //   "hawkes_ou_mr"          -- default; the existing
+  //                              LiveExecutionEngine with Hawkes
+  //                              ranking + OU gate + fixed target.
+  //   "chronos2_mr_pred_exit" -- Chronos2ExecutionEngine: predicted-
+  //                              return ranking with vol/momentum
+  //                              filters, exit at
+  //                              max(predicted_price, entry*(1+target)),
+  //                              reinvest-slot schedule.
+  std::string strategy_mode = "hawkes_ou_mr";
+
+  // ==== Chronos-2 forecast bridge (chronos2_mr_pred_exit only) ====
+  //
+  // Chronos-2 runs in Python, not C++. Once per trading day the
+  // Chronos2ExecutionEngine:
+  //   1. Dumps the last N daily closes per symbol to a CSV under
+  //      chronos2_daily_closes_dir.
+  //   2. Spawns `chronos2_python chronos2_forecast_script --history-csv
+  //      <path> --output <path> --context-len N --model MODEL`.
+  //   3. Reads back predictions CSV of
+  //      symbol,predicted_price,predicted_q25,realized_vol,momentum_5d.
+  // Same one-shot std::system pattern as the Databento downloaders.
+  std::string chronos2_python              = "./.venv/bin/python";
+  std::string chronos2_forecast_script     = "scripts/chronos2_forecast.py";
+  std::string chronos2_predictions_dir     = "data/chronos2/predictions";
+  std::string chronos2_daily_closes_dir    = "data/chronos2/daily_closes";
+  std::string chronos2_model               = "amazon/chronos-2";
+  int    chronos2_context_len              = 64;      // trading days of history fed to model
+  int    chronos2_prediction_len           = 1;       // 1-day forecast horizon
+  double chronos2_max_annual_vol           = 0.80;    // filter: skip if realized vol > this
+  int    chronos2_vol_lookback_days        = 20;
+  int    chronos2_momentum_lookback_days   = 5;
+  double chronos2_vol_floor                = 0.05;    // denominator floor in composite score
+  double chronos2_reinvest_increment       = 500.0;   // realised $ per unlocked $500 slot
+
   [[nodiscard]] int port() const noexcept {
     if (mode == BrokerMode::Live)
       return live_port;

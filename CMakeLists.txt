@@ -24,6 +24,7 @@ set(LIB_SOURCES
   src/lib/IBKRClient.cpp
   src/lib/kill_signals.cpp
   src/lib/LiveExecutionEngine.cpp
+  src/lib/Chronos2ExecutionEngine.cpp
   src/lib/RealIBKRTransport.cpp
   src/lib/SymbolUniverse.cpp
 )
@@ -254,6 +255,12 @@ else()
     "or stage the source via scripts/stage_third_party_sources_ucrt.sh."
   )
 endif()
+
+# ---------------------------------------------------------------------------
+# Cycle-per-op benchmarks (Linux/x86_64 only). Vendored harness from
+# hftu-challenges; see benchmarks/CMakeLists.txt for the full layout.
+# ---------------------------------------------------------------------------
+add_subdirectory(benchmarks)
 
 # New unit/module test binary. Lives alongside the legacy hft_tests target;
 # both are registered with CTest. Phase 0 ships only a smoke test that

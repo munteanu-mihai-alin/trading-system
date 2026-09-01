@@ -186,6 +186,36 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.databento_start = val;
       } else if (key == "databento_end") {
         cfg.databento_end = val;
+
+      // ---- Strategy dispatch ----
+      } else if (key == "strategy_mode") {
+        cfg.strategy_mode = val;
+
+      // ---- Chronos-2 forecast bridge ----
+      } else if (key == "chronos2_python") {
+        cfg.chronos2_python = val;
+      } else if (key == "chronos2_forecast_script") {
+        cfg.chronos2_forecast_script = val;
+      } else if (key == "chronos2_predictions_dir") {
+        cfg.chronos2_predictions_dir = val;
+      } else if (key == "chronos2_daily_closes_dir") {
+        cfg.chronos2_daily_closes_dir = val;
+      } else if (key == "chronos2_model") {
+        cfg.chronos2_model = val;
+      } else if (key == "chronos2_context_len") {
+        cfg.chronos2_context_len = std::stoi(val);
+      } else if (key == "chronos2_prediction_len") {
+        cfg.chronos2_prediction_len = std::stoi(val);
+      } else if (key == "chronos2_max_annual_vol") {
+        cfg.chronos2_max_annual_vol = std::stod(val);
+      } else if (key == "chronos2_vol_lookback_days") {
+        cfg.chronos2_vol_lookback_days = std::stoi(val);
+      } else if (key == "chronos2_momentum_lookback_days") {
+        cfg.chronos2_momentum_lookback_days = std::stoi(val);
+      } else if (key == "chronos2_vol_floor") {
+        cfg.chronos2_vol_floor = std::stod(val);
+      } else if (key == "chronos2_reinvest_increment") {
+        cfg.chronos2_reinvest_increment = std::stod(val);
       }
     } catch (const std::exception& ex) {
       std::cerr << "Warning: invalid config entry '" << key << "'='" << val

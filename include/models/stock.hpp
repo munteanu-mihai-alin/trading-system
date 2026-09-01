@@ -70,6 +70,22 @@ struct Stock {
   bool active = false;
   bool shadow_active = false;
   int cooldown = 0;
+
+  // ==== Chronos-2 forecasting state ====
+  // Populated by Chronos2ExecutionEngine::load_chronos_predictions()
+  // once per trading day (from a Python subprocess that runs the
+  // pretrained pfnet/Amazon Chronos-2 model). Ignored by the default
+  // Hawkes+OU engine.
+  //
+  // predicted_price: mean forecast of next-day close.
+  // predicted_q25:   25th-percentile forecast (confidence check).
+  // realized_vol:    annualised std of daily log returns over
+  //                  chronos2_vol_lookback_days.
+  // momentum_5d:     (last_close - close_5d_ago) / close_5d_ago.
+  double predicted_price = 0.0;
+  double predicted_q25 = 0.0;
+  double realized_vol = 0.0;
+  double momentum_5d = 0.0;
 };
 
 }  // namespace hft

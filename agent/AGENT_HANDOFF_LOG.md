@@ -4,6 +4,162 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-08-24] - QC strategy iteration day: Chronos, TimesFM, Chronos-2, reinvest base, 4-way comparison #todo (mostly uncommitted)
+
+Model / agent:
+- Model: Claude Opus 4.7 (Anthropic), reasoning model
+- Provider/client: Claude Code on UCRT64
+
+Source state:
+- Hetzner main at `8939b58 added google timesfm and bolt` (pushed).
+  Windows local `main` still at `8d49ceb`; `research/quantconnect/`
+  is UNTRACKED on Windows -- QC work lives on Hetzner from git's POV.
+- Hetzner uncommitted: `research/quantconnect/main.py` (modified,
+  added Bolt + Chronos-2 imports) and
+  `research/quantconnect/Chronos2_MR_MultiFeature.py` (untracked new file).
+- Handoff log entries + `agent/HAWKES_OU_EXPLAINED.md` from prior
+  session already synced to Hetzner; commit them or squash into next
+  push.
+
+User direction: iterate hard on QC strategies. Started by fixing the
+Chronos backtest that never traded, added diagnostic logging, then
+built up a strategy zoo covering: Chronos v1 (with + without OU gate),
+TimesFM (with + without OU), Chronos-Bolt (multi-signal), Chronos-2
+(multi-feature). Also promoted reinvest logic from the variants into
+the base HawkesOU_MR file and reorganised names.
+
+Reference doc created earlier this window and now in the repo:
+`agent/HAWKES_OU_EXPLAINED.md` -- worked math + numerical examples for
+OU and Hawkes as implemented in the QC port. Includes the critical
+calibration note that Hawkes intensity collapses to binary at Minute
+cadence (beta * dt = 1200 -> memory term vanishes). Retune beta ~ 0.012
+for a one-bar half-life if you want the ranking to actually
+discriminate.
+
+### File map after today (research/quantconnect/):
+
+  Baseline family:
+    HawkesOU_MR.py               -- base, NOW includes reinvest schedule
+    HawkesOU_MR_Wide.py          -- was Reinvest_Wide, renamed;
+                                    STRATEGY_NAME="HawkesOU-MR-WideGate-Top5"
+    HawkesOU_MR_Open.py          -- was Reinvest_Open, renamed;
+                                    STRATEGY_NAME="HawkesOU-MR-NoGate"
+
+  SPY family (unrelated, from prior session):
+    SPY_Ladder.py, SPY_Ladder_Basket.py
+
+  ML variants (new this session):
+    ChronosOU_MR.py                  -- Chronos v1 + OU gate + fixed target
+    Chronos_MR_PredExit.py           -- Chronos v1, no OU, sell at model
+                                        predicted price (max() fallback
+                                        preserves never-sell-at-loss)
+    TimesFM_OU_MR.py                 -- TimesFM 200M + OU + fixed target
+                                        (batched daily forecast)
+    TimesFM_MR_PredExit.py           -- TimesFM, no OU, predicted-price exit
+    ChronosBolt_MR_MultiSignal.py    -- Chronos-Bolt (v2 arch, speed
+                                        upgrade), no OU, 4-filter gate:
+                                        predicted return, 25% quantile
+                                        confidence, vol cap, momentum
+    Chronos2_MR_MultiFeature.py      -- Chronos-2 (actual v2 gen, native
+                                        multivariate capability),
+                                        SAME strategy design as Bolt file
+                                        currently but wired univariate;
+                                        header notes where to enable true
+                                        model-level multivariate
+
+  Switch:
+    main.py -- imports all 10 strategies (9 commented, 1 active).
+                Uses sys.path.insert(0, ...) because QC free tier
+                doesn't put project dir on sys.path by default.
+
+### Key fixes applied to Chronos this session (against 2026 window):
+
+1. Chronos API `predict(context=...)` fails with "unexpected keyword
+   argument 'context'" in QC's installed version. Fix: pass positionally
+   `predict(context, prediction_length=..., num_samples=...)`.
+2. Warmup was `CHRONOS_CONTEXT_LEN + 10` CALENDAR days = ~52 trading
+   days, less than the 64 needed. Fix: `int(CHRONOS_CONTEXT_LEN * 1.6)
+   + 10` calendar days = ~72 trading days.
+3. Diagnostic logging added to `_run_daily_forecast` per-day counts +
+   top5/bot5 scores; then COMMENTED OUT (kept in code as toggle) once
+   confirmed working -- QC free tier caps logs at 10 KB/day.
+4. Chronos-Bolt uses `BaseChronosPipeline.predict_quantiles()` which
+   returns quantiles + mean without sampling -- much faster than v1.
+5. Chronos-2 loads via same `BaseChronosPipeline` (auto-detects
+   checkpoint type). Native multivariate is available at the model
+   level but this file uses univariate + strategy-level multi-signal
+   for reliability; extension path documented in header.
+
+### Backtest results collected today (all tp filters as noted):
+
+Windows compared: `2026-01-01 -> 2026-08-22` (~5-8 mo effective) and
+`2025-01-01 -> 2026-08-22` (~20 mo). Free tier compute occasionally
+truncates the tail of the longer window.
+
+  Config              | Trades | Net%   | Sharpe | PSR   | DD     | Alpha  | IR
+  ChronosOU 2026      |     58 |  27.4% |  2.18  | 70%   | 12.5%  | +35%   | 2.09
+  ChronosOU 2025-26   |     99 |  42.1% |  0.78  | 33%   | 20.0%  |  +8%   | 0.43
+  PredExit 2026       |     14 |  18.3% |  1.57  | 59%   | 12.4%  | +22%   | 1.01
+  PredExit 2025-26 *  |    127 | 114.9% |  1.95  | 78%   | 36.8%  | +34%   | 2.23
+
+  * = best overall by Sharpe / PSR / IR on the fair (20 mo) window.
+      PredExit uses tp=0.008 (0.8%) NOT 0.025, hence more trades.
+
+### Best strategy from today, with caveats:
+
+**PredExit-2025-26** dominates on fundability-relevant axes. But:
+- 36.8% DD blows every prop-firm cap (usually 10-12%).
+- Worst per-trade MAE = -$318 (60%+ of one lot underwater at its worst
+  before eventually recovering to target).
+- 100% win rate is still definitional (never-sell-at-loss). Unrealized
+  loss $-313 sitting open at end.
+- Only backtest; needs live paper + 2020/2022 stress test.
+
+### Suggested next actions (order-of-priority) for tomorrow:
+
+1. **Commit Hetzner state** to preserve today's work:
+     ssh hetzner 'cd /mnt/HC_Volume_105581071/trading-system && \
+       git add research/quantconnect/main.py \
+               research/quantconnect/Chronos2_MR_MultiFeature.py \
+               agent/AGENT_HANDOFF_LOG.md agent/HAWKES_OU_EXPLAINED.md && \
+       git status'
+   Review, then commit with a message like "add chronos-2 + multi-signal
+   variants; promote reinvest into base; docs".
+
+2. **Add stop loss to PredExit-2025-26** (best candidate).
+   Add hard exit at say `-1.5 * TARGET_PROFIT_PCT` from entry (or
+   absolute -5%). Realizes the losers, kills 100% win rate artifact,
+   caps DD. Ratios will drop but numbers become defensible.
+
+3. **Reduce position sizing** on PredExit to halve DD. Drop
+   `TRADE_NOTIONAL` from 500 to 250. Returns roughly halve; DD ~18%.
+   Still above 10% cap but closer.
+
+4. **Stress test through 2020-2022**. If PredExit holds Sharpe > 1
+   through COVID + rates shock, that's real evidence of edge. Otherwise
+   it's a benign-regime overfit.
+
+5. **Retune Hawkes beta** if going back to HawkesOU: use `beta ~ 0.012`
+   for a Minute-cadence one-bar half-life. Currently the intensity
+   collapses to binary. See `agent/HAWKES_OU_EXPLAINED.md` sec 3.4.
+
+6. **True Chronos-2 multivariate** (further out): feed price + volume +
+   vol as multivariate context to the model itself, not just as
+   strategy-level filters. Header of Chronos2_MR_MultiFeature.py flags
+   the wiring point.
+
+### Environment / operational notes:
+
+- Windows local doesn't track `research/quantconnect/`. Either
+  `git pull` from Hetzner to sync, or keep Windows purely as scratch.
+- QC free tier caps: 10 KB logs/day, 65 backtests remaining shown in
+  UI, occasional backtest truncation on long compute jobs.
+- Chronos-Bolt models are much faster than v1 (no MC sampling).
+  Chronos-2 available under `amazon/chronos-2`; loads via
+  `BaseChronosPipeline` which auto-detects.
+- TimesFM 200M is ~22x larger than Chronos-tiny; batched forecasting
+  keeps runtime OK. Package: `pip install timesfm`.
+
 ## [2026-08-22] - QuantConnect strategy ports (HawkesOU-MR family) #todo (uncommitted)
 
 Model / agent:
@@ -21,6 +177,16 @@ User direction: port this repo's C++ HFT engine to a QuantConnect Python
 strategy so it can be smoke-tested quickly without local infra. Iterate on
 the entry conditions and reinvestment logic to see whether a more permissive
 variant can push trade count up without wrecking the ratios.
+
+Theory source (Hawkes + OU framework used across the C++ engine AND the QC
+port):
+  Cartea, A., Jaimungal, S., Penalva, J. -- "Algorithmic and High-
+  Frequency Trading" (Cambridge University Press, 2015). Alvaro Cartea
+  is at Oxford (Mathematical Institute / Oxford-Man Institute of
+  Quantitative Finance). Book pairs Hawkes intensity for order-arrival
+  modelling with Ornstein-Uhlenbeck for mean-reverting price dynamics
+  in exactly the pattern this repo uses (Hawkes-ranked candidates,
+  OU-gated entries).
 
 What landed (all uncommitted, working-tree only):
 

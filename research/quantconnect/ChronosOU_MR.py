@@ -81,6 +81,16 @@ CHRONOS_CONTEXT_LEN = 64                    # daily closes fed to model
 CHRONOS_PREDICTION_LEN = 1                  # forecast horizon (days)
 CHRONOS_NUM_SAMPLES = 20                    # Monte Carlo samples
 
+# ==== Forecast-refresh policy ====
+# See Chronos_MH_Consensus.py header for full doc. Three modes:
+#   "always_daily"  -- always fire scheduled 10:15 AM trigger.
+#   "fresh_gate"    -- skip only if slots full AND predictions <
+#                      FORECAST_MAX_STALENESS_HOURS old.
+#   "on_slot_free"  -- skip scheduled trigger if slots full; force
+#                      immediate refresh on sell fill.
+FORECAST_REFRESH_POLICY = "on_slot_free"
+FORECAST_MAX_STALENESS_HOURS = 24.0
+
 TRAILING_STOP_PCT = 0.0
 
 BAR_RESOLUTION = Resolution.MINUTE
@@ -152,6 +162,10 @@ class HftChronosOuMR(QCAlgorithm):
         # Load Chronos once. Fail soft: if the package or model download
         # isn't available in this QC environment, the strategy still
         # loads and just doesn't trade (score stays at 0 for everyone).
+        # Stamped by _forecast_all_symbols; consulted by the
+        # "fresh_gate" refresh policy.
+        self.last_forecast_time = None
+
         self.chronos = None
         if _CHRONOS_AVAILABLE:
             try:
@@ -209,14 +223,27 @@ class HftChronosOuMR(QCAlgorithm):
     # ---- Chronos forecasting ----
 
     def _run_daily_forecast(self):
-        if self.chronos is None:
-            return
-        if self.is_warming_up:
-            return
-        # Skip inference entirely if we can't act on the results.
-        if not self._has_free_slot():
+        # Scheduled entry point. Policy-based decision on whether to
+        # invoke Chronos now. See FORECAST_REFRESH_POLICY docstring.
+        if self.chronos is None or self.is_warming_up:
             return
 
+        policy = FORECAST_REFRESH_POLICY
+        if policy == "always_daily":
+            pass
+        elif policy == "fresh_gate":
+            if not self._has_free_slot() and self._forecasts_are_fresh():
+                return
+        elif policy == "on_slot_free":
+            if not self._has_free_slot():
+                return
+
+        self._forecast_all_symbols()
+
+    def _forecast_all_symbols(self):
+        # Actual inference loop. Called from _run_daily_forecast and
+        # from on_order_event sell-fill under the "on_slot_free" policy.
+        #
         # Diagnostic counters -- uncomment along with the log block at
         # the bottom of this method to re-enable per-day summary logs.
         # n_scored = 0
@@ -268,6 +295,14 @@ class HftChronosOuMR(QCAlgorithm):
         #     f"scored={n_scored} positive={n_positive} failed={n_failed} "
         #     f"insufficient={n_insufficient} top5=[{top5_str}] bot5=[{bot5_str}]"
         # )
+
+        self.last_forecast_time = self.time
+
+    def _forecasts_are_fresh(self):
+        if self.last_forecast_time is None:
+            return False
+        age_hours = (self.time - self.last_forecast_time).total_seconds() / 3600.0
+        return age_hours <= FORECAST_MAX_STALENESS_HOURS
 
     # ---- OU trailing mean ----
 
@@ -373,3 +408,11 @@ class HftChronosOuMR(QCAlgorithm):
         else:
             st.entry_price = 0.0
             st.exit_ticket = None
+            # A slot just freed. Under "on_slot_free" the scheduled
+            # 10:15 AM trigger may not fire again for hours -- force a
+            # fresh forecast now so the next _route_entries call ranks
+            # on current, not stale, predictions.
+            if FORECAST_REFRESH_POLICY == "on_slot_free" \
+                    and self.chronos is not None \
+                    and not self.is_warming_up:
+                self._forecast_all_symbols()

@@ -69,6 +69,16 @@ CHRONOS_CONTEXT_LEN = 64
 CHRONOS_PREDICTION_LEN = 1
 CHRONOS_QUANTILES = [0.1, 0.25, 0.5, 0.75, 0.9]
 
+# ==== Forecast-refresh policy ====
+# See Chronos_MH_Consensus.py header for full doc. Three modes:
+#   "always_daily"  -- always fire scheduled 10:15 AM trigger.
+#   "fresh_gate"    -- skip only if slots full AND predictions <
+#                      FORECAST_MAX_STALENESS_HOURS old.
+#   "on_slot_free"  -- skip scheduled trigger if slots full; force
+#                      immediate refresh on sell fill.
+FORECAST_REFRESH_POLICY = "on_slot_free"
+FORECAST_MAX_STALENESS_HOURS = 24.0
+
 # Multi-signal thresholds
 MAX_ANNUAL_VOL = 0.80          # skip names with > 80% annualized vol
 VOL_LOOKBACK_DAYS = 20         # window for realized vol computation
@@ -132,6 +142,10 @@ class HftChronosBoltMrMultiSignal(QCAlgorithm):
         warmup_calendar_days = int(CHRONOS_CONTEXT_LEN * 1.6) + 10
         self.set_warm_up(timedelta(days=warmup_calendar_days))
 
+        # Stamped by _forecast_all_symbols; consulted by the
+        # "fresh_gate" refresh policy.
+        self.last_forecast_time = None
+
         self.pipeline = None
         if _CHRONOS_AVAILABLE:
             try:
@@ -178,12 +192,26 @@ class HftChronosBoltMrMultiSignal(QCAlgorithm):
     # ---- Daily forecast + auxiliary features ----
 
     def _run_daily_forecast(self):
+        # Scheduled entry point. Policy-based decision on whether to
+        # invoke Chronos now. See FORECAST_REFRESH_POLICY docstring.
         if self.pipeline is None or self.is_warming_up:
             return
-        # Skip inference entirely if we can't act on the results.
-        if not self._has_free_slot():
-            return
 
+        policy = FORECAST_REFRESH_POLICY
+        if policy == "always_daily":
+            pass
+        elif policy == "fresh_gate":
+            if not self._has_free_slot() and self._forecasts_are_fresh():
+                return
+        elif policy == "on_slot_free":
+            if not self._has_free_slot():
+                return
+
+        self._forecast_all_symbols()
+
+    def _forecast_all_symbols(self):
+        # Actual inference loop. Called from _run_daily_forecast and
+        # from on_order_event sell-fill under the "on_slot_free" policy.
         for symbol, st in self.symbols.items():
             history = st.daily_closes
             if len(history) < CHRONOS_CONTEXT_LEN or st.mid <= 0.0:
@@ -217,6 +245,14 @@ class HftChronosBoltMrMultiSignal(QCAlgorithm):
                 st.predicted_q25 = float(quantiles[0, 0, 1].item())
             except Exception:
                 pass  # keep stale prediction
+
+        self.last_forecast_time = self.time
+
+    def _forecasts_are_fresh(self):
+        if self.last_forecast_time is None:
+            return False
+        age_hours = (self.time - self.last_forecast_time).total_seconds() / 3600.0
+        return age_hours <= FORECAST_MAX_STALENESS_HOURS
 
     # ---- Composite scoring ----
 
@@ -322,3 +358,11 @@ class HftChronosBoltMrMultiSignal(QCAlgorithm):
         else:
             st.entry_price = 0.0
             st.exit_ticket = None
+            # A slot just freed. Under "on_slot_free" the scheduled
+            # 10:15 AM trigger may not fire again for hours -- force a
+            # fresh forecast now so the next _route_entries call ranks
+            # on current, not stale, predictions.
+            if FORECAST_REFRESH_POLICY == "on_slot_free" \
+                    and self.pipeline is not None \
+                    and not self.is_warming_up:
+                self._forecast_all_symbols()

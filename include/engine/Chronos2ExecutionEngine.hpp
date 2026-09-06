@@ -66,6 +66,11 @@ class Chronos2ExecutionEngine {
   void subscribe_live_books();
   void step(int t);
 
+  // Seed the internal order-id counter from the broker nextValidId
+  // (IBKR rejects ids below nextValidId). No-op for non-IBKR brokers;
+  // returns false only if an IBKR broker has not yet reported one.
+  bool sync_next_order_id_from_broker();
+
   // Diagnostics accessor for tests.
   [[nodiscard]] const std::unordered_map<std::string, OpenPositionState>&
   open_positions() const {

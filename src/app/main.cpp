@@ -47,7 +47,13 @@ int main() {
               << std::endl;
 
     std::unique_ptr<hft::IBroker> broker2;
-    if (cfg.mode == hft::BrokerMode::DatabentoBacktest) {
+    hft::IBKRClient* raw_ibkr2 = nullptr;
+    if (live_cfg.use_real_ibkr) {
+      std::cout << "Creating real IBKR broker for " << live_cfg.mode_name()
+                << " mode (Chronos2)" << std::endl;
+      broker2 = std::make_unique<hft::IBKRClient>();
+      raw_ibkr2 = static_cast<hft::IBKRClient*>(broker2.get());
+    } else if (cfg.mode == hft::BrokerMode::DatabentoBacktest) {
       std::cout << "Creating Databento backtest broker" << std::endl;
       broker2 = std::make_unique<hft::DatabentoBacktestBroker>(cfg);
     } else {
@@ -64,6 +70,32 @@ int main() {
       return 1;
     }
 
+    // IBKR live/paper: start the production reader loop, wait for the
+    // broker to hand us a nextValidId, then seed the engine order-id
+    // counter from it. IBKR rejects ids below nextValidId. Mirrors the
+    // default LiveExecutionEngine path.
+    if (raw_ibkr2 != nullptr) {
+      std::cout << "Starting IBKR reader loop (Chronos2)." << std::endl;
+      raw_ibkr2->start_production_event_loop();
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      while (raw_ibkr2->next_valid_order_id() <= 0 &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      if (raw_ibkr2->next_valid_order_id() <= 0) {
+        std::cerr << "IBKR did not provide nextValidId before timeout"
+                  << std::endl;
+        engine2.stop();
+        hl::set_app_state(hl::AppState::Fatal);
+        hl::shutdown_logging();
+        return 1;
+      }
+      engine2.sync_next_order_id_from_broker();
+      std::cout << "IBKR nextValidId=" << raw_ibkr2->next_valid_order_id()
+                << std::endl;
+    }
+
     // Universe: same source rules as the default engine (hard-coded
     // yen-window list; file-based override via symbol_universe_path
     // is TODO for the Chronos2 path).
@@ -73,9 +105,11 @@ int main() {
     engine2.subscribe_live_books();
 
     hl::set_app_state(hl::AppState::Live);
-    std::cout << "Running " << cfg.steps << " Chronos2 engine steps..."
+    const int chronos2_steps = hft::compute_effective_steps(
+        cfg.steps, cfg.steps_auto_from_broker, cfg.mode, 0);
+    std::cout << "Running " << chronos2_steps << " Chronos2 engine steps..."
               << std::endl;
-    for (int t = 0; t < cfg.steps; ++t) {
+    for (int t = 0; t < chronos2_steps; ++t) {
       engine2.step(t);
     }
     engine2.stop();

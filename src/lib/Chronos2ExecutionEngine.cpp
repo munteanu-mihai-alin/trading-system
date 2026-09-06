@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 
+#include "broker/IBKRClient.hpp"
 #include "broker/OrderLifecycle.hpp"
 
 namespace hft {
@@ -66,8 +67,7 @@ Chronos2ExecutionEngine::~Chronos2ExecutionEngine() {
 }
 
 bool Chronos2ExecutionEngine::start() {
-  if (!broker_->connect(cfg_.app.host, cfg_.app.paper_port,
-                        cfg_.app.client_id)) {
+  if (!broker_->connect(cfg_.app.host, cfg_.app.port(), cfg_.app.client_id)) {
     std::cerr << "[chronos2] broker connect failed" << std::endl;
     return false;
   }
@@ -82,6 +82,21 @@ void Chronos2ExecutionEngine::stop() {
   broker_->stop_event_loop();
   broker_->disconnect();
   started_ = false;
+}
+
+bool Chronos2ExecutionEngine::sync_next_order_id_from_broker() {
+  // IBKR assigns valid order ids from nextValidId; a self-started
+  // counter (1,2,3...) is rejected. For an IBKR broker, lift
+  // next_order_id_ to at least nextValidId. Backtest/sim brokers
+  // accept any id, so this is a no-op there.
+  auto* ibkr = dynamic_cast<IBKRClient*>(broker_.get());
+  if (ibkr == nullptr)
+    return true;
+  const int next_valid_id = ibkr->next_valid_order_id();
+  if (next_valid_id <= 0)
+    return false;
+  next_order_id_ = std::max(next_order_id_, next_valid_id);
+  return true;
 }
 
 void Chronos2ExecutionEngine::initialize_universe(

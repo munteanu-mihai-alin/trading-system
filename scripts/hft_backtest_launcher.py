@@ -158,6 +158,48 @@ def resolve_binary_for_job(
 # --------------------------------------------------------------- jobs
 
 
+def apply_config_overrides(
+    repo: Path, base_config: str, overrides: Dict[str, Any], job_id: str
+) -> str:
+    """Merges a job's `config_overrides` onto its base config and writes
+    the result to queue/merged/<id>.ini, returning that path (relative to
+    repo). The C++ AppConfig parses flat key=value lines regardless of
+    [section], so we replace an existing `key=` line in place or append
+    the key under a trailing [overrides] section. Returns base_config
+    unchanged when there are no overrides.
+    """
+    if not overrides:
+        return base_config
+    base_path = repo / base_config
+    if not base_path.is_file():
+        # Nothing to merge onto; leave the job's config as-is.
+        return base_config
+    lines = base_path.read_text().splitlines()
+    remaining = dict(overrides)
+    out: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        replaced = False
+        if "=" in stripped and not stripped.startswith("#") \
+                and not stripped.startswith("["):
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                out.append(f"{key}={remaining.pop(key)}")
+                replaced = True
+        if not replaced:
+            out.append(line)
+    if remaining:
+        out.append("")
+        out.append("[overrides]")
+        for key, val in remaining.items():
+            out.append(f"{key}={val}")
+    merged_dir = repo / "queue" / "merged"
+    merged_dir.mkdir(parents=True, exist_ok=True)
+    merged_path = merged_dir / f"{job_id}.ini"
+    merged_path.write_text("\n".join(out) + "\n")
+    return str(merged_path.relative_to(repo))
+
+
 def run_job(job: Dict[str, Any], repo: Path) -> Dict[str, Any]:
     """Spawns scripts/hft_backtest.sh for this job. Blocks until done.
 
@@ -166,6 +208,17 @@ def run_job(job: Dict[str, Any], repo: Path) -> Dict[str, Any]:
     bad job -- it records the failure and moves on to the next one.
     """
     started = time.time()
+
+    # Fold any config_overrides into a merged config passed via --config,
+    # so the app's dynamic config form actually takes effect (the base
+    # hft_backtest.sh only seds in --target).
+    effective_config = apply_config_overrides(
+        repo,
+        job.get("config", "config.databento_backtest.example.ini"),
+        job.get("config_overrides") or {},
+        str(job.get("id", "job")),
+    )
+
     args = [str(repo / "scripts" / "hft_backtest.sh")]
     for key, flag in (
         ("config", "--config"),
@@ -175,7 +228,7 @@ def run_job(job: Dict[str, Any], repo: Path) -> Dict[str, Any]:
         ("end", "--end"),
         ("symbols", "--symbols"),
     ):
-        v = job.get(key)
+        v = effective_config if key == "config" else job.get(key)
         if v is not None:
             args += [flag, str(v)]
     # Binary override: if the job pins a version, point the script at

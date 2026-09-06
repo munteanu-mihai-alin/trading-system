@@ -31,6 +31,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 # Annualisation: ~390 RTH minute-bars per day, ~252 trading days per year.
@@ -341,13 +342,15 @@ def compute_time_weighted_equity(
     if master_ts.empty:
         return pd.DataFrame()
 
-    # Per-symbol mid series indexed by ts.
-    mid_by_symbol = {
-        sym: _l1_mid(l1_by_symbol[sym]) for sym in held_symbols
-        if sym in l1_by_symbol and not l1_by_symbol[sym].empty
-    }
+    # Vectorised over the master timestamp grid. The previous
+    # implementation looped Python-side over every (timestamp x trip)
+    # pair, which is O(millions x trips) and took ~10 min on a
+    # 49-symbol run. Same output, computed with numpy searchsorted +
+    # masks instead.
+    master_arr = np.asarray(master_ts, dtype="int64")
+    n = master_arr.shape[0]
 
-    # Realised PnL timeline.
+    # Realised: cumulative closed PnL, step-held at each close ts.
     closed_events = []
     for t, pnl in zip(trips, net_pnl):
         if t.open_at_end:
@@ -355,44 +358,60 @@ def compute_time_weighted_equity(
         ts = t.sell_market_ts_ns if t.sell_market_ts_ns is not None else t.sell_ts_ns
         if ts is None:
             continue
-        closed_events.append((ts, pnl))
+        closed_events.append((int(ts), pnl))
     closed_events.sort()
-    closed_ts = pd.Series(
-        [e[1] for e in closed_events],
-        index=[e[0] for e in closed_events],
-    ).cumsum() if closed_events else pd.Series(dtype=float)
+    realized = np.zeros(n, dtype=float)
+    if closed_events:
+        ev_ts = np.array([e[0] for e in closed_events], dtype="int64")
+        ev_cum = np.cumsum(np.array([e[1] for e in closed_events], dtype=float))
+        # Index of the last close with ev_ts <= ts (or -1 => nothing yet).
+        idx = np.searchsorted(ev_ts, master_arr, side="right") - 1
+        ok = idx >= 0
+        realized[ok] = ev_cum[idx[ok]]
 
-    rows = []
-    for ts in master_ts:
-        # Realised cumulative at ts: largest closed event <= ts.
-        if not closed_ts.empty:
-            realized = float(closed_ts.loc[:ts].iloc[-1]) \
-                if (closed_ts.index <= ts).any() else 0.0
-        else:
-            realized = 0.0
+    # Per-symbol mid aligned onto the master grid once (last mid at-or-
+    # before each master ts), reused across every trip on that symbol.
+    aligned_mid: Dict[str, np.ndarray] = {}
+    for sym in held_symbols:
+        l1 = l1_by_symbol.get(sym)
+        if l1 is None or l1.empty:
+            continue
+        mid = _l1_mid(l1)
+        if mid.empty:
+            continue
+        mid = mid[~mid.index.duplicated(keep="last")].sort_index()
+        mi = np.asarray(mid.index, dtype="int64")
+        mv = np.asarray(mid.values, dtype=float)
+        pos = np.searchsorted(mi, master_arr, side="right") - 1
+        col = np.full(n, np.nan, dtype=float)
+        ok = pos >= 0
+        col[ok] = mv[pos[ok]]
+        aligned_mid[sym] = col
 
-        # Unrealized: sum of (mid_at_ts - entry) * qty for positions currently
-        # open at ts (buy_ts <= ts AND (no sell yet OR sell_ts > ts)).
-        unreal = 0.0
-        for t in trips:
-            buy_ts = t.buy_market_ts_ns
-            sell_ts = t.sell_market_ts_ns
-            if buy_ts is None or buy_ts > ts:
-                continue
-            if sell_ts is not None and sell_ts <= ts:
-                continue
-            mid_s = mid_by_symbol.get(t.symbol)
-            if mid_s is None or mid_s.empty:
-                continue
-            # Latest mid at-or-before ts.
-            mask = mid_s.index <= ts
-            if not mask.any():
-                continue
-            mid_at_ts = float(mid_s.values[mask.argmax() if False else int(mask.sum()) - 1])
-            unreal += (mid_at_ts - t.entry_price) * t.qty
-        rows.append({"ts_ns": int(ts), "realized": realized,
-                     "unrealized": unreal, "total": realized + unreal})
-    df = pd.DataFrame(rows)
+    # Unrealised: sum over open positions of (mid - entry) * qty, where a
+    # position is open at ts iff buy_ts <= ts < sell_ts (sell_ts = +inf
+    # for still-open positions).
+    unreal = np.zeros(n, dtype=float)
+    for t in trips:
+        buy_ts = t.buy_market_ts_ns
+        if buy_ts is None:
+            continue
+        col = aligned_mid.get(t.symbol)
+        if col is None:
+            continue
+        mask = master_arr >= int(buy_ts)
+        if t.sell_market_ts_ns is not None:
+            mask &= master_arr < int(t.sell_market_ts_ns)
+        contrib = np.where(mask, (col - t.entry_price) * t.qty, 0.0)
+        unreal += np.nan_to_num(contrib, nan=0.0)
+
+    total = realized + unreal
+    df = pd.DataFrame({
+        "ts_ns": master_arr,
+        "realized": realized,
+        "unrealized": unreal,
+        "total": total,
+    })
     df["ts"] = pd.to_datetime(df["ts_ns"], unit="ns", utc=True)
     return df
 
@@ -1177,6 +1196,25 @@ def main(argv: List[str]) -> int:
     # never overwrites the markdown.
     write_metrics_html(metrics, trips, net_pnl, cfg, plots_dir,
                        run_dir / "report.html")
+
+    # QuantConnect-format result (qc_result.json) for the mobile app and
+    # any cross-strategy tooling. Reuses everything already computed here
+    # so it costs nothing extra; failure is non-fatal (the run's own
+    # metrics.json/report.html are the source of truth). tw_equity is not
+    # in scope (compute_metrics builds it internally), so charts fall back
+    # to the per-trip realized equity curve.
+    try:
+        import qc_report
+        qc = qc_report.assemble(
+            trips=trips, net_pnl=net_pnl, metrics=metrics,
+            equity=equity, tw_equity=pd.DataFrame(),
+            l1_by_symbol=l1_by_symbol, cfg=cfg, orders=orders,
+        )
+        (run_dir / "qc_result.json").write_text(
+            json.dumps(qc, indent=2) + "\n", encoding="utf-8"
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail the run over this
+        print(f"plot_run: qc_result.json skipped: {exc}", file=sys.stderr)
 
     print(f"plot_run: wrote {len(symbols)} symbol plot(s) + metrics to {run_dir}")
     return 0

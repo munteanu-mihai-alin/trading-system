@@ -195,6 +195,7 @@ def get_run(run_id: str, req: Request):
         "metrics": metrics,
         "orders_head": orders_head,
         "has_report_html": (d / "report.html").is_file(),
+        "has_qc": (d / "qc_result.json").is_file(),
     }
 
 
@@ -399,6 +400,280 @@ def _send_signal_to_hft_app(signal: str) -> Dict[str, Any]:
         return {"sent_to": pids, "signal": signal}
     except FileNotFoundError:
         return {"sent_to": [], "reason": "pgrep / kill unavailable"}
+
+
+# --------------------------------------------------------- config schema
+#
+# Drives the app's dynamic config form. Base knobs apply to every
+# strategy; per-branch knobs are appended only when the selected
+# binary's branch matches -- so the app shows "only configs available
+# for that branch" (the user's requirement). A field descriptor is
+# {key, label, type, default, section, [options], [help]}.
+
+_BASE_CONFIG_SCHEMA: List[Dict[str, Any]] = [
+    {"key": "run_label", "label": "Label", "type": "string", "default": "",
+     "section": "run"},
+    {"key": "databento_start", "label": "Start (UTC)", "type": "datetime",
+     "default": "", "section": "window"},
+    {"key": "databento_end", "label": "End (UTC)", "type": "datetime",
+     "default": "", "section": "window"},
+    {"key": "symbol_universe_path", "label": "Universe file", "type": "string",
+     "default": "config/symbols_yen.txt", "section": "universe"},
+    {"key": "universe_size", "label": "Universe size", "type": "int",
+     "default": 49, "section": "universe"},
+    {"key": "top_k", "label": "Top K", "type": "int", "default": 3,
+     "section": "universe"},
+    {"key": "target_profit_pct", "label": "Target profit %", "type": "float",
+     "default": 0.008, "section": "strategy",
+     "help": "Sell target and the minimum forecast to enter."},
+    {"key": "trade_notional", "label": "Per-slot $", "type": "int",
+     "default": 500, "section": "sizing"},
+    {"key": "account_budget", "label": "Account budget $", "type": "int",
+     "default": 1500, "section": "sizing"},
+    {"key": "entry_limit_mode", "label": "Entry limit", "type": "enum",
+     "default": "ask", "options": ["ask", "mid"], "section": "execution"},
+    {"key": "order_enabled", "label": "Place orders", "type": "bool",
+     "default": True, "section": "execution",
+     "help": "Off = dry run (decisions logged, no orders placed)."},
+    {"key": "commission_per_share", "label": "Commission/share", "type": "float",
+     "default": 0.0035, "section": "costs"},
+    {"key": "commission_min_per_order", "label": "Commission min/order",
+     "type": "float", "default": 0.35, "section": "costs"},
+    {"key": "half_spread_cost", "label": "Half-spread cost", "type": "float",
+     "default": 0.0005, "section": "costs"},
+    {"key": "impact_coefficient", "label": "Impact coeff", "type": "float",
+     "default": 0.1, "section": "costs"},
+]
+
+# Extra knobs unlocked per branch. Keyed by the branch name recorded in
+# a binary's manifest (bin/versions/<v>/binary.json {"branch": ...}).
+_BRANCH_CONFIG_SCHEMA: Dict[str, List[Dict[str, Any]]] = {
+    "chronos2-mr-pred-exit": [
+        {"key": "strategy_mode", "label": "Strategy", "type": "const",
+         "default": "chronos2_mr_pred_exit", "section": "strategy"},
+        {"key": "chronos2_model", "label": "Chronos-2 model", "type": "string",
+         "default": "amazon/chronos-2", "section": "chronos2"},
+        {"key": "chronos2_context_len", "label": "Context len", "type": "int",
+         "default": 64, "section": "chronos2"},
+        {"key": "chronos2_prediction_len", "label": "Prediction len",
+         "type": "int", "default": 1, "section": "chronos2"},
+        {"key": "chronos2_max_annual_vol", "label": "Max annual vol",
+         "type": "float", "default": 0.80, "section": "chronos2"},
+        {"key": "chronos2_vol_floor", "label": "Vol floor", "type": "float",
+         "default": 0.05, "section": "chronos2"},
+        {"key": "chronos2_reinvest_increment", "label": "Reinvest step $",
+         "type": "int", "default": 500, "section": "chronos2"},
+    ],
+}
+
+
+def _config_schema_for_branch(branch: Optional[str]) -> List[Dict[str, Any]]:
+    schema = list(_BASE_CONFIG_SCHEMA)
+    if branch and branch in _BRANCH_CONFIG_SCHEMA:
+        schema += _BRANCH_CONFIG_SCHEMA[branch]
+    return schema
+
+
+def _list_binaries() -> List[Dict[str, Any]]:
+    """Enumerates runnable binaries: the default bin/hft_app plus every
+    bin/versions/<version>/. Each carries an optional binary.json
+    manifest {branch, description, built_at, commit}; when absent we
+    report branch=None and the base config schema only.
+    """
+    out: List[Dict[str, Any]] = []
+    bin_dir = REPO_ROOT / "bin"
+
+    def _manifest(d: Path) -> Dict[str, Any]:
+        mf = d / "binary.json"
+        if mf.is_file():
+            try:
+                return json.loads(mf.read_text())
+            except Exception:
+                return {}
+        return {}
+
+    # The current default binary.
+    default_bin = bin_dir / "hft_app"
+    if default_bin.exists():
+        mf = _manifest(bin_dir)
+        branch = mf.get("branch")
+        out.append({
+            "version": "current",
+            "is_default": True,
+            "branch": branch,
+            "description": mf.get("description", "default bin/hft_app"),
+            "built_at": mf.get("built_at"),
+            "commit": mf.get("commit"),
+            "config_schema": _config_schema_for_branch(branch),
+        })
+
+    versions_dir = bin_dir / "versions"
+    if versions_dir.is_dir():
+        for d in sorted(versions_dir.iterdir(), reverse=True):
+            if not d.is_dir() or not (d / "hft_app").exists():
+                continue
+            mf = _manifest(d)
+            branch = mf.get("branch")
+            out.append({
+                "version": d.name,
+                "is_default": False,
+                "branch": branch,
+                "description": mf.get("description", d.name),
+                "built_at": mf.get("built_at"),
+                "commit": mf.get("commit"),
+                "config_schema": _config_schema_for_branch(branch),
+            })
+    return out
+
+
+@app.get("/binaries")
+def list_binaries(req: Request):
+    """Runnable binaries + each one's branch and config schema, so the
+    app can offer branch selection and show only the configs that branch
+    supports."""
+    _require_token(req)
+    return {"binaries": _list_binaries()}
+
+
+@app.get("/runs/{run_id}/qc")
+def get_run_qc(run_id: str, req: Request):
+    """Serves the QuantConnect-format result document for a run."""
+    _require_token(req)
+    if "/" in run_id or run_id.startswith(".."):
+        raise HTTPException(status_code=400, detail="bad id")
+    qc = RUNS_DIR / run_id / "qc_result.json"
+    if not qc.is_file():
+        raise HTTPException(status_code=404, detail="qc_result.json not found")
+    try:
+        return json.loads(qc.read_text())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"parse error: {exc}")
+
+
+# ------------------------------------------------------------ live launch
+#
+# Starts the engine against the IB Gateway (paper 4002 / live 4001) via
+# the hft_app systemd unit. Guarded: paper needs confirm=true, live
+# needs confirm=true AND confirm_live=true, and we refuse to start if the
+# gateway socket for that mode isn't accepting connections.
+
+def _gateway_reachable(port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+@app.post("/live/start")
+def live_start(payload: Dict[str, Any], req: Request):
+    """Start live/paper trading.
+
+    Body:
+      {
+        "mode": "paper" | "live",
+        "confirm": true,                  # required
+        "confirm_live": true,             # required when mode == "live"
+        "binary_version": "v14"           # optional; swaps bin/hft_app
+      }
+    Refuses if the IB Gateway socket for the mode isn't up, or if an
+    hft_app is already running.
+    """
+    _require_token(req)
+    mode = str(payload.get("mode", "paper")).lower()
+    if mode not in ("paper", "live"):
+        raise HTTPException(status_code=400, detail="mode must be paper|live")
+    if not payload.get("confirm"):
+        raise HTTPException(status_code=400, detail="confirm=true required")
+    if mode == "live" and not payload.get("confirm_live"):
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_live=true required to start LIVE trading",
+        )
+
+    # Refuse to double-start.
+    running = subprocess.run(
+        ["pgrep", "-f", HFT_APP_PATTERN],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    if running:
+        raise HTTPException(status_code=409, detail="hft_app already running")
+
+    port = 4001 if mode == "live" else 4002
+    if not _gateway_reachable(port):
+        raise HTTPException(
+            status_code=503,
+            detail=f"IB Gateway not reachable on 127.0.0.1:{port} "
+                   f"(mode={mode}); is hft_ibgateway up and logged in?",
+        )
+
+    # Optional binary swap: point bin/hft_app at the chosen version.
+    version = payload.get("binary_version")
+    if version and version != "current":
+        target = REPO_ROOT / "bin" / "versions" / version / "hft_app"
+        if not target.exists():
+            raise HTTPException(status_code=404,
+                                detail=f"binary_version {version} not found")
+        link = REPO_ROOT / "bin" / "hft_app"
+        try:
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(target)
+        except Exception as exc:
+            raise HTTPException(status_code=500,
+                                detail=f"binary swap failed: {exc}")
+
+    # Point config.ini at the right IBKR mode, then start the unit.
+    _set_broker_mode(mode)
+    try:
+        subprocess.run(["systemctl", "start", "hft_app"],
+                       capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"systemctl start failed: {exc.stderr}")
+    return {"started": True, "mode": mode, "port": port,
+            "binary_version": version or "current"}
+
+
+@app.post("/live/stop")
+def live_stop(req: Request):
+    """Stop the engine (systemctl stop hft_app). For an emergency
+    freeze/flatten while keeping the process up, use /kill or /liquidate
+    instead."""
+    _require_token(req)
+    try:
+        subprocess.run(["systemctl", "stop", "hft_app"],
+                       capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"systemctl stop failed: {exc.stderr}")
+    return {"stopped": True}
+
+
+def _set_broker_mode(mode: str) -> None:
+    """Rewrites the [broker] mode + paper/live port in config.ini so the
+    engine connects to the IB Gateway for the requested mode. Minimal
+    line edit -- leaves every other config line untouched."""
+    cfg_path = REPO_ROOT / "config.ini"
+    if not cfg_path.is_file():
+        return
+    lines = cfg_path.read_text().splitlines()
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("mode=") and (
+            "backtest" in stripped or "paper" in stripped or "live" in stripped
+            or "sim" in stripped
+        ):
+            out.append("mode=ibkr_paper" if mode == "paper" else "mode=live")
+        elif stripped.startswith("paper_port="):
+            out.append("paper_port=4002")
+        elif stripped.startswith("live_port="):
+            out.append("live_port=4001")
+        else:
+            out.append(line)
+    cfg_path.write_text("\n".join(out) + "\n")
 
 
 @app.post("/chat")

@@ -525,10 +525,6 @@ double Chronos2ExecutionEngine::committed_notional() const {
   return total;
 }
 
-bool Chronos2ExecutionEngine::has_free_slot() const {
-  return committed_notional() + cfg_.app.trade_notional <= effective_budget();
-}
-
 // ---- Helpers ----
 
 int Chronos2ExecutionEngine::portfolio_index_for_symbol(

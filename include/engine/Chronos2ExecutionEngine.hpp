@@ -99,7 +99,6 @@ class Chronos2ExecutionEngine {
   int effective_top_k() const;
   double effective_budget() const;
   double committed_notional() const;
-  bool has_free_slot() const;
 
   // ---- Helpers ----
   int portfolio_index_for_symbol(const std::string& symbol) const;

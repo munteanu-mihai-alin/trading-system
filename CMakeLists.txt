@@ -20,10 +20,8 @@ set(HFT_INCLUDE_DIRS
 set(LIB_SOURCES
   src/lib/AppConfig.cpp
   src/lib/DatabentoBacktestBroker.cpp
-  src/lib/RankingEngine.cpp
   src/lib/IBKRClient.cpp
   src/lib/kill_signals.cpp
-  src/lib/LiveExecutionEngine.cpp
   src/lib/Chronos2ExecutionEngine.cpp
   src/lib/RealIBKRTransport.cpp
   src/lib/SymbolUniverse.cpp
@@ -48,7 +46,6 @@ add_executable(hft_tests
   tests/math/TestMathModels.cpp
   tests/sim/TestSimulator.cpp
   tests/validation/TestValidation.cpp
-  tests/module/TestBrokerIntegration.cpp
 )
 target_link_libraries(hft_tests PRIVATE hft_lib)
 
@@ -279,7 +276,6 @@ add_executable(hft_gtests
   tests/unit/CacheFilenameTest.cpp
   tests/unit/EffectiveStepsTest.cpp
   tests/unit/IBKRClientTest.cpp
-  tests/unit/LiveExecutionEngineTest.cpp
 )
 target_link_libraries(hft_gtests PRIVATE
   hft_lib

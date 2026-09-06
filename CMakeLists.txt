@@ -260,7 +260,12 @@ endif()
 # Cycle-per-op benchmarks (Linux/x86_64 only). Vendored harness from
 # hftu-challenges; see benchmarks/CMakeLists.txt for the full layout.
 # ---------------------------------------------------------------------------
-add_subdirectory(benchmarks)
+# benchmarks/ is an optional vendored harness that is not tracked in
+# the repo; only descend into it when present so a fresh CI checkout
+# (which has no benchmarks/) still configures.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/CMakeLists.txt")
+  add_subdirectory(benchmarks)
+endif()
 
 # New unit/module test binary. Lives alongside the legacy hft_tests target;
 # both are registered with CTest. Phase 0 ships only a smoke test that

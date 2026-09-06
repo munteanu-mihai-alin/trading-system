@@ -43,7 +43,8 @@ int main() {
   // path below.
   if (cfg.strategy_mode == "chronos2_mr_pred_exit") {
     std::cout << "Dispatching to Chronos2ExecutionEngine "
-                 "(chronos2_mr_pred_exit strategy)" << std::endl;
+                 "(chronos2_mr_pred_exit strategy)"
+              << std::endl;
 
     std::unique_ptr<hft::IBroker> broker2;
     if (cfg.mode == hft::BrokerMode::DatabentoBacktest) {
@@ -67,8 +68,7 @@ int main() {
     // yen-window list; file-based override via symbol_universe_path
     // is TODO for the Chronos2 path).
     const int uni_size = std::clamp(
-        cfg.universe_size, 0,
-        static_cast<int>(hft::kSymbolCompanyList.size()));
+        cfg.universe_size, 0, static_cast<int>(hft::kSymbolCompanyList.size()));
     engine2.initialize_universe(hft::kSymbolCompanyList, uni_size);
     engine2.subscribe_live_books();
 

@@ -187,11 +187,11 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
       } else if (key == "databento_end") {
         cfg.databento_end = val;
 
-      // ---- Strategy dispatch ----
+        // ---- Strategy dispatch ----
       } else if (key == "strategy_mode") {
         cfg.strategy_mode = val;
 
-      // ---- Chronos-2 forecast bridge ----
+        // ---- Chronos-2 forecast bridge ----
       } else if (key == "chronos2_python") {
         cfg.chronos2_python = val;
       } else if (key == "chronos2_forecast_script") {

@@ -25,7 +25,8 @@ namespace {
 std::string quote(const std::string& s) {
   std::string out = "\"";
   for (char c : s) {
-    if (c == '"' || c == '\\') out.push_back('\\');
+    if (c == '"' || c == '\\')
+      out.push_back('\\');
     out.push_back(c);
   }
   out.push_back('"');
@@ -46,7 +47,8 @@ std::string today_yyyymmdd() {
 }
 
 double sanitize(double x) {
-  if (!std::isfinite(x)) return 0.0;
+  if (!std::isfinite(x))
+    return 0.0;
   return x;
 }
 
@@ -59,7 +61,8 @@ Chronos2ExecutionEngine::Chronos2ExecutionEngine(
 }
 
 Chronos2ExecutionEngine::~Chronos2ExecutionEngine() {
-  if (started_) stop();
+  if (started_)
+    stop();
 }
 
 bool Chronos2ExecutionEngine::start() {
@@ -74,7 +77,8 @@ bool Chronos2ExecutionEngine::start() {
 }
 
 void Chronos2ExecutionEngine::stop() {
-  if (!started_) return;
+  if (!started_)
+    return;
   broker_->stop_event_loop();
   broker_->disconnect();
   started_ = false;
@@ -110,7 +114,8 @@ void Chronos2ExecutionEngine::step(int t) {
   reconcile_broker_state();
   refresh_order_state();
 
-  if (!cfg_.app.order_enabled) return;
+  if (!cfg_.app.order_enabled)
+    return;
 
   update_daily_close_history();
   maybe_load_chronos_predictions();
@@ -128,7 +133,8 @@ void Chronos2ExecutionEngine::reconcile_broker_state() {
   for (std::size_t i = 0; i < portfolio_.items.size(); ++i) {
     const int ticker_id = static_cast<int>(i) + 1;
     const auto top = broker_->snapshot_top_of_book(ticker_id);
-    if (!top.valid()) continue;
+    if (!top.valid())
+      continue;
     auto& s = portfolio_.items[i];
     s.bid_price = top.bid_price;
     s.ask_price = top.ask_price;
@@ -147,12 +153,16 @@ void Chronos2ExecutionEngine::reconcile_broker_state() {
 
 void Chronos2ExecutionEngine::refresh_order_state() {
   const auto* lifecycle = broker_->order_lifecycle();
-  if (!lifecycle) return;
+  if (!lifecycle)
+    return;
 
   // Buy fills: scan pending entry orders.
   for (auto it = entry_orders_.begin(); it != entry_orders_.end();) {
     const auto* state = lifecycle->get(it->first);
-    if (!state) { ++it; continue; }
+    if (!state) {
+      ++it;
+      continue;
+    }
     if (state->status == OrderLifecycleStatus::Filled) {
       handle_buy_fill(it->first, state->avg_fill_price, state->filled_qty);
       it = entry_orders_.erase(it);
@@ -168,7 +178,10 @@ void Chronos2ExecutionEngine::refresh_order_state() {
   for (auto it = exit_order_symbols_.begin();
        it != exit_order_symbols_.end();) {
     const auto* state = lifecycle->get(it->first);
-    if (!state) { ++it; continue; }
+    if (!state) {
+      ++it;
+      continue;
+    }
     if (state->status == OrderLifecycleStatus::Filled) {
       handle_sell_fill(it->first, state->avg_fill_price, state->filled_qty);
       it = exit_order_symbols_.erase(it);
@@ -186,11 +199,11 @@ void Chronos2ExecutionEngine::refresh_order_state() {
   }
 }
 
-void Chronos2ExecutionEngine::handle_buy_fill(int order_id,
-                                              double fill_price,
+void Chronos2ExecutionEngine::handle_buy_fill(int order_id, double fill_price,
                                               double filled_qty) {
   auto oit = entry_orders_.find(order_id);
-  if (oit == entry_orders_.end()) return;
+  if (oit == entry_orders_.end())
+    return;
   const std::string symbol = oit->second.symbol;
 
   OpenPositionState pos;
@@ -207,18 +220,18 @@ void Chronos2ExecutionEngine::handle_buy_fill(int order_id,
   open_positions_[symbol] = pos;
 }
 
-void Chronos2ExecutionEngine::handle_sell_fill(int order_id,
-                                               double fill_price,
+void Chronos2ExecutionEngine::handle_sell_fill(int order_id, double fill_price,
                                                double filled_qty) {
   (void)order_id;
   auto sit = exit_order_symbols_.find(order_id);
-  if (sit == exit_order_symbols_.end()) return;
+  if (sit == exit_order_symbols_.end())
+    return;
   const std::string symbol = sit->second;
 
   auto pit = open_positions_.find(symbol);
   if (pit != open_positions_.end()) {
     const double entry = pit->second.entry_price;
-    const double px    = fill_price > 0.0 ? fill_price : pit->second.sell_limit;
+    const double px = fill_price > 0.0 ? fill_price : pit->second.sell_limit;
     realized_pnl_ += (px - entry) * filled_qty;
     open_positions_.erase(pit);
   }
@@ -241,12 +254,14 @@ void Chronos2ExecutionEngine::update_daily_close_history() {
   // Use "date" key change; if day is same, still no-op.
   static thread_local std::string last_day;
   const std::string today = today_yyyymmdd();
-  if (today == last_day) return;
+  if (today == last_day)
+    return;
   last_day = today;
 
   const int cap = std::max(1, cfg_.app.chronos2_context_len * 2);
   for (const auto& s : portfolio_.items) {
-    if (s.mid <= 0.0) continue;
+    if (s.mid <= 0.0)
+      continue;
     auto& hist = daily_closes_[s.symbol];
     hist.push_back(s.mid);
     if (static_cast<int>(hist.size()) > cap) {
@@ -257,22 +272,27 @@ void Chronos2ExecutionEngine::update_daily_close_history() {
 
 void Chronos2ExecutionEngine::maybe_load_chronos_predictions() {
   const std::string today = today_yyyymmdd();
-  if (today == last_load_yyyymmdd_) return;
+  if (today == last_load_yyyymmdd_)
+    return;
 
   // Skip until we have at least CHRONOS_CONTEXT_LEN closes for something.
   const int need = cfg_.app.chronos2_context_len;
   bool any_ready = false;
   for (const auto& kv : daily_closes_) {
-    if (static_cast<int>(kv.second.size()) >= need) { any_ready = true; break; }
+    if (static_cast<int>(kv.second.size()) >= need) {
+      any_ready = true;
+      break;
+    }
   }
-  if (!any_ready) return;
+  if (!any_ready)
+    return;
 
   std::filesystem::create_directories(cfg_.app.chronos2_daily_closes_dir);
   std::filesystem::create_directories(cfg_.app.chronos2_predictions_dir);
-  const std::string in_csv  = cfg_.app.chronos2_daily_closes_dir +
-                              "/history_" + today + ".csv";
-  const std::string out_csv = cfg_.app.chronos2_predictions_dir +
-                              "/predictions_" + today + ".csv";
+  const std::string in_csv =
+      cfg_.app.chronos2_daily_closes_dir + "/history_" + today + ".csv";
+  const std::string out_csv =
+      cfg_.app.chronos2_predictions_dir + "/predictions_" + today + ".csv";
 
   write_daily_closes_csv(in_csv);
   const int rc = spawn_chronos_forecast(in_csv, out_csv);
@@ -288,7 +308,8 @@ void Chronos2ExecutionEngine::maybe_load_chronos_predictions() {
 void Chronos2ExecutionEngine::write_daily_closes_csv(
     const std::string& out_path) const {
   std::ofstream f(out_path);
-  if (!f) return;
+  if (!f)
+    return;
   f << "symbol,date,close\n";
   // Reconstruct a fake date per row (relative index) -- Python side
   // sorts by (symbol, date) but doesn't otherwise use the value, so
@@ -308,49 +329,57 @@ int Chronos2ExecutionEngine::spawn_chronos_forecast(
     const std::string& in_csv, const std::string& out_csv) const {
   std::ostringstream cmd;
   cmd << quote(cfg_.app.chronos2_python) << ' '
-      << quote(cfg_.app.chronos2_forecast_script)
-      << " --history-csv " << quote(in_csv)
-      << " --output "      << quote(out_csv)
-      << " --model "       << quote(cfg_.app.chronos2_model)
-      << " --context-len " << cfg_.app.chronos2_context_len
-      << " --prediction-len " << cfg_.app.chronos2_prediction_len
-      << " --vol-lookback " << cfg_.app.chronos2_vol_lookback_days
-      << " --momentum-lookback " << cfg_.app.chronos2_momentum_lookback_days;
+      << quote(cfg_.app.chronos2_forecast_script) << " --history-csv "
+      << quote(in_csv) << " --output " << quote(out_csv) << " --model "
+      << quote(cfg_.app.chronos2_model) << " --context-len "
+      << cfg_.app.chronos2_context_len << " --prediction-len "
+      << cfg_.app.chronos2_prediction_len << " --vol-lookback "
+      << cfg_.app.chronos2_vol_lookback_days << " --momentum-lookback "
+      << cfg_.app.chronos2_momentum_lookback_days;
   return std::system(cmd.str().c_str());
 }
 
 void Chronos2ExecutionEngine::read_predictions_csv(const std::string& path) {
   std::ifstream f(path);
-  if (!f) return;
+  if (!f)
+    return;
 
   std::string header;
-  if (!std::getline(f, header)) return;
+  if (!std::getline(f, header))
+    return;
   // Expected header: symbol,predicted_price,predicted_q25,realized_vol,momentum_5d
 
   std::string line;
   while (std::getline(f, line)) {
-    if (line.empty()) continue;
+    if (line.empty())
+      continue;
     std::stringstream ss(line);
     std::string sym, pp, pq, vol, mom;
-    if (!std::getline(ss, sym, ',')) continue;
-    if (!std::getline(ss, pp,  ',')) continue;
-    if (!std::getline(ss, pq,  ',')) continue;
-    if (!std::getline(ss, vol, ',')) continue;
-    if (!std::getline(ss, mom, ',')) continue;
+    if (!std::getline(ss, sym, ','))
+      continue;
+    if (!std::getline(ss, pp, ','))
+      continue;
+    if (!std::getline(ss, pq, ','))
+      continue;
+    if (!std::getline(ss, vol, ','))
+      continue;
+    if (!std::getline(ss, mom, ','))
+      continue;
 
     const int idx = portfolio_index_for_symbol(sym);
-    if (idx < 0) continue;
+    if (idx < 0)
+      continue;
     auto& s = portfolio_.items[idx];
     try {
       s.predicted_price = sanitize(std::stod(pp));
-      s.predicted_q25   = sanitize(std::stod(pq));
-      s.realized_vol    = sanitize(std::stod(vol));
-      s.momentum_5d     = sanitize(std::stod(mom));
+      s.predicted_q25 = sanitize(std::stod(pq));
+      s.realized_vol = sanitize(std::stod(vol));
+      s.momentum_5d = sanitize(std::stod(mom));
     } catch (const std::exception&) {
       s.predicted_price = 0.0;
-      s.predicted_q25   = 0.0;
-      s.realized_vol    = 0.0;
-      s.momentum_5d     = 0.0;
+      s.predicted_q25 = 0.0;
+      s.realized_vol = 0.0;
+      s.momentum_5d = 0.0;
     }
   }
 }
@@ -371,41 +400,53 @@ void Chronos2ExecutionEngine::compute_composite_scores() {
 }
 
 void Chronos2ExecutionEngine::route_entries() {
-  const int top_k    = effective_top_k();
-  const double bud   = effective_budget();
-  double committed   = committed_notional();
+  const int top_k = effective_top_k();
+  const double bud = effective_budget();
+  double committed = committed_notional();
   int considered = 0;
 
   for (const int idx : portfolio_.ranked_indices) {
-    if (considered++ >= top_k) break;
+    if (considered++ >= top_k)
+      break;
     const auto& s = portfolio_.items[idx];
-    if (open_positions_.count(s.symbol) > 0) continue;
+    if (open_positions_.count(s.symbol) > 0)
+      continue;
     // Also skip if we already have a pending entry for this symbol.
     bool pending = false;
     for (const auto& kv : entry_orders_) {
-      if (kv.second.symbol == s.symbol) { pending = true; break; }
+      if (kv.second.symbol == s.symbol) {
+        pending = true;
+        break;
+      }
     }
-    if (pending) continue;
-    if (s.mid <= 0.0 || s.predicted_price <= 0.0) continue;
+    if (pending)
+      continue;
+    if (s.mid <= 0.0 || s.predicted_price <= 0.0)
+      continue;
 
     // ---- Chronos-2 entry filters (mirror Python) ----
     const double predicted_ret = (s.predicted_price - s.mid) / s.mid;
-    const double q25_ret       = s.predicted_q25 > 0.0
-                                     ? (s.predicted_q25 - s.mid) / s.mid
-                                     : 0.0;
-    if (predicted_ret < cfg_.app.target_profit_pct) continue;
-    if (q25_ret <= 0.0) continue;
-    if (s.realized_vol > cfg_.app.chronos2_max_annual_vol) continue;
-    if (s.momentum_5d < 0.0) continue;
+    const double q25_ret =
+        s.predicted_q25 > 0.0 ? (s.predicted_q25 - s.mid) / s.mid : 0.0;
+    if (predicted_ret < cfg_.app.target_profit_pct)
+      continue;
+    if (q25_ret <= 0.0)
+      continue;
+    if (s.realized_vol > cfg_.app.chronos2_max_annual_vol)
+      continue;
+    if (s.momentum_5d < 0.0)
+      continue;
 
     // Budget gate.
-    if (committed + cfg_.app.trade_notional > bud) break;
+    if (committed + cfg_.app.trade_notional > bud)
+      break;
 
     // Size + place a marketable limit at the current ask.
     const double px = s.ask_price > 0.0 ? s.ask_price : s.mid;
-    const int qty = static_cast<int>(std::floor(
-        cfg_.app.trade_notional / std::max(1e-9, px)));
-    if (qty <= 0) continue;
+    const int qty = static_cast<int>(
+        std::floor(cfg_.app.trade_notional / std::max(1e-9, px)));
+    if (qty <= 0)
+      continue;
 
     OrderRequest req;
     req.id = next_order_id_++;
@@ -423,17 +464,20 @@ void Chronos2ExecutionEngine::route_entries() {
 void Chronos2ExecutionEngine::route_exit_orders() {
   for (auto& kv : open_positions_) {
     auto& pos = kv.second;
-    if (pos.qty <= 0.0) continue;
-    if (pos.sell_order_id != 0) continue;  // sell already working
+    if (pos.qty <= 0.0)
+      continue;
+    if (pos.sell_order_id != 0)
+      continue;  // sell already working
 
     const int idx = portfolio_index_for_symbol(pos.symbol);
-    if (idx < 0) continue;
+    if (idx < 0)
+      continue;
     const auto& s = portfolio_.items[idx];
 
     // Chronos-driven target with never-sell-at-loss fallback:
     //   target = max(predicted_price, entry * (1 + target_profit_pct))
-    const double fallback = pos.entry_price *
-                            (1.0 + std::max(0.0, cfg_.app.target_profit_pct));
+    const double fallback =
+        pos.entry_price * (1.0 + std::max(0.0, cfg_.app.target_profit_pct));
     double target = fallback;
     if (pos.predicted_price_at_fill > 0.0) {
       target = std::max(pos.predicted_price_at_fill, fallback);
@@ -460,7 +504,8 @@ void Chronos2ExecutionEngine::route_exit_orders() {
 int Chronos2ExecutionEngine::effective_top_k() const {
   const double inc = cfg_.app.chronos2_reinvest_increment;
   const int base = cfg_.app.top_k > 0 ? cfg_.app.top_k : 3;
-  if (inc <= 0.0) return base;
+  if (inc <= 0.0)
+    return base;
   const int gained = static_cast<int>(std::floor(bonus_budget_ / inc));
   return base + gained;
 }
@@ -481,8 +526,7 @@ double Chronos2ExecutionEngine::committed_notional() const {
 }
 
 bool Chronos2ExecutionEngine::has_free_slot() const {
-  return committed_notional() + cfg_.app.trade_notional <=
-         effective_budget();
+  return committed_notional() + cfg_.app.trade_notional <= effective_budget();
 }
 
 // ---- Helpers ----
@@ -490,7 +534,8 @@ bool Chronos2ExecutionEngine::has_free_slot() const {
 int Chronos2ExecutionEngine::portfolio_index_for_symbol(
     const std::string& symbol) const {
   for (std::size_t i = 0; i < portfolio_.items.size(); ++i) {
-    if (portfolio_.items[i].symbol == symbol) return static_cast<int>(i);
+    if (portfolio_.items[i].symbol == symbol)
+      return static_cast<int>(i);
   }
   return -1;
 }

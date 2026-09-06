@@ -68,7 +68,9 @@ class Chronos2ExecutionEngine {
 
   // Diagnostics accessor for tests.
   [[nodiscard]] const std::unordered_map<std::string, OpenPositionState>&
-  open_positions() const { return open_positions_; }
+  open_positions() const {
+    return open_positions_;
+  }
   [[nodiscard]] double realized_pnl() const { return realized_pnl_; }
   [[nodiscard]] double bonus_budget() const { return bonus_budget_; }
 
@@ -78,8 +80,8 @@ class Chronos2ExecutionEngine {
   // chronos2_forecast.py, reads predictions back into portfolio.items.
   void maybe_load_chronos_predictions();
   void write_daily_closes_csv(const std::string& out_path) const;
-  int  spawn_chronos_forecast(const std::string& in_csv,
-                              const std::string& out_csv) const;
+  int spawn_chronos_forecast(const std::string& in_csv,
+                             const std::string& out_csv) const;
   void read_predictions_csv(const std::string& path);
 
   // ---- Scoring + routing ----
@@ -94,13 +96,13 @@ class Chronos2ExecutionEngine {
   void handle_sell_fill(int order_id, double fill_price, double filled_qty);
 
   // ---- Reinvest schedule + capacity ----
-  int    effective_top_k() const;
+  int effective_top_k() const;
   double effective_budget() const;
   double committed_notional() const;
-  bool   has_free_slot() const;
+  bool has_free_slot() const;
 
   // ---- Helpers ----
-  int  portfolio_index_for_symbol(const std::string& symbol) const;
+  int portfolio_index_for_symbol(const std::string& symbol) const;
   void update_daily_close_history();
 
   LiveTradingConfig cfg_;
@@ -112,9 +114,9 @@ class Chronos2ExecutionEngine {
 
   // Order + position tracking.
   int next_order_id_ = 1;
-  std::unordered_map<int, EntryOrderState>         entry_orders_;
+  std::unordered_map<int, EntryOrderState> entry_orders_;
   std::unordered_map<std::string, OpenPositionState> open_positions_;
-  std::unordered_map<int, std::string>             exit_order_symbols_;
+  std::unordered_map<int, std::string> exit_order_symbols_;
 
   // Rolling per-symbol daily-close history (used to build the Python
   // input CSV). Keyed by symbol; last N closes only, capped at
@@ -128,7 +130,8 @@ class Chronos2ExecutionEngine {
   // Reinvest budget bump. Grows by chronos2_reinvest_increment for
   // every full increment of realized profit crossed. Never shrinks.
   double bonus_budget_ = 0.0;
-  double next_reinvest_threshold_ = 0.0;  // set = chronos2_reinvest_increment in start()
+  double next_reinvest_threshold_ =
+      0.0;  // set = chronos2_reinvest_increment in start()
 
   bool started_ = false;
 };

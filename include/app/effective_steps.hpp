@@ -22,6 +22,7 @@
 // for the forensic walkthrough.
 
 #include <algorithm>
+#include <climits>  // INT_MAX
 
 #include "config/AppConfig.hpp"
 
@@ -44,6 +45,16 @@ namespace hft {
                                                  bool auto_from_broker,
                                                  BrokerMode mode,
                                                  int broker_max) {
+  // steps<=0 means "run until stopped" for live/paper: return a very
+  // large ceiling so the outer loop effectively runs until SIGTERM /
+  // the app's Stop instead of exiting after a fixed count. Without this
+  // a live/paper session ends the moment it finishes cfg.steps (e.g.
+  // 8.5M steps completes in ~9 min on sparse paper data, which looked
+  // like the engine "randomly stopping"). Excluded for DatabentoBacktest,
+  // where a non-positive step count is a config error, not an infinite
+  // run.
+  if (cfg_steps <= 0 && mode != BrokerMode::DatabentoBacktest)
+    return INT_MAX;
   if (!auto_from_broker)
     return cfg_steps;
   if (mode != BrokerMode::DatabentoBacktest)

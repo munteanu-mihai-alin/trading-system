@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build-and-test:
@@ -66,6 +67,32 @@ jobs:
         with:
           name: trading-system-linux-bin
           path: artifacts/trading-system-linux-bin.tar.gz
+
+      # Publish the engine binary as a self-contained container image to
+      # GitHub Packages (ghcr.io), tagged by branch and branch-sha. The
+      # image bundles hft_app + its vendored .so deps so it never depends
+      # on host library paths. Only on pushes to the tracked branches.
+      - name: Publish hft_app image to ghcr
+        if: >-
+          github.event_name == 'push' &&
+          (github.ref_name == 'main' ||
+           github.ref_name == 'chronos2-mr-pred-exit')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p image/lib
+          cp build/hft_app image/hft_app
+          cp -a dependencies/linux/install/lib/*.so* image/lib/ 2>/dev/null || true
+          cp docker/hft_app.Dockerfile image/Dockerfile
+          IMG="ghcr.io/${{ github.repository }}/hft_app"
+          SHA="$(git rev-parse --short HEAD)"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build -t "$IMG:${{ github.ref_name }}" \
+                       -t "$IMG:${{ github.ref_name }}-$SHA" image/
+          docker push "$IMG:${{ github.ref_name }}"
+          docker push "$IMG:${{ github.ref_name }}-$SHA"
+          echo "Published $IMG:${{ github.ref_name }} and :${{ github.ref_name }}-$SHA"
 
       - name: Test
         run: |

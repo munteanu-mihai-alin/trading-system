@@ -522,19 +522,27 @@ def compute_metrics(
         sum(holding_min(t) for t, _ in closed) / n_closed if n_closed else 0.0
     )
 
-    # Per-trade Sharpe (kept for back-compat). Sortino/Calmar are recomputed
-    # below from the time-weighted equity curve, which actually contains
-    # negative excursions (mark-to-market drawdowns on open positions and
-    # underwater stretches on closed trades).
+    # Per-trade Sharpe. This is kept only as a diagnostic: with the
+    # always-win exit the per-trade return series is all-positive and
+    # tightly clustered, so its std is tiny and this ratio explodes to
+    # implausible values (e.g. 20+). The headline sharpe_ratio_annualized
+    # below is recomputed from the time-weighted equity curve so it sits
+    # on the SAME mark-to-market basis as Sortino/Calmar and the two are
+    # comparable.
     if account_budget > 0 and n_closed:
         rets = [pnl / account_budget for _, pnl in closed]
         mean_r = sum(rets) / len(rets)
         var_r = sum((r - mean_r) ** 2 for r in rets) / len(rets)
         std_r = math.sqrt(var_r)
         trades_per_year = MINUTES_PER_YEAR / max(avg_holding_min, 1.0)
-        sharpe = (mean_r / std_r) * math.sqrt(trades_per_year) if std_r > 0 else 0.0
+        sharpe_per_trade = (
+            (mean_r / std_r) * math.sqrt(trades_per_year) if std_r > 0 else 0.0
+        )
     else:
-        sharpe = 0.0
+        sharpe_per_trade = 0.0
+    # Headline Sharpe: filled in from tw_equity below; falls back to the
+    # per-trade figure only when no L1 / time-weighted curve is available.
+    sharpe = sharpe_per_trade
 
     # Time-weighted equity curve including mark-to-market unrealized.
     # This is the "honest" equity. max-drawdown, Sortino, Calmar use this.
@@ -552,6 +560,11 @@ def compute_metrics(
             dstd = float(downside.std()) if len(downside) > 1 else 0.0
             sortino = ((mean_r / dstd) * math.sqrt(MINUTES_PER_YEAR)
                        if dstd > 0 else 0.0)
+            # Headline Sharpe on the same mark-to-market, per-minute basis
+            # as Sortino -- so the two are directly comparable instead of
+            # differing by orders of magnitude.
+            sharpe = ((mean_r / std_r) * math.sqrt(MINUTES_PER_YEAR)
+                      if std_r > 0 else 0.0)
             # Time-window total return as % of budget, annualised.
             window_days = (tw_equity["ts_ns"].iat[-1]
                            - tw_equity["ts_ns"].iat[0]) / 86_400_000_000_000.0
@@ -636,6 +649,9 @@ def compute_metrics(
         ),
         "max_drawdown_dollars": round(max_dd_dollars, 4),
         "sharpe_ratio_annualized": round(sharpe, 4),
+        # Diagnostic only -- inflated by the all-positive per-trade return
+        # series under the always-win exit. Not the headline number.
+        "sharpe_ratio_per_trade": round(sharpe_per_trade, 4),
         "sortino_ratio_annualized": round(sortino, 4),
         "calmar_ratio": round(calmar, 4),
         "avg_holding_minutes": round(avg_holding_min, 2),

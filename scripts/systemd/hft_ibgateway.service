@@ -4,16 +4,20 @@
 #
 #   * Credentials come from Docker secrets (files under /etc/hft/, mode
 #     600, root-only), never from plain env on the command line.
-#   * The API socket is published ONLY to host loopback
-#     (127.0.0.1:4002 paper / 4001 live) -- never the public interface.
-#     The C++ engine connects to 127.0.0.1:4002 exactly as it does
-#     against a local TWS on the dev laptop.
+#   * Runs with --network host so the gateway's API sees the engine's
+#     connection as real 127.0.0.1. jts.ini pins TrustedIPs=127.0.0.1;
+#     with docker bridge networking + port publishing the engine's
+#     connection arrives from the bridge IP and the gateway rejects it
+#     ("connection closed by remote"). Host networking makes
+#     127.0.0.1:4002 (paper) / 4001 (live) genuine loopback for both
+#     sides, exactly like a local TWS on the laptop.
+#   * Not exposed publicly: TrustedIPs restricts the API to localhost,
+#     and UFW does not open 4001/4002 on any interface.
 #   * --cap-drop=ALL, no new privileges, capped memory.
 #
 # Egress filtering was considered and dropped: IBKR's server IPs rotate,
 # so an allowlist risks intermittently breaking the trading connection
-# -- worse than the exfiltration risk it would mitigate. The container
-# runs on the default docker bridge.
+# -- worse than the exfiltration risk it would mitigate.
 #
 # The image is built from scripts/ibgateway/Dockerfile (see the
 # install steps in that directory). This unit assumes the image is
@@ -35,11 +39,10 @@ ExecStartPre=-/usr/bin/docker rm -f hft-ibgateway
 EnvironmentFile=/etc/hft/ibkr.env
 
 ExecStart=/usr/bin/docker run --rm --name hft-ibgateway \
+    --network host \
     --cap-drop=ALL \
     --security-opt no-new-privileges \
     --memory=1500m \
-    -p 127.0.0.1:4002:4002 \
-    -p 127.0.0.1:4001:4001 \
     -e TRADING_MODE=${TRADING_MODE} \
     -e TWS_USERID_FILE=/run/secrets/ibkr_user \
     -e TWS_PASSWORD_FILE=/run/secrets/ibkr_password \

@@ -7,43 +7,13 @@
 #include "execution/fill_model.hpp"
 #include "execution/latency_model.hpp"
 #include "execution/score.hpp"
-#include "models/hawkes.hpp"
 #include "models/l2_book.hpp"
 #include "models/micro.hpp"
-#include "models/ou.hpp"
 #include "models/stock.hpp"
 #include "sim/queue_tracker.hpp"
 #include "validation/validation.hpp"
 
 using namespace hft;
-
-HFT_TEST(test_hawkes_event_increases_lambda) {
-  Hawkes h;
-  const double before = h.lambda;
-  h.update(0.1, 1);
-  hft::test::require(h.lambda > before,
-                     "hawkes intensity should increase after event");
-}
-
-HFT_TEST(test_hawkes_decays_toward_mu_without_event) {
-  Hawkes h;
-  h.lambda = 25.0;
-  const double next = h.one_step_decay(0.1);
-  hft::test::require(next < h.lambda,
-                     "hawkes should decay toward baseline without event");
-  hft::test::require(
-      next > h.mu,
-      "hawkes decay should stay above baseline if starting above baseline");
-}
-
-HFT_TEST(test_ou_moves_toward_mean) {
-  OUState s;
-  s.x = 90.0;
-  s.mu = 100.0;
-  const double before = s.x;
-  s.step(0.1);
-  hft::test::require(s.x > before, "OU state below mean should move upward");
-}
 
 HFT_TEST(test_fill_probability_in_unit_interval) {
   FillModel m;
@@ -87,14 +57,6 @@ HFT_TEST(test_imbalance_positive_and_negative_paths) {
                      "higher bid volume should mean positive imbalance");
   hft::test::require(imbalance(100.0, 200.0) < 0.0,
                      "higher ask volume should mean negative imbalance");
-}
-
-HFT_TEST(test_ou_update_moves_toward_observed) {
-  OUState s;
-  s.x = 100.0;
-  update_ou(s, 110.0);
-  hft::test::require(s.x > 100.0,
-                     "ou update should move toward higher observed value");
 }
 
 HFT_TEST(test_fill_probability_increases_when_distance_grows_cross_branch) {
@@ -217,24 +179,6 @@ HFT_TEST(test_latency_model_mean_defaults_then_updates) {
   l.record(4.0);
   hft::test::require_close(l.mean_latency(), 3.0, 1e-12,
                            "mean latency should average samples");
-}
-
-HFT_TEST(test_hawkes_decay_rises_toward_mu_when_below_baseline) {
-  Hawkes h;
-  h.lambda = 2.0;
-  const double next = h.one_step_decay(0.1);
-  hft::test::require(
-      next > h.lambda,
-      "hawkes decay should move upward toward baseline when below mu");
-}
-
-HFT_TEST(test_ou_moves_downward_when_above_mean) {
-  OUState s;
-  s.x = 110.0;
-  s.mu = 100.0;
-  const double before = s.x;
-  s.step(0.1);
-  hft::test::require(s.x < before, "OU state above mean should move downward");
 }
 
 HFT_TEST(test_queue_tracker_clamps_negative_queue_to_zero) {

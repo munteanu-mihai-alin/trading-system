@@ -32,23 +32,6 @@ struct AppConfig {
   // rank_weights below. score_weighted falls back to equal when total
   // active score is non-positive.
   std::string position_sizing_rule = "equal";
-  // Ornstein-Uhlenbeck mean-reversion entry gate. Two parameterisations:
-  //   - ou_halflife_seconds > 0 (preferred): dt-weighted EWMA where the
-  //     half-life is in wall-clock seconds, consistent across symbols of
-  //     different trade rates.
-  //   - ou_window_size > 0 (legacy): sample-count EWMA where alpha =
-  //     1/ou_window_size. Used only when ou_halflife_seconds <= 0.
-  // Gate fires when ou_halflife_seconds > 0 OR ou_window_size > 0; the buy
-  // path skips symbols where mid > ou.mu * (1 + ou_buy_threshold_pct).
-  int ou_window_size = 0;
-  double ou_halflife_seconds = 0.0;
-  double ou_buy_threshold_pct = 0.0;
-  // When true, LiveExecutionEngine subscribes to IBKR AllLast trade prints
-  // for the live universe and drives the Stock::hawkes intensity from real
-  // trade events (dt between consecutive trades on the symbol). When false,
-  // Hawkes stays on RankingEngine's synthetic event clock. Default false
-  // so existing tests and configs are unaffected.
-  bool hawkes_use_real_trades = false;
   // Backtest-only "decision trace" log: when non-empty, the engine writes a
   // CSV row per ranked symbol on every buy decision, capturing the score,
   // score_tilt, Hawkes lambdas, hit_count, OU mu, mid, best_limit, and
@@ -167,26 +150,6 @@ struct AppConfig {
   // overrides cfg.steps to that value at startup. Prevents wasting CPU
   // on 98% of steps where L1/L2 are frozen past the data window's end.
   bool steps_auto_from_broker = false;
-  // Hawkes intensity proxy driven by L1 mid changes (a tactical proxy
-  // for trade-event arrivals in backtest, where no real trade prints
-  // are available). When > 0, reconcile_broker_state fires a Hawkes
-  // event each time s.mid moves by at least this many bps relative to
-  // the last firing. Default 0 = disabled. The original
-  // synthetic-event clock in RankingEngine continues to drive Hawkes
-  // unless hawkes_use_real_trades=true (live IBKR) or this is > 0.
-  double hawkes_mid_change_threshold_bps = 0.0;
-  // Empirical "+target_pct hit-count" buy-side ranking tilt. Per-symbol
-  // counter of historical price-increase windows that hit the target
-  // return, multiplicatively tilting the ranking score. Disabled by
-  // default; opt-in via hit_count_enabled. Horizon is the window length
-  // in seconds; baseline is the hit-count divisor for the tilt; tilt
-  // floors/ceilings clamp the resulting multiplier.
-  bool hit_count_enabled = false;
-  double hit_count_target_pct = 0.008;
-  double hit_count_horizon_seconds = 60.0;
-  double hit_count_baseline = 5.0;
-  double hit_count_tilt_min = 1.0;
-  double hit_count_tilt_max = 3.0;
   int max_open_symbols = 3;
   int max_orders_per_run = 0;
   int max_orders_per_symbol = 0;

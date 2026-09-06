@@ -184,10 +184,12 @@ def get_run(run_id: str, req: Request):
     orders_file = d / "orders.csv"
     if orders_file.is_file():
         try:
+            import itertools
             with orders_file.open() as f:
-                orders_head = [next(f).rstrip() for _ in range(50)]
-        except StopIteration:
-            pass
+                # islice never raises StopIteration mid-comprehension the
+                # way `next()` in a range loop does -- that bug left
+                # orders_head empty for any run with fewer than 50 lines.
+                orders_head = [ln.rstrip() for ln in itertools.islice(f, 50)]
         except Exception:
             pass
     return {
@@ -649,6 +651,183 @@ def live_stop(req: Request):
         raise HTTPException(status_code=500,
                             detail=f"systemctl stop failed: {exc.stderr}")
     return {"stopped": True}
+
+
+# ------------------------------------------------- live orders/positions
+
+def _config_map() -> Dict[str, str]:
+    """Flat key=value view of config.ini (section headers ignored, which
+    matches how the C++ AppConfig parses it)."""
+    out: Dict[str, str] = {}
+    cfg_path = REPO_ROOT / "config.ini"
+    if cfg_path.is_file():
+        for line in cfg_path.read_text().splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and not s.startswith("[") and "=" in s:
+                k, v = s.split("=", 1)
+                out[k.strip()] = v.strip()
+    return out
+
+
+def _read_csv_rows(path: Path) -> List[Dict[str, str]]:
+    """Parses one of the engine's CSVs, tolerating the `# session_*`
+    comment markers and a header line that repeats after each marker."""
+    import csv
+    import io
+    if not path.is_file():
+        return []
+    body = "".join(
+        ln for ln in path.read_text().splitlines(keepends=True)
+        if not ln.startswith("#")
+    )
+    if not body.strip():
+        return []
+    reader = csv.DictReader(io.StringIO(body))
+    rows: List[Dict[str, str]] = []
+    for r in reader:
+        if r.get("ts_ns") == "ts_ns":   # repeated header
+            continue
+        rows.append(r)
+    return rows
+
+
+def _latest_mid_by_symbol(path: Path) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for r in _read_csv_rows(path):
+        sym = r.get("symbol")
+        try:
+            out[sym] = float(r["mid"])
+        except (KeyError, ValueError, TypeError):
+            continue
+    return out
+
+
+@app.get("/live/orders")
+def live_orders(req: Request):
+    """Live/paper session orders, open positions (with the target/predicted
+    exit price), and a small stats block derived from the engine's
+    order + decision logs.
+
+    open_positions[].target_price is the model's predicted exit: the
+    limit of the resting sell for that symbol when one exists (that is
+    the Chronos-2 predicted price, or the OU/target the Hawkes engine
+    computed), else entry * (1 + target_profit_pct).
+    """
+    _require_token(req)
+    cfg = _config_map()
+    orders_path = REPO_ROOT / cfg.get("order_log_path", "reports/orders.csv")
+    dec_path = REPO_ROOT / cfg.get("decision_log_path", "reports/decisions.csv")
+    target_pct = float(cfg.get("target_profit_pct", 0.008))
+    per_share = float(cfg.get("commission_per_share", 0.0035))
+    min_order = float(cfg.get("commission_min_per_order", 0.35))
+
+    rows = _read_csv_rows(orders_path)
+
+    def _ts(r: Dict[str, str]) -> int:
+        try:
+            return int(r["ts_ns"])
+        except (KeyError, ValueError):
+            return 0
+
+    def _iso(ns: int) -> Optional[str]:
+        if ns <= 0:
+            return None
+        import datetime as _dt
+        return _dt.datetime.fromtimestamp(
+            ns / 1e9, tz=_dt.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Latest sell-order limit per symbol = the predicted/target exit.
+    sell_limit: Dict[str, float] = {}
+    for r in rows:
+        if r.get("side") == "sell":
+            try:
+                sell_limit[r["symbol"]] = float(r["limit"])
+            except (KeyError, ValueError):
+                pass
+
+    filled = sorted(
+        (r for r in rows if r.get("event") == "filled"), key=_ts
+    )
+    open_by_symbol: Dict[str, Dict[str, float]] = {}
+    realized = 0.0
+    n_closed = 0
+    wins = 0
+    for r in filled:
+        sym, side = r.get("symbol"), r.get("side")
+        try:
+            qty = float(r["filled_qty"])
+            px = float(r["avg_fill_price"])
+        except (KeyError, ValueError):
+            continue
+        if side == "buy":
+            open_by_symbol[sym] = {"qty": qty, "entry": px}
+        elif side == "sell" and sym in open_by_symbol:
+            e = open_by_symbol.pop(sym)
+            comm = 2 * max(per_share * e["qty"], min_order)
+            pnl = (px - e["entry"]) * e["qty"] - comm
+            realized += pnl
+            n_closed += 1
+            if pnl > 0:
+                wins += 1
+
+    last_mid = _latest_mid_by_symbol(dec_path)
+    open_positions = []
+    unrealized_total = 0.0
+    for sym, e in open_by_symbol.items():
+        target = sell_limit.get(sym, e["entry"] * (1.0 + target_pct))
+        mid = last_mid.get(sym)
+        unreal = (mid - e["entry"]) * e["qty"] if mid is not None else None
+        if unreal is not None:
+            unrealized_total += unreal
+        open_positions.append({
+            "symbol": sym,
+            "qty": e["qty"],
+            "entry_price": round(e["entry"], 4),
+            "target_price": round(target, 4),
+            "predicted_upside_pct": round(
+                (target - e["entry"]) / e["entry"] * 100.0, 3
+            ) if e["entry"] else None,
+            "last_mid": round(mid, 4) if mid is not None else None,
+            "unrealized": round(unreal, 2) if unreal is not None else None,
+        })
+    open_positions.sort(key=lambda p: p["symbol"])
+
+    recent = []
+    for r in sorted(rows, key=_ts, reverse=True)[:40]:
+        try:
+            recent.append({
+                "ts": _iso(_ts(r)),
+                "order_id": r.get("order_id"),
+                "symbol": r.get("symbol"),
+                "side": r.get("side"),
+                "event": r.get("event"),
+                "qty": float(r["qty"]) if r.get("qty") else None,
+                "limit": float(r["limit"]) if r.get("limit") else None,
+                "fill_price": float(r["avg_fill_price"])
+                if r.get("avg_fill_price") not in (None, "", "0")
+                else None,
+            })
+        except (ValueError, TypeError):
+            continue
+
+    n_buys = sum(1 for r in filled if r.get("side") == "buy")
+    n_sells = sum(1 for r in filled if r.get("side") == "sell")
+    return {
+        "stats": {
+            "realized_pnl": round(realized, 2),
+            "unrealized_pnl": round(unrealized_total, 2),
+            "net_pnl": round(realized + unrealized_total, 2),
+            "open_positions": len(open_positions),
+            "closed_round_trips": n_closed,
+            "win_rate": round(wins / n_closed, 4) if n_closed else None,
+            "filled_buys": n_buys,
+            "filled_sells": n_sells,
+            "total_orders": len(rows),
+        },
+        "open_positions": open_positions,
+        "orders": recent,
+    }
 
 
 def _set_broker_mode(mode: str) -> None:

@@ -1,0 +1,56 @@
+# IB Gateway (Interactive Brokers API gateway) running in a locally
+# built Docker container. Holds live brokerage credentials, so it is
+# locked down:
+#
+#   * Credentials come from Docker secrets (files under /etc/hft/, mode
+#     600, root-only), never from plain env on the command line.
+#   * The API socket is published ONLY to host loopback
+#     (127.0.0.1:4002 paper / 4001 live) -- never the public interface.
+#     The C++ engine connects to 127.0.0.1:4002 exactly as it does
+#     against a local TWS on the dev laptop.
+#   * --cap-drop=ALL, no new privileges, capped memory.
+#
+# Egress filtering was considered and dropped: IBKR's server IPs rotate,
+# so an allowlist risks intermittently breaking the trading connection
+# -- worse than the exfiltration risk it would mitigate. The container
+# runs on the default docker bridge.
+#
+# The image is built from scripts/ibgateway/Dockerfile (see the
+# install steps in that directory). This unit assumes the image is
+# already built and tagged hft/ibgateway:local.
+
+[Unit]
+Description=IB Gateway (IBKR API) container for HFT engine
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Clean any stale container from a hard crash.
+ExecStartPre=-/usr/bin/docker rm -f hft-ibgateway
+
+# TRADING_MODE is read from /etc/hft/ibkr.env (paper|live). Credentials
+# are mounted as secret files, not env vars.
+EnvironmentFile=/etc/hft/ibkr.env
+
+ExecStart=/usr/bin/docker run --rm --name hft-ibgateway \
+    --cap-drop=ALL \
+    --security-opt no-new-privileges \
+    --memory=1500m \
+    -p 127.0.0.1:4002:4002 \
+    -p 127.0.0.1:4001:4001 \
+    -e TRADING_MODE=${TRADING_MODE} \
+    -e TWS_USERID_FILE=/run/secrets/ibkr_user \
+    -e TWS_PASSWORD_FILE=/run/secrets/ibkr_password \
+    -v /etc/hft/ibkr_user:/run/secrets/ibkr_user:ro \
+    -v /etc/hft/ibkr_password:/run/secrets/ibkr_password:ro \
+    hft/ibgateway:local
+
+ExecStop=/usr/bin/docker stop hft-ibgateway
+
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

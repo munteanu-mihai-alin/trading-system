@@ -267,19 +267,15 @@ struct AppConfig {
   std::string databento_start;
   std::string databento_end;
 
-  // ==== Strategy dispatch ====
+  // ==== Strategy label ====
   //
-  // main.cpp reads this to decide which execution engine to
-  // instantiate. Values:
-  //   "hawkes_ou_mr"          -- default; the existing
-  //                              LiveExecutionEngine with Hawkes
-  //                              ranking + OU gate + fixed target.
-  //   "chronos2_mr_pred_exit" -- Chronos2ExecutionEngine: predicted-
-  //                              return ranking with vol/momentum
-  //                              filters, exit at
-  //                              max(predicted_price, entry*(1+target)),
-  //                              reinvest-slot schedule.
-  std::string strategy_mode = "hawkes_ou_mr";
+  // The engine is always Chronos-MR-PredExit now (the hawkes/OU engine
+  // was removed): predicted-return ranking with vol/momentum filters,
+  // exit at max(predicted_price, entry*(1+target)), reinvest-slot
+  // schedule. This string is kept as a hook for future variations in
+  // how the Chronos strategy is run; main.cpp no longer forks engines
+  // on it.
+  std::string strategy_mode = "chronos2_mr_pred_exit";
 
   // ==== Chronos-2 forecast bridge (chronos2_mr_pred_exit only) ====
   //

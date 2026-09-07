@@ -38,7 +38,9 @@ test -s logs/app.log
 grep -q "LoggingService started" logs/app.log
 grep -q "APP LoadingConfig -> ConnectingBroker" logs/app.log
 grep -q "APP ConnectingBroker -> Live" logs/app.log
-grep -q "Engine Starting -> Ready" logs/app.log
-grep -q "Mode: paper" hft_app_smoke.out
+grep -q "Broker Down -> Ready" logs/app.log
+grep -q "APP Live -> ShuttingDown" logs/app.log
+grep -q "mode=paper" hft_app_smoke.out
+grep -q "Chronos engine stopped" hft_app_smoke.out
 
 echo "hft_app paper/no-order smoke passed"

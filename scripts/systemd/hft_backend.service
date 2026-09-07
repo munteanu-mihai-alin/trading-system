@@ -15,7 +15,10 @@ User=root
 WorkingDirectory=/mnt/HC_Volume_105581071/trading-system
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/hft/api.env
-ExecStart=/usr/bin/uvicorn scripts.backend.api:app --host 127.0.0.1 --port 8088
+# TLS: self-signed cert for the WireGuard IP 10.66.66.1, generated
+# once into /etc/hft/tls/ (not in git). The mobile app bundles the
+# matching CA so it trusts this cert; plain http is refused.
+ExecStart=/mnt/HC_Volume_105581071/trading-system/.venv/bin/uvicorn scripts.backend.api:app --host 0.0.0.0 --port 8088 --log-level info --access-log --ssl-keyfile /etc/hft/tls/server.key --ssl-certfile /etc/hft/tls/server.crt
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal

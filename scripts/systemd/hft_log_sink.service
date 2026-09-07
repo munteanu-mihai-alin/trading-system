@@ -1,0 +1,21 @@
+# Plain-HTTP debug log sink for the mobile app (scripts/backend/log_sink.py).
+# HTTP on purpose: a guaranteed channel to collect app diagnostics when the
+# TLS backend connection is failing. Reachable only over WireGuard -- UFW
+# opens 8090 to 10.66.66.0/24 only. Stdlib http.server, no venv needed.
+[Unit]
+Description=HFT app debug log sink (plain HTTP, WireGuard-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mnt/HC_Volume_105581071/trading-system
+ExecStart=/usr/bin/python3 /mnt/HC_Volume_105581071/trading-system/scripts/backend/log_sink.py
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

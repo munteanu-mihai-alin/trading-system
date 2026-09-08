@@ -140,16 +140,23 @@ def main():
         vol, mom = _compute_aux(closes, args.vol_lookback,
                                 args.momentum_lookback)
         try:
-            context = torch.tensor(closes[-args.context_len:],
-                                   dtype=torch.float32)
+            # Chronos-2 (chronos-forecasting 2.x) wants a 3-D context
+            # tensor (n_series, n_variates, history_length) and returns
+            # per-series LISTS of tensors: quantiles[i] has shape
+            # (n_variates, prediction_length, n_quantiles) and mean[i]
+            # (n_variates, prediction_length). A 1-D context raised
+            # "Expected 3-d tensor ... got shape (64,)".
+            context = torch.tensor(
+                closes[-args.context_len:], dtype=torch.float32
+            ).reshape(1, 1, -1)
             quantiles, mean = pipeline.predict_quantiles(
                 context,
                 prediction_length=args.prediction_len,
                 quantile_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
             )
-            pred_mean = float(mean[0, 0].item())
+            pred_mean = float(mean[0][0, 0].item())
             # Index 1 of quantile_levels is 0.25.
-            pred_q25 = float(quantiles[0, 0, 1].item())
+            pred_q25 = float(quantiles[0][0, 0, 1].item())
         except Exception as e:
             print(f"[chronos2_forecast] {symbol}: predict failed: {e}",
                   file=sys.stderr)

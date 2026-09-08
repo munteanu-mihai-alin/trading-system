@@ -436,6 +436,14 @@ void Chronos2ExecutionEngine::route_entries() {
     }
     if (pending)
       continue;
+    // Data-freshness guard: only ever enter on a real, live
+    // top-of-book. Without valid L1 (market closed, feed down, not
+    // yet subscribed) Stock's mid sits at its ~100 default and
+    // bid/ask are zero, so any order would price off a placeholder
+    // -- the source of the off-hours garbage orders. Require both
+    // sides > 0.
+    if (s.bid_price <= 0.0 || s.ask_price <= 0.0)
+      continue;
     if (s.mid <= 0.0 || s.predicted_price <= 0.0)
       continue;
 

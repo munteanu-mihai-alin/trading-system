@@ -45,9 +45,25 @@ jobs:
           test -d dependencies/linux/install
 
       - name: Configure
+        # Build provenance is compiled into hft_app and queryable at
+        # runtime (hft_app --branch / --commit / --version). Values come
+        # from the GitHub context rather than hardcoded per branch, so
+        # this step is byte-identical on every branch.
+        #
+        # head_ref / pull_request.head.sha are the PR's SOURCE branch and
+        # real head commit; ref_name / sha are what push events carry.
+        # Passed via env: rather than inlined into run: so a branch name
+        # can never be interpreted as shell.
+        env:
+          HFT_BRANCH: ${{ github.head_ref || github.ref_name }}
+          HFT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          HFT_RUN: ${{ github.run_number }}
         run: |
           cmake -S . -B build \
-            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/dependencies/linux/install"
+            -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/dependencies/linux/install" \
+            -DHFT_BRANCH="${HFT_BRANCH}" \
+            -DHFT_COMMIT="${HFT_COMMIT:0:7}" \
+            -DHFT_VERSION="$(date -u +%Y.%m.%d).${HFT_RUN}"
 
       - name: Build
         run: |

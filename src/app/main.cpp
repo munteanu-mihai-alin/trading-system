@@ -3,9 +3,11 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include "app/build_info.hpp"
 #include "app/effective_steps.hpp"
 #include "bench/bench.hpp"
 #include "broker/DatabentoBacktestBroker.hpp"
@@ -19,7 +21,58 @@
 
 namespace hl = hft::log;
 
-int main() {
+int main(int argc, char** argv) {
+  // ---- Build-provenance query mode ----
+  //
+  // Any of --branch / --commit / --version prints what was asked for
+  // and exits WITHOUT trading. Deliberate: a provenance query must
+  // never be able to start a live session by accident, so this gate
+  // runs before logging, config load, or broker connect.
+  //
+  // Output is script-friendly: one flag prints the bare value, several
+  // print labeled key=value lines.
+  //
+  // An unrecognized argument is a hard error (exit 2) rather than being
+  // ignored. hft_app.service passes no arguments at all, so any argv we
+  // do not understand means the invocation is not what someone thought
+  // it was -- refusing to trade is the safe response.
+  if (argc > 1) {
+    bool want_branch = false;
+    bool want_commit = false;
+    bool want_version = false;
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg = argv[i];
+      if (arg == "--branch") {
+        want_branch = true;
+      } else if (arg == "--commit") {
+        want_commit = true;
+      } else if (arg == "--version") {
+        want_version = true;
+      } else {
+        std::cerr << "hft_app: unrecognized argument: " << arg << "\n"
+                  << "usage: hft_app [--branch] [--commit] [--version]\n"
+                  << "  no arguments: run the trading engine\n";
+        return 2;
+      }
+    }
+    const int n =
+        (want_branch ? 1 : 0) + (want_commit ? 1 : 0) + (want_version ? 1 : 0);
+    const bool label = n > 1;
+    if (want_version) {
+      std::cout << (label ? "version=" : "") << hft::build_info::version()
+                << std::endl;
+    }
+    if (want_branch) {
+      std::cout << (label ? "branch=" : "") << hft::build_info::branch()
+                << std::endl;
+    }
+    if (want_commit) {
+      std::cout << (label ? "commit=" : "") << hft::build_info::commit()
+                << std::endl;
+    }
+    return 0;
+  }
+
   hl::initialize_logging();
   hl::set_app_state(hl::AppState::Starting);
   hl::set_component_state(hl::ComponentId::Logger, hl::ComponentState::Ready);

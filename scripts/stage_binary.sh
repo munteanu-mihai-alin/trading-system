@@ -46,6 +46,18 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   cmake -S . -B "${BUILD_DIR}" -DCMAKE_PREFIX_PATH="${PREFIX}"
 fi
 
+# Always refresh the provenance cache vars so the staged binary's
+# compiled-in commit matches the version directory we are about to
+# create. CMake resolves these at configure time, so without this a
+# warm build dir keeps whatever sha it saw first and the binary can
+# claim an older commit than its own directory name -- exactly the
+# drift that compiled-in provenance exists to prevent.
+echo "Refreshing provenance: branch=${BRANCH} commit=${SHORTSHA}"
+cmake -S . -B "${BUILD_DIR}" \
+  -DHFT_BRANCH="${BRANCH}" \
+  -DHFT_COMMIT="${SHORTSHA}" \
+  -DHFT_VERSION="$(date -u +%Y.%m.%d)" >/dev/null
+
 echo "Building hft_app ..."
 cmake --build "${BUILD_DIR}" --target hft_app -j"$(nproc)"
 

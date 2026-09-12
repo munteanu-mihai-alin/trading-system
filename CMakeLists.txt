@@ -31,10 +31,63 @@ set(LIB_SOURCES
 add_library(hft_lib ${LIB_SOURCES})
 target_include_directories(hft_lib PUBLIC ${HFT_INCLUDE_DIRS})
 
+
+# ---- Build provenance -------------------------------------------------
+#
+# Baked into hft_app and queryable at runtime:
+#   hft_app --branch / --commit / --version
+#
+# CI passes the authoritative values from the GitHub context:
+#   cmake -S . -B build -DHFT_BRANCH=... -DHFT_COMMIT=... -DHFT_VERSION=...
+# A local build falls back to git. NOTE: these resolve at CONFIGURE
+# time, so a local rebuild after new commits keeps the old sha until
+# cmake re-configures. CI always configures fresh, so its values are
+# always exact.
+find_package(Git QUIET)
+
+if(NOT DEFINED HFT_BRANCH)
+  if(GIT_FOUND)
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      OUTPUT_VARIABLE HFT_BRANCH
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+  endif()
+endif()
+if(NOT HFT_BRANCH)
+  set(HFT_BRANCH "unknown")
+endif()
+
+if(NOT DEFINED HFT_COMMIT)
+  if(GIT_FOUND)
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      OUTPUT_VARIABLE HFT_COMMIT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+  endif()
+endif()
+if(NOT HFT_COMMIT)
+  set(HFT_COMMIT "unknown")
+endif()
+
+if(NOT DEFINED HFT_VERSION)
+  string(TIMESTAMP HFT_VERSION "%Y.%m.%d" UTC)
+endif()
+
+message(STATUS
+  "Build provenance: branch=${HFT_BRANCH} commit=${HFT_COMMIT} version=${HFT_VERSION}")
+
 add_executable(hft_app
   src/app/main.cpp
 )
 target_link_libraries(hft_app PRIVATE hft_lib)
+target_compile_definitions(hft_app PRIVATE
+  HFT_BRANCH="${HFT_BRANCH}"
+  HFT_COMMIT="${HFT_COMMIT}"
+  HFT_VERSION="${HFT_VERSION}")
 
 add_executable(ibkr_paper_order_probe
   src/tools/ibkr_paper_order_probe.cpp

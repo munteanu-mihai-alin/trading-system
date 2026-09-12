@@ -476,11 +476,63 @@ def _config_schema_for_branch(branch: Optional[str]) -> List[Dict[str, Any]]:
     return schema
 
 
+def _probe_binary_provenance(exe: Path) -> Dict[str, Any]:
+    """Ask the executable for its own branch/commit/version.
+
+    `hft_app --branch --commit --version` prints labeled key=value lines
+    and exits WITHOUT trading -- the flag gate in src/app/main.cpp runs
+    before logging, config load and broker connect. This is the
+    authoritative source of provenance: values compiled into the image
+    cannot be separated from the image, whereas bin/binary.json
+    described the binary from the outside and could (and did) drift.
+
+    Returns {} when the binary cannot answer, so callers fall back to
+    the legacy manifest.
+    """
+    if not _supports_provenance_flags(exe):
+        return {}
+    try:
+        res = subprocess.run(
+            [str(exe), "--branch", "--commit", "--version"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if res.returncode != 0:
+        return {}
+    info: Dict[str, Any] = {}
+    for line in res.stdout.splitlines():
+        key, sep, val = line.partition("=")
+        if sep and key in ("branch", "commit", "version"):
+            info[key] = val.strip()
+    return info
+
+
+def _supports_provenance_flags(exe: Path) -> bool:
+    """True if this binary understands --branch/--commit/--version.
+
+    SAFETY CRITICAL. A pre-provenance hft_app was `int main()` and
+    ignored argv completely, so invoking it with flags would not print
+    anything -- it would START A TRADING SESSION. We therefore look for
+    the usage string inside the image before ever exec'ing it with
+    arguments. Only binaries that demonstrably contain the flag-handling
+    code get run.
+    """
+    try:
+        with exe.open("rb") as f:
+            return b"usage: hft_app [--branch]" in f.read()
+    except OSError:
+        return False
+
+
 def _list_binaries() -> List[Dict[str, Any]]:
     """Enumerates runnable binaries: the default bin/hft_app plus every
-    bin/versions/<version>/. Each carries an optional binary.json
-    manifest {branch, description, built_at, commit}; when absent we
-    report branch=None and the base config schema only.
+    bin/versions/<version>/.
+
+    Provenance comes from the binary itself (see
+    _probe_binary_provenance). bin/binary.json is consulted only as a
+    fallback for binaries built before the flags existed; the response
+    carries provenance_source so the app can tell the two apart.
     """
     out: List[Dict[str, Any]] = []
     bin_dir = REPO_ROOT / "bin"
@@ -494,36 +546,70 @@ def _list_binaries() -> List[Dict[str, Any]]:
                 return {}
         return {}
 
-    # The current default binary.
+    def _describe(exe: Path, manifest_dir: Path) -> Dict[str, Any]:
+        probed = _probe_binary_provenance(exe)
+        if probed:
+            return {
+                "branch": probed.get("branch"),
+                "commit": probed.get("commit"),
+                "build_version": probed.get("version"),
+                "built_at": None,
+                "description": None,
+                "provenance_source": "binary",
+            }
+        mf = _manifest(manifest_dir)
+        return {
+            "branch": mf.get("branch"),
+            "commit": mf.get("commit"),
+            "build_version": None,
+            "built_at": mf.get("built_at"),
+            "description": mf.get("description"),
+            "provenance_source": "manifest" if mf else "unknown",
+        }
+
+    # The current default binary. Resolve the symlink so the app can see
+    # which staged version bin/hft_app actually points at.
     default_bin = bin_dir / "hft_app"
     if default_bin.exists():
-        mf = _manifest(bin_dir)
-        branch = mf.get("branch")
+        info = _describe(default_bin, bin_dir)
+        target = None
+        try:
+            if default_bin.is_symlink():
+                target = os.path.basename(
+                    os.path.dirname(os.path.realpath(default_bin)))
+        except OSError:
+            target = None
         out.append({
             "version": "current",
             "is_default": True,
-            "branch": branch,
-            "description": mf.get("description", "default bin/hft_app"),
-            "built_at": mf.get("built_at"),
-            "commit": mf.get("commit"),
-            "config_schema": _config_schema_for_branch(branch),
+            "points_to": target,
+            "description": info["description"] or "default bin/hft_app",
+            "branch": info["branch"],
+            "commit": info["commit"],
+            "build_version": info["build_version"],
+            "built_at": info["built_at"],
+            "provenance_source": info["provenance_source"],
+            "config_schema": _config_schema_for_branch(info["branch"]),
         })
 
     versions_dir = bin_dir / "versions"
     if versions_dir.is_dir():
         for d in sorted(versions_dir.iterdir(), reverse=True):
-            if not d.is_dir() or not (d / "hft_app").exists():
+            exe = d / "hft_app"
+            if not d.is_dir() or not exe.exists():
                 continue
-            mf = _manifest(d)
-            branch = mf.get("branch")
+            info = _describe(exe, d)
             out.append({
                 "version": d.name,
                 "is_default": False,
-                "branch": branch,
-                "description": mf.get("description", d.name),
-                "built_at": mf.get("built_at"),
-                "commit": mf.get("commit"),
-                "config_schema": _config_schema_for_branch(branch),
+                "points_to": None,
+                "description": info["description"] or d.name,
+                "branch": info["branch"],
+                "commit": info["commit"],
+                "build_version": info["build_version"],
+                "built_at": info["built_at"],
+                "provenance_source": info["provenance_source"],
+                "config_schema": _config_schema_for_branch(info["branch"]),
             })
     return out
 

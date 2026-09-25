@@ -262,27 +262,108 @@ void Chronos2ExecutionEngine::handle_sell_fill(int order_id, double fill_price,
 
 // ---- Chronos-2 daily forecast bridge ----
 
-void Chronos2ExecutionEngine::update_daily_close_history() {
-  // Cheap: once per trading day, append current mid to each symbol's
-  // rolling window. We snapshot at every step; the write-through only
-  // happens when the day rolls in maybe_load_chronos_predictions.
-  // Use "date" key change; if day is same, still no-op.
-  static thread_local std::string last_day;
-  const std::string today = today_yyyymmdd();
-  if (today == last_day)
-    return;
-  last_day = today;
+std::string Chronos2ExecutionEngine::daily_close_history_path() const {
+  return cfg_.app.chronos2_daily_closes_dir + "/history.csv";
+}
 
-  const int cap = std::max(1, cfg_.app.chronos2_context_len * 2);
-  for (const auto& s : portfolio_.items) {
-    if (s.mid <= 0.0)
+void Chronos2ExecutionEngine::load_daily_close_history() {
+  // Restores the rolling window written by a previous session. Without
+  // this the window restarts empty every day and can never reach
+  // chronos2_context_len, so Chronos would never produce a forecast and
+  // the strategy could never enter a position.
+  daily_closes_.clear();
+  std::ifstream f(daily_close_history_path());
+  if (!f)
+    return;  // first ever run: no history yet, start empty
+
+  std::string line;
+  std::getline(f, line);  // header: symbol,date,close
+  while (std::getline(f, line)) {
+    if (line.empty())
       continue;
+    const auto c1 = line.find(',');
+    if (c1 == std::string::npos)
+      continue;
+    const auto c2 = line.find(',', c1 + 1);
+    if (c2 == std::string::npos)
+      continue;
+    DailyClose row;
+    const std::string sym = line.substr(0, c1);
+    row.date = line.substr(c1 + 1, c2 - c1 - 1);
+    try {
+      row.close = std::stod(line.substr(c2 + 1));
+    } catch (const std::exception&) {
+      continue;  // skip malformed row rather than abort the load
+    }
+    if (sym.empty() || row.date.empty() || row.close <= 0.0)
+      continue;
+    daily_closes_[sym].push_back(row);
+  }
+
+  // Rows are appended in date order per symbol, but sort defensively so
+  // a hand-edited or concatenated file still yields a correct window.
+  for (auto& kv : daily_closes_) {
+    std::sort(kv.second.begin(), kv.second.end(),
+              [](const DailyClose& a, const DailyClose& b) {
+                return a.date < b.date;
+              });
+  }
+}
+
+void Chronos2ExecutionEngine::persist_daily_close_history() const {
+  // Write to a sibling temp file and rename. rename(2) is atomic within
+  // a filesystem, so a crash mid-write leaves the previous good history
+  // intact instead of a truncated one -- this file is the only thing
+  // standing between a restart and an unusable Chronos window.
+  const std::string final_path = daily_close_history_path();
+  const std::string tmp_path = final_path + ".tmp";
+  std::filesystem::create_directories(cfg_.app.chronos2_daily_closes_dir);
+  write_daily_closes_csv(tmp_path);
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, final_path, ec);
+  if (ec) {
+    std::cerr << "[chronos2] could not persist daily closes: " << ec.message()
+              << std::endl;
+    std::filesystem::remove(tmp_path, ec);
+  }
+}
+
+void Chronos2ExecutionEngine::update_daily_close_history() {
+  if (!daily_closes_loaded_) {
+    load_daily_close_history();
+    daily_closes_loaded_ = true;
+  }
+
+  const std::string today = today_yyyymmdd();
+  const int cap = std::max(1, cfg_.app.chronos2_context_len * 2);
+  bool appended = false;
+
+  for (const auto& s : portfolio_.items) {
+    // Only record a real, live top-of-book. Stock::mid defaults to a
+    // placeholder before the first tick, and recording that would
+    // poison the window with a price the market never traded at.
+    if (s.bid_price <= 0.0 || s.ask_price <= 0.0 || s.mid <= 0.0)
+      continue;
+
     auto& hist = daily_closes_[s.symbol];
-    hist.push_back(s.mid);
+    // (symbol, date) is the key: one close per symbol per trading day,
+    // regardless of how many times the process starts that day.
+    if (!hist.empty() && hist.back().date == today)
+      continue;
+
+    DailyClose row;
+    row.date = today;
+    row.close = s.mid;
+    hist.push_back(row);
+    appended = true;
+
     if (static_cast<int>(hist.size()) > cap) {
       hist.erase(hist.begin(), hist.end() - cap);
     }
   }
+
+  if (appended)
+    persist_daily_close_history();
 }
 
 void Chronos2ExecutionEngine::maybe_load_chronos_predictions() {
@@ -304,12 +385,10 @@ void Chronos2ExecutionEngine::maybe_load_chronos_predictions() {
 
   std::filesystem::create_directories(cfg_.app.chronos2_daily_closes_dir);
   std::filesystem::create_directories(cfg_.app.chronos2_predictions_dir);
-  const std::string in_csv =
-      cfg_.app.chronos2_daily_closes_dir + "/history_" + today + ".csv";
+  const std::string in_csv = daily_close_history_path();
   const std::string out_csv =
       cfg_.app.chronos2_predictions_dir + "/predictions_" + today + ".csv";
 
-  write_daily_closes_csv(in_csv);
   const int rc = spawn_chronos_forecast(in_csv, out_csv);
   if (rc != 0) {
     std::cerr << "[chronos2] forecast subprocess rc=" << rc
@@ -325,17 +404,13 @@ void Chronos2ExecutionEngine::write_daily_closes_csv(
   std::ofstream f(out_path);
   if (!f)
     return;
-  f << "symbol,date,close\n";
-  // Reconstruct a fake date per row (relative index) -- Python side
-  // sorts by (symbol, date) but doesn't otherwise use the value, so
-  // a monotonic string is enough.
+  // Real ISO dates, not positional indices. The Python side sorts by
+  // (symbol, date), and ISO-8601 sorts lexicographically, so this is
+  // both a correct forecast input and a replayable persistent store.
+  f << "symbol,date,close" << std::endl;
   for (const auto& kv : daily_closes_) {
-    const auto& sym = kv.first;
-    const auto& closes = kv.second;
-    for (std::size_t i = 0; i < closes.size(); ++i) {
-      char idxbuf[32];
-      std::snprintf(idxbuf, sizeof(idxbuf), "%010zu", i);
-      f << sym << ',' << idxbuf << ',' << closes[i] << '\n';
+    for (const auto& row : kv.second) {
+      f << kv.first << ',' << row.date << ',' << row.close << std::endl;
     }
   }
 }

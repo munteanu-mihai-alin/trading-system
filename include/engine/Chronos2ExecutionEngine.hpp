@@ -85,6 +85,16 @@ class Chronos2ExecutionEngine {
   // chronos2_forecast.py, reads predictions back into portfolio.items.
   void maybe_load_chronos_predictions();
   void write_daily_closes_csv(const std::string& out_path) const;
+
+  // Persistence for the rolling daily-close window. The window is the
+  // ONLY input Chronos gets, and it grows one close per trading day, so
+  // an in-memory-only window could never reach chronos2_context_len
+  // under the RTH timer (which stops the engine every day at the
+  // close). Loaded lazily on the first update, rewritten whenever a new
+  // day is appended.
+  [[nodiscard]] std::string daily_close_history_path() const;
+  void load_daily_close_history();
+  void persist_daily_close_history() const;
   int spawn_chronos_forecast(const std::string& in_csv,
                              const std::string& out_csv) const;
   void read_predictions_csv(const std::string& path);
@@ -125,7 +135,20 @@ class Chronos2ExecutionEngine {
   // Rolling per-symbol daily-close history (used to build the Python
   // input CSV). Keyed by symbol; last N closes only, capped at
   // 2 * chronos2_context_len.
-  std::unordered_map<std::string, std::vector<double>> daily_closes_;
+  //
+  // Each entry carries its real calendar date rather than a positional
+  // index. The date is what makes the window restart-safe: appending is
+  // keyed on (symbol, date), so a second start on the same day is a
+  // no-op instead of writing a duplicate close. The previous
+  // "once per day" guard was a static thread_local that reset on every
+  // process start, which made duplicates likely under Restart=on-failure
+  // and the timer's Persistent=true catch-up.
+  struct DailyClose {
+    std::string date;  // YYYY-MM-DD
+    double close = 0.0;
+  };
+  std::unordered_map<std::string, std::vector<DailyClose>> daily_closes_;
+  bool daily_closes_loaded_ = false;
   std::string last_load_yyyymmdd_;  // "2025-08-22" of the last successful
                                     // forecast load; forces a refresh
                                     // when the trading day rolls.

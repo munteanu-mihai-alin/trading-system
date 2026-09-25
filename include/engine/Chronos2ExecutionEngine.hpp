@@ -160,6 +160,13 @@ class Chronos2ExecutionEngine {
   // those books age out before anything can trade on them. During RTH
   // ticks keep arriving, so this costs only the first interval.
   std::int64_t started_at_ms_ = 0;
+
+  // Last MarketData state actually published. set_component_state logs
+  // every call, including no-op transitions, and reconcile runs each
+  // step -- at the 250ms cadence that is ~94k "Ready -> Ready" lines
+  // per session, which would bury the transitions that matter.
+  // -1 = nothing published yet, so the first result always emits.
+  int md_ready_published_ = -1;
   std::string last_load_yyyymmdd_;  // "2025-08-22" of the last successful
                                     // forecast load; forces a refresh
                                     // when the trading day rolls.

@@ -34,6 +34,12 @@ struct AppConfig {
   // for a minute is skipped, which errs toward not trading on a quote
   // nobody has refreshed. 0 disables the check.
   int market_data_max_age_ms = 60000;
+
+  // Refuse NEW ENTRIES outside the NYSE regular session. Exits are
+  // never gated -- being unable to close a position out of hours is
+  // strictly worse than opening one. Backtest and sim ignore this
+  // entirely (see app/trading_hours.hpp).
+  bool require_rth = true;
   bool order_enabled = true;
   double order_qty = 10.0;
   double max_order_qty = 10.0;

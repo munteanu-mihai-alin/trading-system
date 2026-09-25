@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include "app/trading_hours.hpp"
 #include "log/logging_state.hpp"
 
 #include "broker/IBKRClient.hpp"
@@ -198,10 +199,13 @@ void Chronos2ExecutionEngine::reconcile_broker_state() {
   // so the HEALTH line reported md=Down permanently and was useless
   // for alerting -- "engine up but blind" was indistinguishable from
   // normal operation.
-  hft::log::set_component_state(hft::log::ComponentId::MarketData,
-                                fresh_count > 0
-                                    ? hft::log::ComponentState::Ready
-                                    : hft::log::ComponentState::Down);
+  const int md_ready = (fresh_count > 0) ? 1 : 0;
+  if (md_ready != md_ready_published_) {
+    md_ready_published_ = md_ready;
+    hft::log::set_component_state(hft::log::ComponentId::MarketData,
+                                  md_ready ? hft::log::ComponentState::Ready
+                                           : hft::log::ComponentState::Down);
+  }
   // Trade events aren't consumed by this strategy -- we don't run
   // Hawkes here. drain_trades() is per-ticker (see IBroker), and this
   // engine doesn't score off individual trades. Skipping the drain
@@ -379,6 +383,15 @@ void Chronos2ExecutionEngine::update_daily_close_history() {
     daily_closes_loaded_ = true;
   }
 
+  // Only record a price the regular session actually made. Without
+  // this the first step after the 09:25 timer start captures a
+  // pre-market quote and stores it as that day's "close", which is
+  // thinner and further from the official close than it needs to be.
+  if (hft::rth_gate_applies(cfg_.app.require_rth, cfg_.app.mode) &&
+      !hft::is_within_rth(std::chrono::system_clock::now())) {
+    return;
+  }
+
   const std::string today = today_yyyymmdd();
   const int cap = std::max(1, cfg_.app.chronos2_context_len * 2);
   bool appended = false;
@@ -535,6 +548,15 @@ void Chronos2ExecutionEngine::compute_composite_scores() {
 }
 
 void Chronos2ExecutionEngine::route_entries() {
+  // Entries only during the regular session. Fresh does not mean
+  // tradeable: after-hours books update continuously but are thin and
+  // wide, and nothing about this strategy was validated there. Exits
+  // are deliberately NOT gated -- see route_exit_orders.
+  if (hft::rth_gate_applies(cfg_.app.require_rth, cfg_.app.mode) &&
+      !hft::is_within_rth(std::chrono::system_clock::now())) {
+    return;
+  }
+
   const int top_k = effective_top_k();
   const double bud = effective_budget();
   double committed = committed_notional();

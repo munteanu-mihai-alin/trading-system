@@ -329,6 +329,7 @@ add_executable(hft_gtests
   tests/unit/CacheFilenameTest.cpp
   tests/unit/EffectiveStepsTest.cpp
   tests/unit/StepPacingTest.cpp
+  tests/unit/TradingHoursTest.cpp
   tests/unit/IBKRClientTest.cpp
 )
 target_link_libraries(hft_gtests PRIVATE

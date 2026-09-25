@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
     "RSS_ALERT_GB": "12",
     "POLL_SEC": "30",
     "ALERT_COOLDOWN_SEC": "1800",  # 30 min between repeat alerts per metric
-    "NOTIFY_SCRIPT": "/mnt/HC_Volume_105581071/trading-system/scripts/notify.sh",
+    "NOTIFY_SCRIPT": "/mnt/HC_Volume_105581071/trading-live/services/scripts/notify.sh",
     "STATE_FILE": "/var/run/hft_monitor.state",
     "HFT_APP_PATTERN": "bin/hft_app",
     # When true, an absent hft_app process triggers an alert. Disable

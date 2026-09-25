@@ -54,7 +54,6 @@ NOC,Northrop Grumman
 NOK,Nokia ADR
 NVDA,NVIDIA
 OKLO,Oklo
-PSTG,Pure Storage
 QCOM,Qualcomm
 RTX,Raytheon Technologies
 SMCI,Super Micro Computer

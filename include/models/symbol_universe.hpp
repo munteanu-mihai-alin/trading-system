@@ -33,7 +33,6 @@ inline const std::vector<std::pair<std::string, std::string>>
                                   {"MU.US", "Micron"},
                                   {"STX.US", "Seagate"},
                                   {"WDC.US", "Western Digital"},
-                                  {"PSTG.US", "Pure Storage"},
                                   {"LMT.US", "Lockheed Martin"},
                                   {"HWM.US", "Howmet Aerospace"},
                                   {"RTX.US", "Raytheon Tech"},
@@ -132,7 +131,6 @@ inline const std::vector<std::pair<std::string, std::string>>
                           {"ENTG", "Entegris"},
                           {"STX", "Seagate"},
                           {"WDC", "Western Digital"},
-                          {"PSTG", "Pure Storage"},
                           {"DELL", "Dell Technologies"},
                           {"HPQ", "HP Inc."},
                           {"SMCI", "Supermicro"},
@@ -185,9 +183,11 @@ std::vector<std::pair<std::string, std::string>> load_symbol_universe_from_file(
 // agent/ibkr_symbol_audit.md (the live output of
 // scripts/ibkr_symbol_contract_probe.py against the user's paper
 // account) - any symbol whose reqContractDetails returns >1 contract or
-// the wrong listing needs an explicit override. PSTG was the first one
-// we hit when the L1 backfill ran. See agent/ibkr_client_audit.md #1
-// and #9 for the audit context.
+// the wrong listing needs an explicit override. PSTG was long cited as
+// the motivating example; it turned out to be delisted rather than
+// ambiguous (see primary_exchange_override_table in SymbolUniverse.cpp)
+// and has been removed from the universe. See agent/ibkr_client_audit.md
+// #1 and #9 for the audit context.
 //
 // Thread-safe: returns a copy of an interned string; the underlying
 // table is built once at static-init time.

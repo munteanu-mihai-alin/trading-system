@@ -28,10 +28,16 @@ std::string trim(const std::string& s) {
 //   {"PSTG", "NYSE"}, {"NIO", "NYSE"}, ...
 // using the listing exchange reported by reqContractDetails.
 //
-// PSTG specifically failed the L1 historical backfill with both
-// `--primary-exchange NASDAQ` and `--primary-exchange NYSE`; we left it
-// out of this map until the probe confirms the correct value (it may
-// need a different secType or a non-SMART exchange code).
+// PSTG is NOT an example of a symbol needing an override, despite
+// reading like one for months. It failed the L1 backfill under both
+// NASDAQ and NYSE, which looked like contract ambiguity. Probing it
+// directly on 2026-09-26 settled it: reqMatchingSymbols returns
+// exactly one contract worldwide, `PSTG STK MEXI MXN`, and every US
+// variant raises error 200 (no security definition). The US listing
+// is gone -- delisted or acquired -- so no exchange code, secType or
+// override would have helped. It has been removed from the universe;
+// error 200 means the contract does not exist, whereas an override
+// fixes error 354/10167, which are permissions.
 const std::unordered_map<std::string, std::string>&
 primary_exchange_override_table() {
   static const std::unordered_map<std::string, std::string> kTable = {

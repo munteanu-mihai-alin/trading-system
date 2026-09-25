@@ -48,7 +48,7 @@ from typing import Dict, List, Optional, Tuple
 # scripts/ibkr_symbol_contract_probe.py.
 DEFAULT_UNIVERSE = [
     "AAPL", "NVDA", "AMD", "INTC", "MU", "QCOM", "ARM", "ASML", "AMAT",
-    "LRCX", "KLAC", "SNPS", "CDNS", "MKSI", "ENTG", "STX", "WDC", "PSTG",
+    "LRCX", "KLAC", "SNPS", "CDNS", "MKSI", "ENTG", "STX", "WDC",
     "DELL", "HPQ", "SMCI", "CSCO", "HPE", "IBM", "KEYS", "TSM", "GFS",
     "UMC", "TSEM", "ASX", "AMKR", "IMOS", "LEA", "AWK", "CEG", "VST",
     "NIO", "XPEV", "OKLO", "SNDK", "LMT", "HWM", "RTX", "NOC", "GSM",

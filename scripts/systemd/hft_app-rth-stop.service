@@ -1,11 +1,10 @@
-# One-shot service triggered by hft_app-rth-stop.timer at RTH close.
-# Sends `systemctl stop` to hft_app.service so it shuts down cleanly
-# (the main unit's KillSignal=SIGINT + TimeoutStopSec=30s gives the
-# engine ~30s to drain pending writes).
+# Oneshot that stops the paper engine at RTH close. Because the main
+# unit's Restart=on-failure ignores clean exits, this stop sticks until
+# the next start.timer firing.
 
 [Unit]
-Description=Stop hft_app.service (called by hft_app-rth-stop.timer)
+Description=Stop hft_app@paper (called by hft_app-rth-stop.timer)
 
 [Service]
 Type=oneshot
-ExecStart=/bin/systemctl stop hft_app.service
+ExecStart=/bin/systemctl stop hft_app@paper.service

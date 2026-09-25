@@ -56,6 +56,10 @@ REPO_ROOT = Path(
 RUNS_DIR = REPO_ROOT / "reports" / "runs"
 LOGS_DIR = REPO_ROOT / "logs"
 HFT_APP_PATTERN = "bin/hft_app"
+# systemd unit that owns the engine. Under the trading-live layout
+# this is a template instance (hft_app@paper / hft_app@live), so the
+# name is configurable rather than hardcoded to a single unit.
+HFT_APP_UNIT = os.environ.get("HFT_APP_UNIT", "hft_app@paper")
 QUEUE_DIR = REPO_ROOT / "queue"
 LAUNCHER_STATE_FILE = Path("/var/run/hft_backtest_launcher.state")
 
@@ -715,7 +719,7 @@ def live_start(payload: Dict[str, Any], req: Request):
     # Point config.ini at the right IBKR mode, then start the unit.
     _set_broker_mode(mode)
     try:
-        subprocess.run(["systemctl", "start", "hft_app"],
+        subprocess.run(["systemctl", "start", HFT_APP_UNIT],
                        capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500,
@@ -731,7 +735,7 @@ def live_stop(req: Request):
     instead."""
     _require_token(req)
     try:
-        subprocess.run(["systemctl", "stop", "hft_app"],
+        subprocess.run(["systemctl", "stop", HFT_APP_UNIT],
                        capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500,

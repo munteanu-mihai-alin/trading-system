@@ -1,8 +1,9 @@
 # Long-lived FastAPI backend that the mobile app talks to.
 #
-# Binds 127.0.0.1:8088 only -- access from outside Hetzner goes
-# through SSH tunnel or wireguard; the API itself is not hardened
-# for public internet.
+# Runs from services/ (the clean checkout). HFT_REPO selects which
+# instance the ops endpoints act on -- currently the paper instance.
+# Making the backend instance-aware (so it can serve both) is follow-up
+# work; today it manages one at a time.
 
 [Unit]
 Description=HFT backend API (mobile app + ops)
@@ -12,13 +13,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/mnt/HC_Volume_105581071/trading-system
+WorkingDirectory=/mnt/HC_Volume_105581071/trading-live/services
 Environment=PYTHONUNBUFFERED=1
+Environment=HFT_REPO=/mnt/HC_Volume_105581071/trading-live/paper
 EnvironmentFile=-/etc/hft/api.env
-# TLS: self-signed cert for the WireGuard IP 10.66.66.1, generated
-# once into /etc/hft/tls/ (not in git). The mobile app bundles the
-# matching CA so it trusts this cert; plain http is refused.
-ExecStart=/mnt/HC_Volume_105581071/trading-system/.venv/bin/uvicorn scripts.backend.api:app --host 0.0.0.0 --port 8088 --log-level info --access-log --ssl-keyfile /etc/hft/tls/server.key --ssl-certfile /etc/hft/tls/server.crt
+ExecStart=/mnt/HC_Volume_105581071/trading-live/services/.venv/bin/uvicorn scripts.backend.api:app --host 0.0.0.0 --port 8088 --log-level info --access-log --ssl-keyfile /etc/hft/tls/server.key --ssl-certfile /etc/hft/tls/server.crt
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal

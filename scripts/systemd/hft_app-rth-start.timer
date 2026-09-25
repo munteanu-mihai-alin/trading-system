@@ -1,23 +1,20 @@
-# Daily start of hft_app at 09:25 America/New_York -- 5 minutes before
-# NYSE Regular Trading Hours open (09:30 ET).
+# Daily start of the PAPER engine at 09:25 America/New_York, 5 minutes
+# before NYSE RTH open. OnCalendar with an explicit timezone handles DST.
 #
-# OnCalendar with an explicit timezone handles DST correctly: 09:25
-# America/New_York is 13:25 UTC in EDT (Mar-Nov) and 14:25 UTC in
-# EST (Nov-Mar) automatically. systemd does the conversion at
-# schedule-realize time.
+# Holidays are NOT excluded -- on a market holiday the engine starts,
+# sees no live data, and the data-freshness guard keeps it from trading.
 #
-# Holidays are NOT excluded -- on a market holiday the engine will
-# start, see no live data, and idle. That's acceptable for the first
-# pass; a future enhancement could pre-check NYSE's holiday calendar
-# from a script and skip start.
+# NOTE: Persistent=true makes systemd fire a missed run immediately when
+# the timer is (re)started, so arming this outside market hours triggers
+# one harmless off-hours start.
 
 [Unit]
-Description=Start hft_app at NYSE RTH open (Mon-Fri 09:25 ET)
+Description=Start hft_app@paper at NYSE RTH open (Mon-Fri 09:25 ET)
 
 [Timer]
 OnCalendar=Mon..Fri *-*-* 09:25:00 America/New_York
 Persistent=true
-Unit=hft_app.service
+Unit=hft_app@paper.service
 
 [Install]
 WantedBy=timers.target

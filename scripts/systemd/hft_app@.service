@@ -1,0 +1,47 @@
+# systemd TEMPLATE unit for the HFT engine, one instance per trading mode.
+#
+# %i is the instance directory under trading-live/: "paper" or "live".
+# Each instance owns its own config.ini, pinned binary (bin/hft_app ->
+# versions/<branch>-<sha>/), logs and reports, so paper can run a new CI
+# build while live stays on a proven one. Chronos history/predictions
+# are deliberately SHARED (see each config.ini's [chronos2] block).
+#
+# Operator commands:
+#   systemctl start hft_app@paper          # paper session
+#   systemctl start hft_app@live           # live session
+#   journalctl -u hft_app@paper -f
+#   kill -USR1 $(pgrep -f trading-live/paper/bin/hft_app)   # freeze trader
+#   kill -USR2 $(pgrep -f trading-live/paper/bin/hft_app)   # force liquidate
+#
+# RestartSec=10s also covers the IB Gateway's clientId release: an
+# immediate reconnect after a session ends can be refused with
+# "connection closed by remote" before the gateway frees the id.
+
+[Unit]
+Description=HFT engine (%i)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mnt/HC_Volume_105581071/trading-live/%i
+Environment=LD_LIBRARY_PATH=/mnt/HC_Volume_105581071/trading-live/services/dependencies/linux/install/lib
+ExecStart=/mnt/HC_Volume_105581071/trading-live/%i/bin/hft_app
+
+Restart=on-failure
+RestartSec=10s
+
+KillSignal=SIGINT
+TimeoutStopSec=30s
+KillMode=mixed
+
+StandardOutput=append:/mnt/HC_Volume_105581071/trading-live/%i/logs/hft_app.log
+StandardError=append:/mnt/HC_Volume_105581071/trading-live/%i/logs/hft_app.err
+
+OnFailure=hft-notify@%n.service
+
+[Install]
+WantedBy=multi-user.target

@@ -70,6 +70,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.steps = std::stoi(val);
       } else if (key == "step_interval_ms") {
         cfg.step_interval_ms = std::stoi(val);
+      } else if (key == "market_data_max_age_ms") {
+        cfg.market_data_max_age_ms = std::stoi(val);
       } else if (key == "order_enabled") {
         cfg.order_enabled = parse_bool(val);
       } else if (key == "order_qty") {

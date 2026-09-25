@@ -17,6 +17,11 @@ struct Stock {
   // first valid TopOfBook arrives; the mid is derived from these.
   double bid_price = 0.0;
   double ask_price = 0.0;
+
+  // Set by reconcile_broker_state: the book above is present AND was
+  // updated within market_data_max_age_ms. Entries require it, so a
+  // stale quote cannot be traded on.
+  bool book_fresh = false;
   double queue = 500.0;
   double best_limit = 100.0;
   double score = 0.0;

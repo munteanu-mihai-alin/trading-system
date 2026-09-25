@@ -402,10 +402,24 @@ void IBKRClient::on_market_depth_update(int ticker_id, int position,
   }
 }
 
+namespace {
+
+// Wall clock rather than steady_clock: the value is compared against
+// other wall-clock stamps and surfaced in logs, and the quantities we
+// care about are seconds-to-days, where clock adjustment is noise.
+std::int64_t now_epoch_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+}  // namespace
+
 void IBKRClient::on_top_of_book_price(int ticker_id, bool is_bid,
                                       double price) {
   std::lock_guard<std::mutex> lock(books_mutex_);
   auto& book = top_books_[ticker_id];
+  book.updated_at_ms = now_epoch_ms();
   if (is_bid) {
     book.bid_price = price;
   } else {
@@ -416,6 +430,7 @@ void IBKRClient::on_top_of_book_price(int ticker_id, bool is_bid,
 void IBKRClient::on_top_of_book_size(int ticker_id, bool is_bid, double size) {
   std::lock_guard<std::mutex> lock(books_mutex_);
   auto& book = top_books_[ticker_id];
+  book.updated_at_ms = now_epoch_ms();
   if (is_bid) {
     book.bid_size = size;
   } else {

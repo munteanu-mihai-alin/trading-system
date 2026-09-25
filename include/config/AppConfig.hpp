@@ -21,6 +21,19 @@ struct AppConfig {
   // anything faster re-reads an unchanged book. 0 disables
   // pacing; backtests ignore this entirely (see step_pacing.hpp).
   int step_interval_ms = 250;
+
+  // A top-of-book older than this is treated as stale: it does not
+  // gate entries and does not count towards MarketData health.
+  //
+  // Presence was the old test, and it was only ever right because
+  // without real-time entitlement a closed market produced NO quotes.
+  // With entitlement the feed serves the previous close out of hours,
+  // so a presence check passes all weekend. 60s is tight enough to
+  // notice a dead feed during RTH and trivially excludes overnight or
+  // weekend books. Tradeoff: a genuinely thin name that has not ticked
+  // for a minute is skipped, which errs toward not trading on a quote
+  // nobody has refreshed. 0 disables the check.
+  int market_data_max_age_ms = 60000;
   bool order_enabled = true;
   double order_qty = 10.0;
   double max_order_qty = 10.0;

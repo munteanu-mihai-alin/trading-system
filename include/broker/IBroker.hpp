@@ -40,6 +40,18 @@ struct TopOfBook {
   double ask_price = 0.0;
   double ask_size = 0.0;
 
+  // Wall-clock ms since epoch of the last tick that touched this book,
+  // or 0 when the broker does not stamp updates.
+  //
+  // valid() only asks whether prices are present, which stopped being
+  // enough once real-time entitlement landed: outside RTH the feed
+  // serves the PREVIOUS SESSION's closing book, so bid/ask are
+  // non-zero and a presence check passes on a Saturday. Entries would
+  // then price off a two-day-old quote. Backtest brokers leave this 0
+  // and callers treat 0 as "freshness unknown", preserving replay
+  // behaviour.
+  std::int64_t updated_at_ms = 0;
+
   [[nodiscard]] bool valid() const {
     return bid_price > 0.0 && ask_price > 0.0 && bid_price <= ask_price;
   }

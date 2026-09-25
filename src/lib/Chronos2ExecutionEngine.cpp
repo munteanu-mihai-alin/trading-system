@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include "log/logging_state.hpp"
 
 #include "broker/IBKRClient.hpp"
 #include "broker/OrderLifecycle.hpp"
@@ -145,18 +146,62 @@ void Chronos2ExecutionEngine::step(int t) {
 
 void Chronos2ExecutionEngine::reconcile_broker_state() {
   // Pull top-of-book snapshots and update per-symbol mid.
+  //
+  // Freshness is tracked alongside presence. valid() only asks whether
+  // prices are set, which was sufficient only while the account had no
+  // real-time entitlement: a closed market then produced no quotes at
+  // all. With entitlement the feed serves the previous session's
+  // closing book out of hours, so bid/ask are non-zero all weekend and
+  // a presence check would happily price an entry off a two-day-old
+  // quote. The RTH timer's Persistent=true catch-up makes that a real
+  // path, not a hypothetical one.
+  const std::int64_t now_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
+  if (started_at_ms_ == 0)
+    started_at_ms_ = now_ms;
+  const int max_age = cfg_.app.market_data_max_age_ms;
+  // Discount the subscription burst: until we have been up longer than
+  // max_age, an out-of-hours replay of the last close is
+  // indistinguishable from a live book.
+  const bool past_warmup =
+      (max_age <= 0) || ((now_ms - started_at_ms_) > max_age);
+  int fresh_count = 0;
+
   for (std::size_t i = 0; i < portfolio_.items.size(); ++i) {
     const int ticker_id = static_cast<int>(i) + 1;
     const auto top = broker_->snapshot_top_of_book(ticker_id);
-    if (!top.valid())
-      continue;
     auto& s = portfolio_.items[i];
+    if (!top.valid()) {
+      s.book_fresh = false;
+      continue;
+    }
     s.bid_price = top.bid_price;
     s.ask_price = top.ask_price;
     if (s.bid_price > 0.0 && s.ask_price > 0.0) {
       s.mid = 0.5 * (s.bid_price + s.ask_price);
     }
+
+    // updated_at_ms == 0 means the broker does not stamp books (the
+    // backtest replayers). Treat that as "freshness unknown" and fall
+    // back to presence, so replays behave exactly as before.
+    const bool unstamped = (top.updated_at_ms == 0);
+    const bool within_age =
+        (max_age <= 0) || (now_ms - top.updated_at_ms) <= max_age;
+    s.book_fresh = unstamped || (within_age && past_warmup);
+    if (s.book_fresh)
+      ++fresh_count;
   }
+
+  // Publish real MarketData health. Nothing set this component before,
+  // so the HEALTH line reported md=Down permanently and was useless
+  // for alerting -- "engine up but blind" was indistinguishable from
+  // normal operation.
+  hft::log::set_component_state(hft::log::ComponentId::MarketData,
+                                fresh_count > 0
+                                    ? hft::log::ComponentState::Ready
+                                    : hft::log::ComponentState::Down);
   // Trade events aren't consumed by this strategy -- we don't run
   // Hawkes here. drain_trades() is per-ticker (see IBroker), and this
   // engine doesn't score off individual trades. Skipping the drain
@@ -518,6 +563,9 @@ void Chronos2ExecutionEngine::route_entries() {
     // -- the source of the off-hours garbage orders. Require both
     // sides > 0.
     if (s.bid_price <= 0.0 || s.ask_price <= 0.0)
+      continue;
+    // Presence is not enough -- see reconcile_broker_state.
+    if (!s.book_fresh)
       continue;
     if (s.mid <= 0.0 || s.predicted_price <= 0.0)
       continue;

@@ -149,6 +149,17 @@ class Chronos2ExecutionEngine {
   };
   std::unordered_map<std::string, std::vector<DailyClose>> daily_closes_;
   bool daily_closes_loaded_ = false;
+
+  // Wall-clock start, used to discount the subscription burst.
+  //
+  // IBKR replays the last known book as ticks the moment you
+  // subscribe, so out of hours the PREVIOUS session's closing quote
+  // arrives stamped with the current time and looks fresh. Since no
+  // further ticks follow while the market is shut, requiring the
+  // engine to have been up longer than market_data_max_age_ms lets
+  // those books age out before anything can trade on them. During RTH
+  // ticks keep arriving, so this costs only the first interval.
+  std::int64_t started_at_ms_ = 0;
   std::string last_load_yyyymmdd_;  // "2025-08-22" of the last successful
                                     // forecast load; forces a refresh
                                     // when the trading day rolls.

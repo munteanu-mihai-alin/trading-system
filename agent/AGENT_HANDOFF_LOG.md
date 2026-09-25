@@ -4,6 +4,200 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-09-26] - Entitlement resolved; freshness + RTH guards; ghcr deploy path; gateway image recovered #Done
+
+Model / agent:
+- Model: Claude Opus 5
+- Provider/client: Claude Code, Hetzner over SSH
+
+Source state:
+- `chronos2-mr-pred-exit` at `854ad37` (pushed). All instances on
+  binary `42c15b2`; paper is running the ghcr-pulled build
+  (`2026.09.25.196`), live the local one (`2026.09.25`).
+- Continues the entry below. That one ended with Tier-0 done but the
+  engine unable to receive a quote.
+
+### The market-data hole, and a correction
+
+The earlier entry recorded "no 354/10167 -> entitlements are fine".
+That was wrong, and worth recording as wrong: error 10197 (competing
+live session) fires FIRST and masks the entitlement check. With the
+Client Portal login cleared, the real state appeared -- 10089,
+"requires additional subscription for API", on every symbol.
+
+The free US Real-Time Non Consolidated feed covers IEX/Cboe. It does
+NOT cover `NASDAQ.NMS/TOP` or `NYSE/TOP`, which is what SMART resolves
+this universe to. Umbrella #7 had called this correctly years earlier;
+an incomplete probe talked us out of it.
+
+Confirmed by asking for delayed data instead: `reqMarketDataType(3)`
+returned real books (AAPL 341.15/341.20) while type 1 returned
+nothing. The user then subscribed to the three Network A/B/C L1 lines
+(USD 4.50/mo) and a re-probe came back with ZERO errors and two-sided
+books on 6/6 symbols.
+
+Two things fell out of that:
+- The delayed feed independently validated the seed. AAPL seeded
+  341.07 vs live 341.18; AMD 630.63 vs 631.56.
+- 10197 tracks the Client Portal login exactly -- observed three
+  times, present/absent/present as the user logged in, out and in
+  again. The durable fix is a second username for the API; the one
+  created (`mma-trading-system`) is still PENDING activation, and
+  market data is assigned per username so it will need the three lines
+  too.
+
+### Freshness: presence stopped being enough (`3bc15d1`)
+
+Entitlement changed the meaning of the existing guard. Without
+real-time data a closed market produced NO quotes, so
+`bid_price > 0 && ask_price > 0` was a sufficient proxy for "live".
+With entitlement the feed serves the PREVIOUS session's closing book
+out of hours, so bid/ask are non-zero all weekend and the guard
+passes. With the window seeded there were 8 candidates, so a Sunday
+`Persistent=true` catch-up start would have opened three positions
+priced off Friday's close.
+
+`TopOfBook` now carries `updated_at_ms`, stamped by IBKRClient per
+tick; backtest replayers leave it 0 and callers read 0 as "unknown",
+so replay is unchanged. The subscription burst needed discounting
+separately -- IBKR replays the last known book AS TICKS the moment you
+subscribe, so out of hours the closing quote arrives stamped now and
+looks fresh. Requiring the engine to have been up longer than
+`market_data_max_age_ms` lets those age out, since no further ticks
+follow while the market is shut.
+
+Also: NOTHING ever set `ComponentId::MarketData` on this branch. It
+was read for the HEALTH line and never written, so md printed Down
+permanently -- several readings of md=Down earlier in this work were
+meaningless, and an alert keyed on it would have fired 100% of the
+time. Now published, and only on change: `set_component_state` logs
+every call including no-ops, and reconcile runs each step, so the
+naive version emitted ~94k "Ready -> Ready" lines a session. Measured
+320 lines in 80s down to 2.
+
+### RTH guard: fresh is not tradeable (`beab3e4`)
+
+Verified live at 18:31 ET on a Friday: after-hours books were updating
+continuously and md read Ready, two and a half hours after the close.
+Freshness answers "is this quote recent", not "should we trade on it".
+
+Entries and daily-close recording are gated on the NYSE regular
+session; EXITS DELIBERATELY ARE NOT -- being unable to close a
+position out of hours is strictly worse than being unable to open one.
+Uses the C++20 tz database (GCC 13.3 on the box has a working tzdb)
+rather than a hardcoded offset, and fails CLOSED if tzdb is
+unreadable. Holidays are not enumerated: no quotes flow on a holiday,
+so the freshness guard already covers it and the two compose without a
+calendar that rots.
+
+Proved by running the engine after hours WITH ORDERS ENABLED against
+8 live candidates: zero entry orders, where the pre-change engine
+would have opened three.
+
+### Alerting (`8b46ff8`, `cb3cdef`)
+
+Two failure modes that produce no error text:
+
+- Engine up but blind. Reads MarketData transitions from the engine
+  log; gated on RTH, on the engine actually running, and on 5 minutes
+  of continuous Down. The alert names 10197 and 10089 explicitly so
+  the cause is not re-derived at 10am.
+- Deployed but never restarted. Compares `/proc/<pid>/exe` against the
+  resolved symlink -- the kernel tracks what the process actually
+  mapped, so it keeps naming the old version directory after a swap
+  while symlink, binary.json and GET /binaries all report the new one.
+
+The second exposed a live bug: `pgrep -f` matches any command line
+CONTAINING the pattern, and during testing matched the test's own
+shell, reporting a mismatch against /usr/bin/bash. Now requires the
+resolved executable to actually be an hft_app. The pre-existing RSS
+check has the same exposure and was left alone.
+
+### PSTG removed (`42c15b2`)
+
+`reqMatchingSymbols` returns exactly one contract worldwide,
+`PSTG STK MEXI MXN`; every US variant raises error 200. The US listing
+is gone. It had been carried for months as the motivating example for
+`primary_exchange_override_table` on the theory that SMART picked the
+wrong listing -- but an override fixes 354/10167, which are
+permissions, whereas 200 means the contract does not exist. No
+override would ever have helped; the comments saying otherwise are
+corrected.
+
+`universe_size` stays 49 to match `kSymbolCompanyList` exactly. It is
+applied as the FIRST N entries, so setting it to 48 would have
+silently dropped NOK at position 49 -- a seeded symbol -- rather than
+the one that is actually missing. SNDK (position 39) is the only
+universe member with no seeded history.
+
+### Tier 1: deploy from ghcr (`35597cc`)
+
+CI had published images for weeks and nothing ever consumed one. The
+package turned out to be PUBLIC, so no PAT was needed -- the blocker
+was imagined. The image self-identifies as `2026.09.25.196`: the run
+number proves CI built it, which is what the version scheme was for.
+
+`scripts/deploy_from_ghcr.sh --instance <paper|live>` pulls, extracts
+(the binary is at /opt/hft/hft_app, not /), runs it to prove it links
+on this host BEFORE touching the symlink, stages it under a directory
+named from what the binary itself reports rather than the tag we
+asked for, swaps atomically, verifies, and rolls back on failure.
+
+Two interlocks: a running engine is refused outright and is not
+overridable; the trading window is refused from 09:00 (not 09:30) so
+the 09:25 timer start is covered, since with the engine down the timer
+can still fire mid-swap.
+
+Paper now runs the ghcr build while live stays on its local one at the
+same commit -- the per-instance pinning the template units exist for,
+demonstrated for real.
+
+### The gateway was a snowflake (`854ad37`)
+
+`hft/ibgateway:local` was built by hand on 2026-09-06 and never
+committed. Reconstructed from `docker history` and committed.
+
+The rebuild immediately earned its keep: building from the
+reconstructed Dockerfile installs Gateway 10.50, not the 10.45 in the
+original, because IBKR replaces the stable-standalone installer in
+place. The directory stays named 1045 since the installer writes where
+it is told, so the build succeeds and the version drifts silently.
+Hence two Dockerfiles -- one to rebuild from nothing, one deriving
+from the proven image so a settings change is not an unannounced
+version bump.
+
+The setting: the entrypoint generates IBC's config.ini at container
+start, and its comment has long claimed the Gateway would "auto-restart
+daily instead of forcing a full re-login" while only setting
+`IbAutoClosedown` and `ClosedownAt`. `AutoRestartTime` was never there,
+so the Gateway never wrote the autorestart token and IBC logged
+"autorestart file not found: full authentication will be required" on
+every start. That is the path that once sat pending 11.5 hours between
+"Login attempt: 1" and "Login has completed".
+
+NOT YET APPLIED. The image is built and tagged `hft/ibgateway:autorestart`
+with `hft/ibgateway:rollback-20260926` as the revert point, but the
+swap needs a container restart, which needs a full login, which may
+need phone 2FA. Rollback does not avoid it -- reverting also restarts.
+Left for a moment when the operator is present.
+
+### Open
+
+- Apply the gateway image (needs the operator's phone for 2FA).
+- `mma-trading-system` is pending activation; assign the three L1
+  lines to it, then point /etc/hft at it so the portal and the API
+  stop competing.
+- Auto-deploy on CI green is deliberately NOT wired: it should also
+  gate on flat positions and a backtest regression check.
+- Backend remains single-instance (`HFT_REPO`).
+- Config drift turned out to be already solved by the relocation: the
+  instance configs live outside the `services/` clone and are
+  untracked, and `_set_broker_mode` rewrites the paper one.
+- The APK builds only on `workflow_dispatch` or a `v*` tag, despite
+  release notes claiming "built from the default branch"; CI signs
+  with a debug keystore, so updates need uninstall-then-install.
+
+
 ## [2026-09-26] - Ops audit -> trading-live relocation, Tier-0 engine fixes, IBKR entitlement findings #Done
 
 Model / agent:

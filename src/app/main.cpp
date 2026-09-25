@@ -9,6 +9,7 @@
 
 #include "app/build_info.hpp"
 #include "app/effective_steps.hpp"
+#include "app/step_pacing.hpp"
 #include "broker/DatabentoBacktestBroker.hpp"
 #include "broker/IBKRClient.hpp"
 #include "broker/LocalSimBroker.hpp"
@@ -151,8 +152,29 @@ int main(int argc, char** argv) {
   const int steps = hft::compute_effective_steps(
       cfg.steps, cfg.steps_auto_from_broker, cfg.mode, 0);
   std::cout << "Running " << steps << " Chronos engine steps..." << std::endl;
+  // Paced on an absolute schedule rather than sleep-after-work, so
+  // the cadence does not drift by however long each step took.
+  const int interval_ms =
+      hft::effective_step_interval_ms(cfg.step_interval_ms, cfg.mode);
+  if (interval_ms > 0) {
+    std::cout << "Pacing steps at " << interval_ms << " ms" << std::endl;
+  }
+  const auto period = std::chrono::milliseconds(interval_ms);
+  auto next_tick = std::chrono::steady_clock::now();
   for (int t = 0; t < steps; ++t) {
     engine.step(t);
+    if (interval_ms > 0) {
+      next_tick += period;
+      const auto now = std::chrono::steady_clock::now();
+      if (now < next_tick) {
+        std::this_thread::sleep_until(next_tick);
+      } else {
+        // A step overran its slot (forecast subprocess, GC pause,
+        // slow broker call). Resynchronise instead of trying to
+        // catch up, which would spin to close a gap that only grows.
+        next_tick = now;
+      }
+    }
   }
   engine.stop();
   std::cout << "Chronos engine stopped. realized_pnl=" << engine.realized_pnl()

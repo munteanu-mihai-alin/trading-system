@@ -14,6 +14,13 @@ struct AppConfig {
   int universe_size = 30;
   int top_k = 3;
   int steps = 500;
+  // Per-step pacing for live/paper, in milliseconds. The outer
+  // loop does not block on anything, so without this it spins at
+  // ~900k steps/sec and pegs a core. IBKR throttles reqMktData to
+  // ~4 snapshots/sec, so 250 ms tracks the actual data rate and
+  // anything faster re-reads an unchanged book. 0 disables
+  // pacing; backtests ignore this entirely (see step_pacing.hpp).
+  int step_interval_ms = 250;
   bool order_enabled = true;
   double order_qty = 10.0;
   double max_order_qty = 10.0;

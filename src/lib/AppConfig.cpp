@@ -68,6 +68,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.top_k = std::stoi(val);
       } else if (key == "steps") {
         cfg.steps = std::stoi(val);
+      } else if (key == "step_interval_ms") {
+        cfg.step_interval_ms = std::stoi(val);
       } else if (key == "order_enabled") {
         cfg.order_enabled = parse_bool(val);
       } else if (key == "order_qty") {

@@ -4,6 +4,265 @@ This is the append-only working log for agents. New entries should be added at t
 
 Read `AGENT_WORKFLOW.md` before editing this file.
 
+## [2026-09-26] - Ops audit -> trading-live relocation, Tier-0 engine fixes, IBKR entitlement findings #Done
+
+Model / agent:
+- Model: Claude Opus 5 (session began on Opus 4.8)
+- Provider/client: Claude Code, Hetzner over SSH
+
+Source state:
+- `chronos2-mr-pred-exit` at `8b2e7d9` (pushed).
+- `main` at `f291889` (pushed). The relocation/Tier-0 work is
+  chronos-only; main carries provenance but not the rest.
+- Services now run from `/mnt/HC_Volume_105581071/trading-live/`, NOT
+  the old `trading-system/` checkout. The old tree is intact and
+  untouched -- rollback is reinstalling the old units.
+
+User direction: started as five ops questions (memory stats in the
+app, scheduled restarts, service inventory, branch-switch hazards,
+per-branch binaries), which surfaced enough breakage to turn into a
+relocation plus the Tier-0 engine fixes needed for a real paper run.
+
+### Two services were silently broken
+
+- `hft_app-rth-start.timer` was `enabled` but NOT `active`: stopped on
+  Sep 06 and never restarted, so `Trigger: n/a`. `enable` sets the boot
+  symlink; `start` arms the clock. The engine would never have
+  auto-started, while `rth-stop` stayed armed. Re-armed.
+- `hft_backtest_launcher` was crash-looping on `203/EXEC`.
+
+### Exec bits: every fresh clone was broken
+
+`hft_monitor.py`, `hft_backtest_launcher.py`, `notify.sh` and
+`stage_binary.sh` were all recorded in git as `100644`. All four are
+ExecStart-ed directly, so ANY clone produced `203/EXEC` -- the
+launcher crash-loop was not a one-off but the committed mode.
+
+Worst of these was `notify.sh`: it is ExecStart of
+`hft-notify@.service`, which every unit hooks via `OnFailure=`. Crash
+alerting would itself have failed at exactly the moment it was needed.
+`hft_monitor.py` NOTIFY_SCRIPT also still pointed at the old tree.
+All fixed to `100755` in git (`b9bf43a`) -- which matters now that
+deploying means cloning. NOTE: main still has all four at `100644`.
+
+### Relocation to trading-live/ (`659dbcd`)
+
+The old checkout had 118 dirty entries (70 deleted tracked files), so
+`git pull` could not apply cleanly and a fresh deploy was impossible.
+
+    services/   clean clone + .venv (relocated, paths rewritten) + deps
+    data/       chronos2 daily_closes + predictions, SHARED live+paper
+    live/       pinned binary, config.ini (mode=live),       logs, reports
+    paper/      pinned binary, config.ini (mode=ibkr_paper), logs, reports
+    backtest/   pinned binary, configs, data -> symlink to the 42 GB cache
+
+`hft_app` is now a TEMPLATE unit: `hft_app@paper` / `hft_app@live`
+take their instance dir from `%i`, so paper can run a new CI build
+while live stays on a proven one. RTH timers drive `hft_app@paper`.
+`api.py` no longer hardcodes the unit name (`HFT_APP_UNIT`).
+
+Secrets were already external (`/etc/hft/*`, `/var/run/...`), so the
+move needed no credential migration.
+
+Still single-instance: the backend `HFT_REPO` points at one instance
+(paper). Making it serve several at once is open work.
+
+### Tier-0 #1: the Chronos window could never fill (`857966b`, `5406bd4`)
+
+`daily_closes_` was an in-memory map, never restored, growing one
+close per CALENDAR day -- while the RTH timer stops the engine every
+day at the close. Each session started empty, appended one close, and
+died. The window could never exceed 1; `maybe_load_chronos_predictions`
+needs 64. The strategy was structurally incapable of ever trading.
+
+Now loaded lazily on first update and rewritten whenever a new day is
+appended, via a single `history.csv` that is BOTH the persistent store
+and the forecast input, so the two cannot disagree. Entries carry real
+ISO dates instead of positional indices: appending is keyed on
+(symbol, date), so a second start the same day is a no-op. The old
+guard was a `static thread_local` that reset every process start --
+under `Restart=on-failure` plus the timer `Persistent=true` catch-up,
+duplicates were likely. Persist writes `.tmp` then `rename(2)`.
+
+Seeding: `scripts/seed_chronos_history.py` pulls IBKR daily bars.
+Because `history.csv` is the canonical store, seeding needs NO engine
+change. Split-adjusted is correct here -- adjusted prices are on
+today's scale, the same scale the live mids arrive on; raw history
+would render a split as a large fake drop, and since entry fires on
+predicted return >= `target_profit_pct`, that artifact could
+manufacture a buy signal for a move that never happened.
+
+Seeded 48/49 x 64 days = 72 KB. Verified end to end: restart -> window
+loaded -> Chronos-2 ran -> predictions for all 48. Against the
+configured `target_profit_pct=0.008` that produced 8 candidates (0 at
+the QC reference 0.025), so with `top_k=3` it should take positions.
+
+Known seams, deliberately documented not papered over: bars are TRADES
+closes while the engine appends mids; the engine appends on the first
+step of a new day, i.e. near the OPEN not the close, so there is a
+one-overnight-gap seam at the join (the QC reference has the same
+quirk); and a split AFTER seeding still breaks the window since stored
+history is never retro-adjusted.
+
+### Tier-0 #2: the live loop was a spin (`8b2e7d9`)
+
+`IBroker::on_step` is a no-op default that `IBKRClient` never
+overrides, and nothing in the Chronos engine blocks, so live/paper ran
+at ~900k steps/sec: the configured 8.5M steps burned through in ~9.3s
+CPU and the engine exited MID-SESSION, which looked like it was
+randomly stopping. `steps=8500000` was a BACKTEST row count left in a
+live config; AppConfig already documented `steps<=0` as
+run-until-stopped but the config had never been switched.
+
+Instance configs now set `steps=0`, and the loop is paced on an
+absolute schedule (not sleep-after-work, so no drift). Overrun
+resyncs to now rather than trying to catch up -- the daily forecast
+subprocess takes seconds. Backtests NEVER pace, and that check lives
+in `include/app/step_pacing.hpp` rather than config, because there `t`
+IS the data row index: 8.5M rows at 250ms is ~24 days.
+
+Measured: 0.0% CPU / 0s CPU time after 12s wall, vs 9.3s CPU before.
+Also makes `steps=0` mean what it says -- INT_MAX at 250ms is ~17
+years, so the session is bounded by the RTH stop timer.
+
+### IBKR findings
+
+- PSTG is delisted. `reqMatchingSymbols('PSTG')` returns exactly one
+  contract worldwide: `PSTG STK MEXI MXN`. No US listing. Error 200 is
+  a CONTRACT error, not a permissions one -- the engine could never
+  trade it either. It should come out of the universe.
+- Error 10197 "No market data during competing live session". All four
+  probed symbols returned `bid=nan ask=nan`. Nothing was connected to
+  4002 and no engine was running, so the competing session is
+  EXTERNAL: IBKR allows one market-data session per username, and the
+  user confirmed being logged into Client Portal. This is a SILENT
+  failure mode -- engine connects, `broker=Ready`, `md=Down`, the
+  freshness guard correctly blocks every entry, session ends with zero
+  trades and no error that looks like one. Durable fix is a second
+  username dedicated to the API.
+- Actual subscriptions, verified in Account Management 2026-09-26.
+  Umbrella #7 listed what to BUY; this is what is actually active:
+
+      US Mutual Funds (NP,L1)                        Fee Waived
+      US Real-Time Non Consolidated Streaming Quotes Fee Waived
+      Alternative European Equities (L1)             Fee Waived
+      Hong Kong Securities Exchange (L1)             Fee Waived
+      Korea Equities Bundle (NP,L2)                  Fee Waived
+      IDEALPRO FX                                    Fee Waived
+      US and EU Bond Quotes (L1)                     Fee Waived
+      Total                                          EUR 0
+
+  Status Non-Professional; Market Data API enabled, form signed
+  2026-04-30. So US equities run on the FREE non-consolidated feed --
+  NOT consolidated NBBO. The three paid L1 lines (Network A/B/C,
+  ~$4.50/mo) are NOT active, and no US L2 is active. No 354/10167
+  denials were raised, so this is sufficient for L1-only paper. Note
+  Chronos is L1-only by design (it reads only the mid), so the
+  $41.50/mo of US L2 would buy this branch nothing.
+
+### Open
+
+- Tier 1 (deploy): pull from ghcr, deploy-window interlock (never swap
+  while `hft_app@*` is active), atomic activation + rollback,
+  post-deploy `--commit` verification.
+- Tier 2 (unattended): IB Gateway nightly re-auth (IBC runs INSIDE the
+  container -- an earlier note that it was not installed was wrong,
+  it had only been checked on the host); config out of git
+  (`config.ini` is tracked AND rewritten at runtime by `/live/start`);
+  alerting on "engine running during RTH but md=Down" and
+  "running SHA != expected".
+- Remove PSTG from the universe.
+- Backend is single-instance (`HFT_REPO`); make it instance-aware.
+- ghcr images are built but NOTHING consumes them -- the box has never
+  used one. Either wire deployment to pull them or drop the step.
+- Host memory in `/live/status`: `rss_mb` already exists,
+  `hft_monitor.py` already reads `/proc/meminfo`; just needs exposing.
+
+
+## [2026-09-12] - Build provenance compiled into hft_app #Done
+
+Model / agent:
+- Model: Claude Opus 5
+- Provider/client: Claude Code, Hetzner over SSH
+
+Source state: `2f4c0fc` + `8a5c5ce` on chronos2; `eb70c04` + `f291889`
+on main. Both pushed.
+
+`bin/binary.json` described a binary from the OUTSIDE, so the two could
+drift -- and did. `bin/hft_app` had been overwritten by an ad-hoc build
+whose md5 matched no staged version, and with no manifest beside it
+`GET /binaries` reported `branch=None`. That is the observability half
+of the stale-binary hazard that let an old hawkes binary keep placing
+orders while we believed we were on chronos.
+
+`hft_app` now accepts `--branch` / `--commit` / `--version`. One flag
+prints the bare value; several print labeled key=value. Any of them
+exits 0 WITHOUT trading, and the gate runs before logging, config load
+and broker connect, so a provenance query cannot start a session by
+accident. An unrecognised argument exits 2 rather than being ignored.
+
+CMake resolves values at configure time (git locally, "unknown" if
+unavailable). CI passes them from the GitHub context rather than
+hardcoding per branch, so the Configure step is byte-identical on every
+branch; `head_ref`/`pull_request.head.sha` come first so PR builds
+record the SOURCE branch and real head commit, and they go through
+`env:` so a branch name can never be interpreted as shell. Version is
+`YYYY.MM.DD.<run_number>`; local builds have no run number, which is
+itself a signal a binary did not come from CI.
+
+`stage_binary.sh` now re-runs cmake with the branch/sha it is about to
+name the directory after. The first staging run proved why:
+`versions/...-707768e/hft_app` reported `commit=cb7a3ac`, because a
+warm build dir keeps whatever sha it saw at first configure.
+
+`GET /binaries` now runs the binary instead of reading the manifest,
+with `provenance_source` (binary|manifest|unknown) so the app can tell
+authoritative from legacy. `_supports_provenance_flags` is a SAFETY
+INTERLOCK, not an optimisation: a pre-provenance `hft_app` was
+`int main()` and ignored argv entirely, so running it with flags would
+START A TRADING SESSION. The image is scanned for the usage string
+before it is ever executed with arguments.
+
+
+## [2026-09-07] - Chronos-only branch: hawkes removed, real IBKR, mobile over HTTPS #Done
+
+Model / agent:
+- Model: Claude Opus 4.8
+- Provider/client: Claude Code, Hetzner over SSH
+
+Branch `chronos2-mr-pred-exit`, commits `a2c0ddf` .. `cb7a3ac`.
+
+- Hawkes/OU engine removed entirely (`974af5a`, `e6876da`):
+  `LiveExecutionEngine`, `RankingEngine` and the OU/hawkes config and
+  `Stock` fields are gone on this branch. `Chronos2ExecutionEngine` is
+  the only strategy; `strategy_mode` defaults to
+  `chronos2_mr_pred_exit` (`e5d0b5f`). Reference implementation is
+  `research/quantconnect/Chronos_MR_PredExit.py` -- OU gate DROPPED,
+  entry when predicted return >= target, sell at
+  `max(predicted_price, entry*(1+target))`.
+- Real IBKR live/paper wired into the Chronos engine (`972e1dc`):
+  production event loop, wait for `nextValidId`, seed the engine order
+  id. Previously it could only construct Databento/LocalSim brokers,
+  so it could not run live at all.
+- Data-freshness guard (`906b1ce`): `route_entries` refuses to act
+  without a live two-sided book. `Stock::mid` defaults to ~100 before
+  the first tick, which was the source of off-hours garbage orders.
+  Later validated in production when the timer `Persistent=true`
+  catch-up started the engine at 03:04 -- it connected, saw `md=Down`,
+  and placed nothing.
+- Chronos-2 forecast bridge fixed (`cb7a3ac`): chronos-forecasting
+  2.x wants a 3-D context (n_series, n_variates, history_length) and
+  returns per-series LISTS of tensors. The old 1-D call raised
+  "Expected 3-d tensor ... got shape (64,)".
+- Mobile: self-signed TLS end to end (cert with SAN IP:10.66.66.1,
+  uvicorn `--ssl-*`, an Expo config plugin bundling the CA and
+  forbidding cleartext), plus a hardcoded plain-HTTP log sink on :8090
+  for diagnostics (`878e8ea`). A long "Network request failed" hunt
+  turned out to be an APK that predated the fixes -- CI signs with a
+  debug keystore, so updates require uninstall-then-install.
+- CI smoke assertions updated for the Chronos-only engine (`9ff4ac5`).
+
+
 ## [2026-08-24] - QC strategy iteration day: Chronos, TimesFM, Chronos-2, reinvest base, 4-way comparison #todo (mostly uncommitted)
 
 Model / agent:

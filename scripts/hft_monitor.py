@@ -57,6 +57,12 @@ DEFAULT_CONFIG = {
     # broker=Ready, and simply never receives a quote.
     "MD_BLIND_ALERT_SEC": "300",
     "ENGINE_LOG": "/mnt/HC_Volume_105581071/trading-live/paper/logs/hft_app.log",
+    # The instance's bin/hft_app symlink. Compared against what the
+    # running process actually has mapped, to catch "deployed but never
+    # restarted" -- the engine keeps running the old binary while every
+    # other signal (symlink, binary.json, GET /binaries) reports the new
+    # one, so the box looks upgraded and is not.
+    "ENGINE_BIN": "/mnt/HC_Volume_105581071/trading-live/paper/bin/hft_app",
     # When true, an absent hft_app process triggers an alert. Disable
     # while we're outside RTH or doing maintenance.
     "EXPECT_RUNNING": "false",
@@ -199,6 +205,54 @@ def launcher_state_age_sec(path: str) -> Optional[float]:
         return time.time() - p.stat().st_mtime
     except Exception:
         return None
+
+
+def hft_app_pid(pattern: str) -> Optional[int]:
+    """Pid of the running engine, or None."""
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, check=False,
+        )
+        pids = [p for p in out.stdout.split() if p.isdigit()]
+        return int(pids[0]) if pids else None
+    except (OSError, ValueError):
+        return None
+
+
+def running_binary_mismatch(pid: int, link_path: str) -> Optional[str]:
+    """Describe a running-vs-deployed binary mismatch, or None if they agree.
+
+    /proc/<pid>/exe resolves to the file the process actually mapped, so
+    it keeps pointing at the old version directory after a deploy
+    repoints the symlink -- which is precisely the condition worth
+    reporting. A replaced-in-place file shows up as "(deleted)".
+
+    Returns None on any resolution failure: a mismatch we cannot prove
+    is not one we should wake somebody for.
+    """
+    try:
+        running = os.path.realpath("/proc/%d/exe" % pid)
+        deployed = os.path.realpath(link_path)
+    except OSError:
+        return None
+    if not running or not deployed:
+        return None
+    # pgrep -f matches any command line containing the pattern,
+    # including shells and scripts that merely mention the path. If
+    # the resolved executable is not an hft_app at all then we found
+    # the wrong process, and an alert would be pure noise.
+    if "hft_app" not in os.path.basename(running):
+        return None
+    if running.endswith(" (deleted)"):
+        return "running binary was replaced on disk (%s)" % running
+    if running != deployed:
+        return "running %s but %s points at %s" % (
+            os.path.basename(os.path.dirname(running)),
+            link_path,
+            os.path.basename(os.path.dirname(deployed)),
+        )
+    return None
 
 
 def is_rth_now() -> bool:
@@ -364,6 +418,23 @@ def check_once(cfg: Dict[str, str], state: State) -> None:
                     "error",
                 )
                 state.mark_alerted("md_blind")
+
+    # Deployed but never restarted. Only meaningful while the engine is
+    # up; a stopped engine will pick up the new binary when it starts,
+    # which is the normal deploy path rather than a fault.
+    engine_bin = cfg.get("ENGINE_BIN", "")
+    if engine_bin and rss is not None:
+        pid = hft_app_pid(cfg["HFT_APP_PATTERN"])
+        if pid is not None:
+            mismatch = running_binary_mismatch(pid, engine_bin)
+            if mismatch and state.can_alert("binary_mismatch", cooldown):
+                notify(
+                    notify_script,
+                    f"BINARY MISMATCH: {mismatch}. The engine is still on the "
+                    f"old build; restart it to pick up the deploy.",
+                    "error",
+                )
+                state.mark_alerted("binary_mismatch")
 
 
 def main(argv: list[str]) -> int:

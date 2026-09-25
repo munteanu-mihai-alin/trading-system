@@ -48,6 +48,15 @@ DEFAULT_CONFIG = {
     "NOTIFY_SCRIPT": "/mnt/HC_Volume_105581071/trading-live/services/scripts/notify.sh",
     "STATE_FILE": "/var/run/hft_monitor.state",
     "HFT_APP_PATTERN": "bin/hft_app",
+    # "Engine up but blind" detection. The engine publishes MarketData
+    # transitions into its own log; if it is running during the regular
+    # session and market data has been Down for longer than this, the
+    # session is silently producing nothing. That is the failure mode
+    # that a competing IBKR login (error 10197) or a lapsed market-data
+    # subscription (10089) produces: the engine connects, reports
+    # broker=Ready, and simply never receives a quote.
+    "MD_BLIND_ALERT_SEC": "300",
+    "ENGINE_LOG": "/mnt/HC_Volume_105581071/trading-live/paper/logs/hft_app.log",
     # When true, an absent hft_app process triggers an alert. Disable
     # while we're outside RTH or doing maintenance.
     "EXPECT_RUNNING": "false",
@@ -192,6 +201,64 @@ def launcher_state_age_sec(path: str) -> Optional[float]:
         return None
 
 
+def is_rth_now() -> bool:
+    """True during the NYSE regular session (09:30-16:00 America/New_York).
+
+    Mirrors include/app/trading_hours.hpp. Kept as a duplicate rather
+    than shared because the monitor must keep working even when the
+    engine is not running -- that is precisely when it has something
+    to say.
+    """
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return False          # fail closed: no tz data -> do not alert
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return (9 * 60 + 30) <= minutes < (16 * 60)
+
+
+def md_down_seconds(log_path: str) -> Optional[float]:
+    """Seconds since MarketData last went Down, or None if it is Ready.
+
+    Reads the tail of the engine log for the most recent MarketData
+    transition. The engine publishes these only on change (a no-op
+    publish every step would be ~94k lines a session), so the last
+    matching line is the current state.
+
+    Returns None when the state is Ready, when no transition has been
+    logged yet, or when the log cannot be read -- all "nothing to say"
+    rather than "raise an alarm".
+    """
+    try:
+        with open(log_path, "rb") as f:
+            try:
+                f.seek(-200_000, os.SEEK_END)
+            except OSError:
+                f.seek(0)
+            tail = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+
+    for line in reversed(tail):
+        if "MarketData" not in line:
+            continue
+        if "-> Ready" in line:
+            return None
+        if "-> Down" in line:
+            try:
+                stamp = line.split("[", 1)[1].split("]", 1)[0]
+                from datetime import datetime
+                when = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S.%f")
+                return max(0.0, time.time() - when.timestamp())
+            except Exception:
+                return None
+    return None
+
+
 def check_once(cfg: Dict[str, str], state: State) -> None:
     cooldown = int(cfg["ALERT_COOLDOWN_SEC"])
     notify_script = cfg["NOTIFY_SCRIPT"]
@@ -277,6 +344,26 @@ def check_once(cfg: Dict[str, str], state: State) -> None:
                     "error",
                 )
                 state.mark_alerted("launcher_wedged")
+
+
+    # Engine up but blind. Only meaningful during the regular session:
+    # outside it, MarketData is Down by design and alerting would be
+    # noise. Requires the engine to actually be running -- a stopped
+    # engine is the liveness check's business, not this one.
+    blind_limit = float(cfg["MD_BLIND_ALERT_SEC"])
+    if blind_limit > 0 and is_rth_now() and rss is not None:
+        down_for = md_down_seconds(cfg["ENGINE_LOG"])
+        if down_for is not None and down_for >= blind_limit:
+            if state.can_alert("md_blind", cooldown):
+                notify(
+                    notify_script,
+                    f"ENGINE BLIND: running during RTH but market data has "
+                    f"been Down for {down_for / 60:.0f} min. Check for a "
+                    f"competing IBKR login (10197) or a lapsed market-data "
+                    f"subscription (10089).",
+                    "error",
+                )
+                state.mark_alerted("md_blind")
 
 
 def main(argv: list[str]) -> int:

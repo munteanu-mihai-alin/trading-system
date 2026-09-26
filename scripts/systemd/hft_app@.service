@@ -10,8 +10,16 @@
 #   systemctl start hft_app@paper          # paper session
 #   systemctl start hft_app@live           # live session
 #   journalctl -u hft_app@paper -f
-#   kill -USR1 $(pgrep -f trading-live/paper/bin/hft_app)   # freeze trader
-#   kill -USR2 $(pgrep -f trading-live/paper/bin/hft_app)   # force liquidate
+#   kill -USR1 $(pgrep -f trading-live/paper/bin/hft_app)   # freeze: refuse new entries
+#
+# NOTE: SIGUSR2 (force liquidate) is NOT implemented on this branch.
+# kill_signals installs and records it, but the Chronos engine only
+# consumes it as a freeze -- it will not sell your positions. The
+# handlers were not installed at all until 2026-09-26: kill_signals
+# documents itself as "called from LiveExecutionEngine::start()", and
+# that engine was deleted during the hawkes removal, so both switches
+# silently did nothing. Use systemctl stop plus the app's /liquidate
+# endpoint if you need out.
 #
 # RestartSec=10s also covers the IB Gateway's clientId release: an
 # immediate reconnect after a session ends can be refused with
@@ -34,7 +42,14 @@ ExecStart=/mnt/HC_Volume_105581071/trading-live/%i/bin/hft_app
 Restart=on-failure
 RestartSec=10s
 
-KillSignal=SIGINT
+# SIGTERM, not SIGINT. Something in the process -- the TWS API library
+# is the likely owner -- blocks SIGINT process-wide, so the handler
+# never runs: measured, SIGINT is ignored for 35s while SIGTERM reaches
+# the engine immediately. The unit asked for SIGINT for months, so
+# every RTH stop timed out after 30s and SIGKILLed the engine, leaving
+# the unit failed. With SIGTERM the engine leaves its step loop, runs
+# engine.stop(), flushes logs and exits 0 in about 5s.
+KillSignal=SIGTERM
 TimeoutStopSec=30s
 KillMode=mixed
 

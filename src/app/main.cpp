@@ -7,6 +7,8 @@
 #include <thread>
 #include <vector>
 
+#include <atomic>
+#include <csignal>
 #include "app/build_info.hpp"
 #include "app/effective_steps.hpp"
 #include "app/step_pacing.hpp"
@@ -16,10 +18,41 @@
 #include "config/AppConfig.hpp"
 #include "config/LiveTradingConfig.hpp"
 #include "engine/Chronos2ExecutionEngine.hpp"
+#include "engine/kill_signals.hpp"
 #include "log/logging_state.hpp"
 #include "models/symbol_universe.hpp"
 
 namespace hl = hft::log;
+
+namespace {
+
+// Set by SIGTERM/SIGINT; the step loop polls it and leaves normally so
+// engine.stop() and the log flush still run.
+//
+// Nothing handled either signal before, and the unit was configured
+// KillSignal=SIGINT -- which something in the process (the TWS API
+// library is the likely culprit) ignores outright. Measured: SIGINT
+// ignored for 35s, SIGTERM fatal in 0.00s. So the "graceful stop" the
+// unit documented never happened; the RTH stop timer timed out after
+// 30s and SIGKILLed the engine every single day, leaving the unit in
+// failed state.
+std::atomic<bool> g_stop_requested{false};
+
+extern "C" void handle_stop_signal(int) {
+  // Async-signal-safe: a single relaxed atomic store, nothing else.
+  g_stop_requested.store(true, std::memory_order_relaxed);
+}
+
+void install_stop_handlers() {
+  struct sigaction sa {};
+  sa.sa_handler = handle_stop_signal;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;  // no SA_RESTART: let sleep_until return early
+  sigaction(SIGTERM, &sa, nullptr);
+  sigaction(SIGINT, &sa, nullptr);
+}
+
+}  // namespace
 
 // Chronos-MR-PredExit is the only strategy on this branch: rank by
 // Chronos's predicted return, exit at the predicted price (reference:
@@ -148,6 +181,13 @@ int main(int argc, char** argv) {
   engine.initialize_universe(hft::kSymbolCompanyList, uni_size);
   engine.subscribe_live_books();
 
+  // Installed AFTER broker connect: the TWS API sets signal
+  // dispositions of its own during connection, and whichever
+  // runs last wins.
+  install_stop_handlers();
+  hft::kill_signals::reset_for_session();
+  hft::kill_signals::install_kill_signal_handlers();
+
   hl::set_app_state(hl::AppState::Live);
   const int steps = hft::compute_effective_steps(
       cfg.steps, cfg.steps_auto_from_broker, cfg.mode, 0);
@@ -162,6 +202,10 @@ int main(int argc, char** argv) {
   const auto period = std::chrono::milliseconds(interval_ms);
   auto next_tick = std::chrono::steady_clock::now();
   for (int t = 0; t < steps; ++t) {
+    if (g_stop_requested.load(std::memory_order_relaxed)) {
+      std::cout << "Stop signal received; shutting down." << std::endl;
+      break;
+    }
     engine.step(t);
     if (interval_ms > 0) {
       next_tick += period;

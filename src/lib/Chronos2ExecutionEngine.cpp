@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include "app/trading_hours.hpp"
+#include "engine/kill_signals.hpp"
 #include "log/logging_state.hpp"
 
 #include "broker/IBKRClient.hpp"
@@ -548,6 +549,17 @@ void Chronos2ExecutionEngine::compute_composite_scores() {
 }
 
 void Chronos2ExecutionEngine::route_entries() {
+  // Operator freeze (SIGUSR1). The handlers were installed but never
+  // polled on this branch -- kill_signals documents itself as "called
+  // from LiveExecutionEngine::start()", and that engine was deleted, so
+  // the emergency control the unit tells operators to use silently did
+  // nothing. Refusing new entries is the half this engine can honour;
+  // SIGUSR2 force-liquidate is NOT implemented here (see the unit).
+  if (hft::kill_signals::user_kill_requested() ||
+      hft::kill_signals::force_liquidate_requested()) {
+    return;
+  }
+
   // Entries only during the regular session. Fresh does not mean
   // tradeable: after-hours books update continuously but are thin and
   // wide, and nothing about this strategy was validated there. Exits

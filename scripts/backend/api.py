@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -101,6 +102,53 @@ def _read_metrics(run_dir: Path) -> Dict[str, Any]:
         return json.loads(m.read_text())
     except Exception:
         return {}
+
+
+def _host_resources() -> Dict[str, Any]:
+    """Host memory and volume headroom, so the app can show the engine's
+    RSS against something rather than as a bare number.
+
+    /proc/meminfo and shutil rather than psutil: hft_monitor.py already
+    reads meminfo the same way and deliberately avoids the dependency,
+    and this runs on every status poll.
+
+    MemAvailable, not MemFree. Free excludes reclaimable page cache, so
+    on this box it reads a few hundred MB out of 7.6 GB and looks
+    alarming while ~6.5 GB is genuinely available.
+    """
+    out: Dict[str, Any] = {
+        "mem_total_mb": None,
+        "mem_available_mb": None,
+        "mem_used_mb": None,
+        "disk_free_gb": None,
+        "disk_total_gb": None,
+    }
+    try:
+        fields = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                parts = rest.split()
+                if parts:
+                    fields[key] = int(parts[0])  # kB
+        total = fields.get("MemTotal")
+        avail = fields.get("MemAvailable")
+        if total:
+            out["mem_total_mb"] = total // 1024
+        if avail:
+            out["mem_available_mb"] = avail // 1024
+        if total and avail:
+            out["mem_used_mb"] = (total - avail) // 1024
+    except (OSError, ValueError):
+        pass
+
+    try:
+        usage = shutil.disk_usage(str(REPO_ROOT))
+        out["disk_free_gb"] = round(usage.free / (1024 ** 3), 1)
+        out["disk_total_gb"] = round(usage.total / (1024 ** 3), 1)
+    except OSError:
+        pass
+    return out
 
 
 def _hft_app_status() -> Dict[str, Any]:
@@ -210,6 +258,7 @@ def live_status(req: Request):
     _require_token(req)
     return {
         "process": _hft_app_status(),
+        "host": _host_resources(),
         "log_tail": _last_log_lines(30),
     }
 

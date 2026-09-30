@@ -54,7 +54,28 @@ except ImportError as exc:  # pragma: no cover - install hint
 REPO_ROOT = Path(
     os.environ.get("HFT_REPO", "/mnt/HC_Volume_105581071/trading-system")
 )
-RUNS_DIR = REPO_ROOT / "reports" / "runs"
+
+INSTANCES_ROOT = Path(
+    os.environ.get(
+        "HFT_INSTANCES_ROOT", "/mnt/HC_Volume_105581071/trading-live"
+    )
+)
+# Backtests are not a property of the paper/live instance the backend
+# happens to serve -- they belong to the backtest instance, which owns
+# the Databento caches and the run reports.
+#
+# This was wrong after the relocation and silently so: hft_backend runs
+# with HFT_REPO=<paper>, so POST /backtests wrote jobs into
+# paper/queue/incoming while hft_backtest_launcher, started with
+# HFT_REPO=<backtest>, watched backtest/queue. Two submitted jobs sat
+# in paper/queue for hours with the launcher active and idle, and
+# nothing reported an error because neither side was broken -- they
+# were just looking at different directories.
+BACKTEST_DIR = Path(
+    os.environ.get("HFT_BACKTEST_REPO", str(INSTANCES_ROOT / "backtest"))
+)
+
+RUNS_DIR = BACKTEST_DIR / "reports" / "runs"
 LOGS_DIR = REPO_ROOT / "logs"
 # ---- Instances -------------------------------------------------------
 #
@@ -70,11 +91,6 @@ LOGS_DIR = REPO_ROOT / "logs"
 # mode=live and then started hft_app@paper against port 4001 -- live
 # trading out of the paper directory, with the paper config corrupted
 # and the live directory untouched.
-INSTANCES_ROOT = Path(
-    os.environ.get(
-        "HFT_INSTANCES_ROOT", "/mnt/HC_Volume_105581071/trading-live"
-    )
-)
 VALID_INSTANCES = ("paper", "live")
 DEFAULT_INSTANCE = os.environ.get("HFT_INSTANCE", "paper")
 
@@ -126,7 +142,7 @@ def _instance_mode(inst: str) -> Optional[str]:
 
 
 HFT_APP_PATTERN = "bin/hft_app"  # legacy: any instance
-QUEUE_DIR = REPO_ROOT / "queue"
+QUEUE_DIR = BACKTEST_DIR / "queue"
 LAUNCHER_STATE_FILE = Path("/var/run/hft_backtest_launcher.state")
 
 

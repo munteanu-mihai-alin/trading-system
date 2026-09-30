@@ -64,6 +64,25 @@ class Chronos2ExecutionEngine {
       const std::vector<std::pair<std::string, std::string>>& list,
       int n_stocks);
   void subscribe_live_books();
+
+  // Rebuild open_positions_ / exit bindings from what the BROKER says
+  // we hold, at session start.
+  //
+  // open_positions_ is in-memory and starts empty, and the RTH timer
+  // stops the engine every day, so without this the engine forgets
+  // every position overnight. Three things then break together:
+  // route_exit_orders iterates open_positions_, so carried positions
+  // get no exit EVER; committed_notional sums the same map, so the
+  // budget reads 0 and authorises a full set of new entries; and with
+  // nothing ever selling, realized_pnl can never move off zero.
+  //
+  // Observed live: two paper sessions left 5 positions against a
+  // 3-position, $1500 cap, with zero working orders and $0 realised.
+  //
+  // LiveExecutionEngine did this (umbrella #10 / audit items #5 and
+  // #17). It was deleted in the hawkes removal and the calls went with
+  // it, while the handoff log still recorded them as shipped.
+  void reconcile_positions_from_broker();
   void step(int t);
 
   // Seed the internal order-id counter from the broker nextValidId
@@ -83,6 +102,7 @@ class Chronos2ExecutionEngine {
   // ---- Chronos-2 daily forecast bridge ----
   // Writes per-symbol daily-close history to a CSV, spawns Python
   // chronos2_forecast.py, reads predictions back into portfolio.items.
+
   void maybe_load_chronos_predictions();
   void write_daily_closes_csv(const std::string& out_path) const;
 

@@ -179,6 +179,9 @@ int main(int argc, char** argv) {
   const int uni_size = std::clamp(
       cfg.universe_size, 0, static_cast<int>(hft::kSymbolCompanyList.size()));
   engine.initialize_universe(hft::kSymbolCompanyList, uni_size);
+  // Adopt whatever the broker already holds BEFORE any step runs, so
+  // the first budget check and the first exit pass both see reality.
+  engine.reconcile_positions_from_broker();
   engine.subscribe_live_books();
 
   // Installed AFTER broker connect: the TWS API sets signal

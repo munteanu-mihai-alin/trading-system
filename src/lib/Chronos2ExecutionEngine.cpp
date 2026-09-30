@@ -425,6 +425,56 @@ void Chronos2ExecutionEngine::update_daily_close_history() {
     persist_daily_close_history();
 }
 
+void Chronos2ExecutionEngine::reconcile_positions_from_broker() {
+  if (broker_ == nullptr)
+    return;
+
+  const auto positions = broker_->query_positions();
+  for (const auto& bp : positions) {
+    if (bp.qty <= 0.0 || bp.symbol.empty())
+      continue;
+    // Only adopt symbols this engine actually trades; the account may
+    // hold unrelated positions.
+    if (portfolio_index_for_symbol(bp.symbol) < 0)
+      continue;
+
+    OpenPositionState pos;
+    pos.symbol = bp.symbol;
+    pos.qty = bp.qty;
+    // avg_cost is what the position actually cost, which is exactly
+    // what the exit target should be measured against.
+    pos.entry_price = bp.avg_cost;
+    // The prediction that motivated the original entry is gone -- it
+    // lived only in the previous process. Leaving this at 0 makes
+    // route_exit_orders fall back to entry * (1 + target_profit_pct),
+    // which is the conservative choice: it never sells at a loss, and
+    // it cannot invent a target from a forecast we no longer have.
+    pos.predicted_price_at_fill = 0.0;
+    open_positions_[bp.symbol] = pos;
+  }
+
+  // Bind sells the broker still has working, so route_exit_orders does
+  // not place a second one. Without this a restart mid-session
+  // double-sells.
+  const auto orders = broker_->query_open_orders();
+  for (const auto& bo : orders) {
+    if (bo.side != "sell")
+      continue;
+    auto it = open_positions_.find(bo.symbol);
+    if (it == open_positions_.end())
+      continue;
+    it->second.sell_order_id = bo.order_id;
+    it->second.sell_limit = bo.limit;
+    exit_order_symbols_[bo.order_id] = bo.symbol;
+  }
+
+  if (!open_positions_.empty()) {
+    std::cout << "[chronos2] adopted " << open_positions_.size()
+              << " broker position(s); committed=" << committed_notional()
+              << std::endl;
+  }
+}
+
 void Chronos2ExecutionEngine::maybe_load_chronos_predictions() {
   const std::string today = today_yyyymmdd();
   if (today == last_load_yyyymmdd_)

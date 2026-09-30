@@ -56,11 +56,76 @@ REPO_ROOT = Path(
 )
 RUNS_DIR = REPO_ROOT / "reports" / "runs"
 LOGS_DIR = REPO_ROOT / "logs"
-HFT_APP_PATTERN = "bin/hft_app"
-# systemd unit that owns the engine. Under the trading-live layout
-# this is a template instance (hft_app@paper / hft_app@live), so the
-# name is configurable rather than hardcoded to a single unit.
-HFT_APP_UNIT = os.environ.get("HFT_APP_UNIT", "hft_app@paper")
+# ---- Instances -------------------------------------------------------
+#
+# paper and live are separate DIRECTORIES under the trading-live root,
+# each with its own pinned binary, its own config.ini and its own
+# systemd template instance. Mode is a property of the instance and is
+# never rewritten at runtime -- that is the whole point of the layout.
+#
+# This replaces _set_broker_mode, which edited config.ini in place to
+# flip paper/live. After the relocation that function had become
+# actively dangerous: HFT_REPO points at the PAPER instance, so
+# starting "live" from the app would have rewritten paper/config.ini to
+# mode=live and then started hft_app@paper against port 4001 -- live
+# trading out of the paper directory, with the paper config corrupted
+# and the live directory untouched.
+INSTANCES_ROOT = Path(
+    os.environ.get(
+        "HFT_INSTANCES_ROOT", "/mnt/HC_Volume_105581071/trading-live"
+    )
+)
+VALID_INSTANCES = ("paper", "live")
+DEFAULT_INSTANCE = os.environ.get("HFT_INSTANCE", "paper")
+
+
+def _resolve_instance(name: Optional[str]) -> str:
+    """Validate an instance name, falling back to the default.
+
+    Whitelisted rather than sanitised: the value reaches a filesystem
+    path and a systemd unit name, and neither is a good place to find
+    out a caller was creative.
+    """
+    inst = (name or DEFAULT_INSTANCE).strip().lower()
+    if inst not in VALID_INSTANCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"instance must be one of {list(VALID_INSTANCES)}",
+        )
+    return inst
+
+
+def _instance_dir(inst: str) -> Path:
+    return INSTANCES_ROOT / inst
+
+
+def _instance_unit(inst: str) -> str:
+    return f"hft_app@{inst}.service"
+
+
+def _instance_pattern(inst: str) -> str:
+    """pgrep pattern that matches ONLY this instance's engine.
+
+    The bare "bin/hft_app" matched any instance -- and any command line
+    that merely mentioned the path.
+    """
+    return f"trading-live/{inst}/bin/hft_app"
+
+
+def _instance_mode(inst: str) -> Optional[str]:
+    """The broker mode this instance is configured for. Read-only."""
+    cfg = _instance_dir(inst) / "config.ini"
+    try:
+        for line in cfg.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("mode="):
+                return stripped.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+HFT_APP_PATTERN = "bin/hft_app"  # legacy: any instance
 QUEUE_DIR = REPO_ROOT / "queue"
 LAUNCHER_STATE_FILE = Path("/var/run/hft_backtest_launcher.state")
 
@@ -151,12 +216,12 @@ def _host_resources() -> Dict[str, Any]:
     return out
 
 
-def _hft_app_status() -> Dict[str, Any]:
+def _hft_app_status(pattern: str = HFT_APP_PATTERN) -> Dict[str, Any]:
     """Returns running / pid / rss_mb / last log lines."""
     out = {"running": False, "pid": None, "rss_mb": None, "elapsed": None}
     try:
         pgrep = subprocess.run(
-            ["pgrep", "-fao", HFT_APP_PATTERN],
+            ["pgrep", "-fao", pattern],
             capture_output=True, text=True, check=False,
         )
         if pgrep.returncode == 0 and pgrep.stdout.strip():
@@ -177,8 +242,9 @@ def _hft_app_status() -> Dict[str, Any]:
     return out
 
 
-def _last_log_lines(n: int = 20) -> List[str]:
-    log = LOGS_DIR / "hft_app.log"
+def _last_log_lines(n: int = 20,
+                    log_dir: Optional[Path] = None) -> List[str]:
+    log = (log_dir or LOGS_DIR) / "hft_app.log"
     if not log.is_file():
         return []
     try:
@@ -254,12 +320,18 @@ def get_run(run_id: str, req: Request):
 
 
 @app.get("/live/status")
-def live_status(req: Request):
+def live_status(req: Request, instance: Optional[str] = None):
+    """Status of one instance. ?instance=paper|live, default paper."""
     _require_token(req)
+    inst = _resolve_instance(instance)
     return {
-        "process": _hft_app_status(),
+        "instance": inst,
+        "mode": _instance_mode(inst),
+        "unit": _instance_unit(inst),
+        "instances": list(VALID_INSTANCES),
+        "process": _hft_app_status(_instance_pattern(inst)),
         "host": _host_resources(),
-        "log_tail": _last_log_lines(30),
+        "log_tail": _last_log_lines(30, _instance_dir(inst) / "logs"),
     }
 
 
@@ -413,35 +485,38 @@ def backtest_detail(job_id: str, req: Request):
 
 
 @app.post("/kill")
-def kill_signal(req: Request):
+def kill_signal(req: Request, instance: Optional[str] = None):
     """Delivers SIGUSR1 to every hft_app process. The engine treats it
     as "freeze trader": cancel every open entry+exit, refuse new orders,
     keep open positions in place. Idempotent (already-frozen sessions
     just log the second signal).
     """
     _require_token(req)
-    return _send_signal_to_hft_app("USR1")
+    inst = _resolve_instance(instance)
+    return _send_signal_to_hft_app("USR1", _instance_pattern(inst))
 
 
 @app.post("/liquidate")
-def liquidate_signal(req: Request):
+def liquidate_signal(req: Request, instance: Optional[str] = None):
     """Delivers SIGUSR2 to every hft_app process. The engine treats it
     as "force liquidate": freeze trader + post marketable sells at
     best_bid for every open position. Use when something is wrong
     enough that holding is riskier than the immediate exit prints.
     """
     _require_token(req)
-    return _send_signal_to_hft_app("USR2")
+    inst = _resolve_instance(instance)
+    return _send_signal_to_hft_app("USR2", _instance_pattern(inst))
 
 
-def _send_signal_to_hft_app(signal: str) -> Dict[str, Any]:
+def _send_signal_to_hft_app(signal: str,
+                            pattern: str = HFT_APP_PATTERN) -> Dict[str, Any]:
     """Common implementation for /kill and /liquidate. Looks up the
     pid via pgrep so we don't depend on systemctl returning the right
     thing for a process that systemd may not own (manual launch).
     """
     try:
         out = subprocess.run(
-            ["pgrep", "-f", HFT_APP_PATTERN],
+            ["pgrep", "-f", pattern],
             capture_output=True, text=True, check=False,
         )
         pids = [p for p in out.stdout.strip().splitlines() if p]
@@ -578,7 +653,7 @@ def _supports_provenance_flags(exe: Path) -> bool:
         return False
 
 
-def _list_binaries() -> List[Dict[str, Any]]:
+def _list_binaries(inst: Optional[str] = None) -> List[Dict[str, Any]]:
     """Enumerates runnable binaries: the default bin/hft_app plus every
     bin/versions/<version>/.
 
@@ -588,7 +663,7 @@ def _list_binaries() -> List[Dict[str, Any]]:
     carries provenance_source so the app can tell the two apart.
     """
     out: List[Dict[str, Any]] = []
-    bin_dir = REPO_ROOT / "bin"
+    bin_dir = (_instance_dir(inst) if inst else REPO_ROOT) / "bin"
 
     def _manifest(d: Path) -> Dict[str, Any]:
         mf = d / "binary.json"
@@ -668,12 +743,13 @@ def _list_binaries() -> List[Dict[str, Any]]:
 
 
 @app.get("/binaries")
-def list_binaries(req: Request):
+def list_binaries(req: Request, instance: Optional[str] = None):
     """Runnable binaries + each one's branch and config schema, so the
     app can offer branch selection and show only the configs that branch
     supports."""
     _require_token(req)
-    return {"binaries": _list_binaries()}
+    inst = _resolve_instance(instance)
+    return {"instance": inst, "binaries": _list_binaries(inst)}
 
 
 @app.get("/runs/{run_id}/qc")
@@ -709,96 +785,126 @@ def _gateway_reachable(port: int) -> bool:
 
 @app.post("/live/start")
 def live_start(payload: Dict[str, Any], req: Request):
-    """Start live/paper trading.
+    """Start an instance.
 
     Body:
       {
-        "mode": "paper" | "live",
+        "instance": "paper" | "live",     # "mode" accepted as an alias
         "confirm": true,                  # required
-        "confirm_live": true,             # required when mode == "live"
-        "binary_version": "v14"           # optional; swaps bin/hft_app
+        "confirm_live": true,             # required for the live instance
+        "binary_version": "..."           # optional; repoints bin/hft_app
       }
-    Refuses if the IB Gateway socket for the mode isn't up, or if an
-    hft_app is already running.
+
+    Selecting an instance STARTS A DIFFERENT UNIT against a different
+    directory; it no longer rewrites any config. Each instance's mode
+    is fixed in its own config.ini, so paper cannot be talked into
+    trading live.
+
+    Refuses if that instance's IB Gateway port is not up, or if that
+    instance is already running.
     """
     _require_token(req)
-    mode = str(payload.get("mode", "paper")).lower()
-    if mode not in ("paper", "live"):
-        raise HTTPException(status_code=400, detail="mode must be paper|live")
+    # "mode" is the old field name and meant the same thing to callers.
+    inst = _resolve_instance(payload.get("instance") or payload.get("mode"))
     if not payload.get("confirm"):
         raise HTTPException(status_code=400, detail="confirm=true required")
-    if mode == "live" and not payload.get("confirm_live"):
+    if inst == "live" and not payload.get("confirm_live"):
         raise HTTPException(
             status_code=400,
             detail="confirm_live=true required to start LIVE trading",
         )
 
-    # Refuse to double-start.
+    inst_dir = _instance_dir(inst)
+    if not inst_dir.is_dir():
+        raise HTTPException(status_code=404,
+                            detail=f"no such instance directory: {inst_dir}")
+
+    # The instance's own config decides the mode. Cross-check it against
+    # the instance name so a mislabelled config cannot route live
+    # trading through the paper instance.
+    mode = _instance_mode(inst)
+    expected = "live" if inst == "live" else "ibkr_paper"
+    if mode != expected:
+        raise HTTPException(
+            status_code=500,
+            detail=f"instance '{inst}' has mode={mode!r}, expected "
+                   f"{expected!r}; refusing to start a mislabelled instance",
+        )
+
+    # Refuse to double-start THIS instance. Checked per instance so
+    # paper running does not block live, or vice versa.
     running = subprocess.run(
-        ["pgrep", "-f", HFT_APP_PATTERN],
+        ["pgrep", "-f", _instance_pattern(inst)],
         capture_output=True, text=True, check=False,
     ).stdout.strip()
     if running:
-        raise HTTPException(status_code=409, detail="hft_app already running")
+        raise HTTPException(status_code=409,
+                            detail=f"{inst} engine already running")
 
-    port = 4001 if mode == "live" else 4002
+    port = 4001 if inst == "live" else 4002
     if not _gateway_reachable(port):
         raise HTTPException(
             status_code=503,
             detail=f"IB Gateway not reachable on 127.0.0.1:{port} "
-                   f"(mode={mode}); is hft_ibgateway up and logged in?",
+                   f"(instance={inst}); is hft_ibgateway up and logged in?",
         )
 
-    # Optional binary swap: point bin/hft_app at the chosen version.
+    # Optional binary swap, within THIS instance's own bin/.
     version = payload.get("binary_version")
     if version and version != "current":
-        target = REPO_ROOT / "bin" / "versions" / version / "hft_app"
+        target = inst_dir / "bin" / "versions" / version / "hft_app"
         if not target.exists():
-            raise HTTPException(status_code=404,
-                                detail=f"binary_version {version} not found")
-        link = REPO_ROOT / "bin" / "hft_app"
+            raise HTTPException(
+                status_code=404,
+                detail=f"binary_version {version} not found for {inst}")
+        link = inst_dir / "bin" / "hft_app"
         try:
             if link.is_symlink() or link.exists():
                 link.unlink()
-            link.symlink_to(target)
+            link.symlink_to(Path("versions") / version / "hft_app")
         except Exception as exc:
             raise HTTPException(status_code=500,
                                 detail=f"binary swap failed: {exc}")
 
-    # Point config.ini at the right IBKR mode, then start the unit.
-    _set_broker_mode(mode)
+    unit = _instance_unit(inst)
     try:
-        subprocess.run(["systemctl", "start", HFT_APP_UNIT],
+        subprocess.run(["systemctl", "start", unit],
                        capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500,
                             detail=f"systemctl start failed: {exc.stderr}")
-    return {"started": True, "mode": mode, "port": port,
-            "binary_version": version or "current"}
+    return {"started": True, "instance": inst, "mode": mode, "unit": unit,
+            "port": port, "binary_version": version or "current"}
 
 
 @app.post("/live/stop")
-def live_stop(req: Request):
-    """Stop the engine (systemctl stop hft_app). For an emergency
-    freeze/flatten while keeping the process up, use /kill or /liquidate
-    instead."""
+def live_stop(payload: Optional[Dict[str, Any]] = None,
+              req: Request = None):
+    """Stop one instance. Body: {"instance": "paper"|"live"}.
+
+    For an emergency freeze while keeping the process up, use /kill.
+    """
     _require_token(req)
+    payload = payload or {}
+    inst = _resolve_instance(payload.get("instance") or payload.get("mode"))
+    unit = _instance_unit(inst)
     try:
-        subprocess.run(["systemctl", "stop", HFT_APP_UNIT],
+        subprocess.run(["systemctl", "stop", unit],
                        capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=500,
                             detail=f"systemctl stop failed: {exc.stderr}")
-    return {"stopped": True}
+    return {"stopped": True, "instance": inst, "unit": unit}
 
 
 # ------------------------------------------------- live orders/positions
 
-def _config_map() -> Dict[str, str]:
-    """Flat key=value view of config.ini (section headers ignored, which
-    matches how the C++ AppConfig parses it)."""
+def _config_map(inst: Optional[str] = None) -> Dict[str, str]:
+    """Flat key=value view of an instance's config.ini (section headers
+    ignored, which matches how the C++ AppConfig parses it)."""
     out: Dict[str, str] = {}
-    cfg_path = REPO_ROOT / "config.ini"
+    root = _instance_dir(inst) if inst else REPO_ROOT
+    cfg_path = root / "config.ini"
     if cfg_path.is_file():
         for line in cfg_path.read_text().splitlines():
             s = line.strip()
@@ -842,7 +948,7 @@ def _latest_mid_by_symbol(path: Path) -> Dict[str, float]:
 
 
 @app.get("/live/orders")
-def live_orders(req: Request):
+def live_orders(req: Request, instance: Optional[str] = None):
     """Live/paper session orders, open positions (with the target/predicted
     exit price), and a small stats block derived from the engine's
     order + decision logs.
@@ -853,9 +959,11 @@ def live_orders(req: Request):
     computed), else entry * (1 + target_profit_pct).
     """
     _require_token(req)
-    cfg = _config_map()
-    orders_path = REPO_ROOT / cfg.get("order_log_path", "reports/orders.csv")
-    dec_path = REPO_ROOT / cfg.get("decision_log_path", "reports/decisions.csv")
+    inst = _resolve_instance(instance)
+    inst_dir = _instance_dir(inst)
+    cfg = _config_map(inst)
+    orders_path = inst_dir / cfg.get("order_log_path", "reports/orders.csv")
+    dec_path = inst_dir / cfg.get("decision_log_path", "reports/decisions.csv")
     target_pct = float(cfg.get("target_profit_pct", 0.008))
     per_share = float(cfg.get("commission_per_share", 0.0035))
     min_order = float(cfg.get("commission_min_per_order", 0.35))
@@ -969,29 +1077,6 @@ def live_orders(req: Request):
     }
 
 
-def _set_broker_mode(mode: str) -> None:
-    """Rewrites the [broker] mode + paper/live port in config.ini so the
-    engine connects to the IB Gateway for the requested mode. Minimal
-    line edit -- leaves every other config line untouched."""
-    cfg_path = REPO_ROOT / "config.ini"
-    if not cfg_path.is_file():
-        return
-    lines = cfg_path.read_text().splitlines()
-    out = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("mode=") and (
-            "backtest" in stripped or "paper" in stripped or "live" in stripped
-            or "sim" in stripped
-        ):
-            out.append("mode=ibkr_paper" if mode == "paper" else "mode=live")
-        elif stripped.startswith("paper_port="):
-            out.append("paper_port=4002")
-        elif stripped.startswith("live_port="):
-            out.append("live_port=4001")
-        else:
-            out.append(line)
-    cfg_path.write_text("\n".join(out) + "\n")
 
 
 @app.post("/chat")

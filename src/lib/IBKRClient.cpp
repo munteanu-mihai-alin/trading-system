@@ -1,6 +1,7 @@
 #include "broker/IBKRClient.hpp"
 
 #include <chrono>
+#include <iostream>
 #include <thread>
 #include <utility>
 
@@ -451,9 +452,73 @@ void IBKRClient::on_next_valid_id(int order_id) {
   next_valid_order_id_ = order_id;
 }
 
+namespace {
+
+// IBKR reports an order rejection as an ERROR, not as an order status.
+// Nothing mapped those into the lifecycle, so a rejected order stayed
+// "Submitted" forever.
+//
+// What that cost, observed on 2026-09-30: the engine placed six exit
+// sells (nextValidId went 7 -> 13, so the ids were consumed), IBKR
+// rejected them all, and the engine never found out. Chronos2Execution
+// Engine::route_exit_orders skips any position whose sell_order_id is
+// non-zero, so all six positions kept a phantom exit that existed
+// nowhere but in memory, and no replacement was ever placed. The
+// positions looked covered and were naked.
+//
+// Codes are narrow on purpose. IBKR sends a great deal down this
+// channel that is informational (2104 farm connected, 2106 data OK,
+// 2109 outside-RTH attribute ignored), and treating any of those as a
+// rejection would cancel healthy orders.
+[[nodiscard]] bool is_order_rejection_code(int code) {
+  switch (code) {
+    case 201:    // Order rejected - see message for the reason
+    case 203:    // Security is not available or not allowed for this account
+    case 321:    // Server error validating the order
+    case 10147:  // OrderId that needs to be cancelled is not found
+    case 10148:  // OrderId that needs to be cancelled cannot be cancelled
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool is_order_cancel_code(int code) {
+  return code == 202;  // Order cancelled - see message
+}
+
+}  // namespace
+
 void IBKRClient::on_error(const IBKRError& error) {
-  std::lock_guard<std::mutex> lock(event_mutex_);
-  errors_.push_back(error);
+  {
+    std::lock_guard<std::mutex> lock(event_mutex_);
+    errors_.push_back(error);
+  }
+
+  // request_id carries the order id for order-scoped errors and -1 for
+  // general ones, so a negative id is never an order.
+  if (error.request_id < 0)
+    return;
+
+  const bool rejected = is_order_rejection_code(error.code);
+  const bool cancelled = is_order_cancel_code(error.code);
+  if (!rejected && !cancelled)
+    return;
+
+  // Only touch orders this client actually submitted. request_id shares
+  // a number space with market-data ticker ids, and ticker 5 must not
+  // be able to mark order 5 rejected.
+  if (!lifecycle_.get(error.request_id))
+    return;
+
+  const auto* state = lifecycle_.get(error.request_id);
+  lifecycle_.on_status(error.request_id, rejected ? "Inactive" : "Cancelled",
+                       state->filled_qty, state->remaining_qty,
+                       state->avg_fill_price);
+
+  std::cerr << "[ibkr] order " << error.request_id << " "
+            << (rejected ? "REJECTED" : "CANCELLED") << " code=" << error.code
+            << " msg=" << error.message << std::endl;
 }
 
 void IBKRClient::on_position(const std::string& symbol, double qty,

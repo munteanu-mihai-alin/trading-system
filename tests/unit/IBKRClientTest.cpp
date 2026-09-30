@@ -592,3 +592,103 @@ TEST(IBKRClient, DrainTradesEmptyForUnknownTicker) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------
+// Order-rejection dispatch
+//
+// IBKR reports a rejection as an ERROR, not as an order status. Until
+// 2026-09-30 on_error only appended to errors_, so a rejected order
+// stayed "Submitted" in the lifecycle forever.
+//
+// What that cost in production: the engine placed six exit sells
+// (nextValidId advanced 7 -> 13, so the ids were consumed), IBKR
+// rejected all six, and the engine never learned.
+// Chronos2ExecutionEngine::route_exit_orders skips any position whose
+// sell_order_id is non-zero, so every position kept a phantom exit that
+// existed only in memory and no replacement was ever placed. They
+// looked covered and were naked.
+//
+// The dangerous direction here is over-reacting. IBKR sends plenty of
+// informational traffic down the same channel -- 2104 farm connected,
+// 2106 data OK, 2109 outside-RTH attribute ignored, which an exit
+// placed after the close genuinely receives -- and treating any of
+// those as a rejection would kill healthy orders. Hence most of these
+// assert that nothing happens.
+
+namespace {
+
+hft::IBKRError make_error(int request_id, int code, const char* msg = "test") {
+  hft::IBKRError e;
+  e.request_id = request_id;
+  e.code = code;
+  e.message = msg;
+  return e;
+}
+
+// Register order 7 with the lifecycle, deliver one error, report status.
+hft::OrderLifecycleStatus status_after_error(int err_id, int code) {
+  auto cm = ClientWithMock::make();
+  hft::OrderRequest req;
+  req.id = 7;
+  req.symbol = "AAPL";
+  req.qty = 1.0;
+  req.limit = 100.0;
+  req.is_buy = false;
+  cm.client.place_limit_order(req);
+  cm.client.on_error(make_error(err_id, code));
+  const auto* st = cm.client.order_lifecycle()->get(7);
+  return st ? st->status : hft::OrderLifecycleStatus::Unknown;
+}
+
+}  // namespace
+
+TEST(IBKRClientErrorDispatch, RejectionCodesMarkTheOrderRejected) {
+  for (int code : {201, 203, 321, 10147, 10148}) {
+    EXPECT_EQ(status_after_error(7, code), hft::OrderLifecycleStatus::Rejected)
+        << "code " << code << " should mark the order rejected";
+  }
+}
+
+TEST(IBKRClientErrorDispatch, CancelCodeMarksTheOrderCancelled) {
+  EXPECT_EQ(status_after_error(7, 202), hft::OrderLifecycleStatus::Cancelled);
+}
+
+TEST(IBKRClientErrorDispatch, InformationalCodesLeaveTheOrderAlone) {
+  for (int code : {2104, 2106, 2107, 2109, 399, 354, 10167}) {
+    EXPECT_EQ(status_after_error(7, code), hft::OrderLifecycleStatus::Submitted)
+        << "code " << code << " must not disturb the order";
+  }
+}
+
+TEST(IBKRClientErrorDispatch, GeneralErrorsWithNoOrderIdAreIgnored) {
+  // request_id is -1 for errors that are not about a specific order.
+  EXPECT_EQ(status_after_error(-1, 201), hft::OrderLifecycleStatus::Submitted);
+}
+
+TEST(IBKRClientErrorDispatch, ErrorForAnUnknownIdDoesNotInventAnOrder) {
+  // request_id shares a number space with market-data ticker ids, so
+  // ticker 5 must not be able to mark order 5 rejected.
+  auto cm = ClientWithMock::make();
+  hft::OrderRequest req;
+  req.id = 7;
+  req.symbol = "AAPL";
+  req.qty = 1.0;
+  req.limit = 100.0;
+  cm.client.place_limit_order(req);
+  cm.client.on_error(make_error(5, 201));
+  EXPECT_EQ(cm.client.order_lifecycle()->get(5), nullptr);
+  EXPECT_EQ(cm.client.order_lifecycle()->get(7)->status,
+            hft::OrderLifecycleStatus::Submitted);
+}
+
+TEST(IBKRClientErrorDispatch, DispatchDoesNotReplaceTheAuditTrail) {
+  auto cm = ClientWithMock::make();
+  hft::OrderRequest req;
+  req.id = 7;
+  req.symbol = "AAPL";
+  req.qty = 1.0;
+  req.limit = 100.0;
+  cm.client.place_limit_order(req);
+  cm.client.on_error(make_error(7, 201, "order rejected"));
+  EXPECT_FALSE(cm.client.errors().empty());
+}

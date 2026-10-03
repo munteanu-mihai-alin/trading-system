@@ -39,6 +39,8 @@ import json
 import os
 import shutil
 import subprocess
+import time
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -963,7 +965,147 @@ def _latest_mid_by_symbol(path: Path) -> Dict[str, float]:
     return out
 
 
+# --- IBKR snapshot -----------------------------------------------------
+#
+# /live/orders used to be derived entirely from reports/orders.csv and
+# reports/decisions.csv. The Chronos engine writes NEITHER -- the config
+# still carries order_log_path and decision_log_path, but nothing on
+# this branch reads them; they belonged to LiveExecutionEngine, which
+# was deleted. So the screen was empty while the paper account held six
+# positions worth real money.
+#
+# The broker is the only source of truth for positions and orders, so
+# ask it. Via a subprocess: ib_insync drives its own asyncio loop and
+# its sync API deadlocks inside uvicorn's running loop, and a hung
+# gateway must not be able to wedge the API.
+_SNAPSHOT_TTL_SEC = 5.0
+_snapshot_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
+def _ibkr_snapshot(port: int) -> Dict[str, Any]:
+    """Positions, working orders and P&L straight from IBKR.
+
+    Cached briefly: the app polls this screen, and each call is a fresh
+    gateway connection.
+    """
+    now = time.time()
+    cached = _snapshot_cache.get("data")
+    if cached is not None and (now - _snapshot_cache["at"]) < _SNAPSHOT_TTL_SEC:
+        return cached
+
+    script = REPO_ROOT.parent / "services" / "scripts" / "ibkr_snapshot.py"
+    if not script.is_file():
+        script = Path(__file__).resolve().parent.parent / "ibkr_snapshot.py"
+    venv_py = REPO_ROOT.parent / "services" / ".venv" / "bin" / "python"
+    interp = str(venv_py) if venv_py.exists() else sys.executable
+    try:
+        out = subprocess.run(
+            [interp, str(script), "--port", str(port)],
+            capture_output=True, text=True, timeout=40, check=False,
+        )
+        data = json.loads(out.stdout or "{}")
+    except Exception as exc:
+        data = {"ok": False, "positions": [], "orders": [], "account": {},
+                "error": f"snapshot failed: {str(exc)[:160]}"}
+
+    _snapshot_cache["at"] = now
+    _snapshot_cache["data"] = data
+    return data
+
+
 @app.get("/live/orders")
+def live_orders(req: Request, instance: Optional[str] = None):
+    """Positions, working exit orders and P&L for one instance.
+
+    Sourced from IBKR, not from the engine's CSVs -- the Chronos engine
+    writes none (see _ibkr_snapshot). target_price is the resting sell's
+    limit when one exists, otherwise entry * (1 + target_profit_pct),
+    which is what route_exit_orders would place.
+    """
+    _require_token(req)
+    inst = _resolve_instance(instance)
+    cfg = _config_map(inst)
+    port = 4001 if inst == "live" else 4002
+
+    snap = _ibkr_snapshot(port)
+    try:
+        target_pct = float(cfg.get("target_profit_pct", "0.008"))
+    except ValueError:
+        target_pct = 0.008
+
+    # Working sells, keyed by symbol, so a position can show the limit
+    # actually resting at the broker rather than a computed guess.
+    sell_limit_by_symbol: Dict[str, float] = {}
+    orders_out = []
+    for o in snap.get("orders", []):
+        sym = o.get("symbol")
+        if o.get("side") == "SELL" and sym and o.get("limit"):
+            sell_limit_by_symbol[sym] = float(o["limit"])
+        orders_out.append({
+            "ts": None,
+            "order_id": str(o.get("order_id")) if o.get("order_id") else None,
+            "symbol": sym,
+            "side": (o.get("side") or "").lower() or None,
+            "event": "working",
+            "qty": o.get("qty"),
+            "limit": o.get("limit"),
+            "fill_price": None,
+        })
+
+    open_positions = []
+    unrealized_total = 0.0
+    for p in snap.get("positions", []):
+        qty = float(p.get("qty") or 0.0)
+        if qty <= 0.0:
+            continue
+        entry = float(p.get("avg_cost") or 0.0)
+        mkt = float(p.get("market_price") or 0.0)
+        unrl = float(p.get("unrealized") or 0.0)
+        unrealized_total += unrl
+        target = sell_limit_by_symbol.get(
+            p["symbol"], entry * (1.0 + target_pct))
+        upside = None
+        if mkt > 0.0 and target > 0.0:
+            upside = (target - mkt) / mkt * 100.0
+        open_positions.append({
+            "symbol": p["symbol"],
+            "qty": qty,
+            "entry_price": entry,
+            "target_price": target,
+            "predicted_upside_pct": upside,
+            "last_mid": mkt or None,
+            "unrealized": unrl,
+        })
+    open_positions.sort(key=lambda x: x["symbol"])
+
+    def _acct(tag: str) -> float:
+        try:
+            return float(snap.get("account", {}).get(tag, {}).get("USD", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    realized = _acct("RealizedPnL")
+    return {
+        "stats": {
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized_total,
+            "net_pnl": realized + unrealized_total,
+            "open_positions": len(open_positions),
+            "closed_round_trips": 0,
+            "win_rate": None,
+            "filled_buys": 0,
+            "filled_sells": 0,
+            "total_orders": len(orders_out),
+        },
+        "open_positions": open_positions,
+        "orders": orders_out,
+        "source": "ibkr",
+        "snapshot_ok": bool(snap.get("ok")),
+        "snapshot_error": snap.get("error"),
+    }
+
+
+
 def live_orders(req: Request, instance: Optional[str] = None):
     """Live/paper session orders, open positions (with the target/predicted
     exit price), and a small stats block derived from the engine's

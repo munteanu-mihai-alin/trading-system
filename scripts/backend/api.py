@@ -1013,6 +1013,174 @@ def _ibkr_snapshot(port: int) -> Dict[str, Any]:
     return data
 
 
+# --- CI image catalogue ------------------------------------------------
+#
+# CI publishes an image per commit to ghcr as <branch>-<shortsha>. The
+# registry knows which builds EXIST; only git knows what they CONTAIN.
+# Joining the two is what makes a tag list usable by a human -- a column
+# of hashes is not a thing anyone can choose from.
+#
+# The package is public, so an anonymous pull token is enough and no PAT
+# has to live on the box.
+GHCR_IMAGE = os.environ.get(
+    "HFT_GHCR_IMAGE", "munteanu-mihai-alin/trading-system/hft_app"
+)
+_IMAGES_TTL_SEC = 60.0
+_images_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
+def _ghcr_tags() -> List[str]:
+    """Every tag published for the image, or [] if the registry is unreachable."""
+    import urllib.request
+
+    def _get(url: str, headers: Dict[str, str]) -> Dict[str, Any]:
+        rq = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(rq, timeout=15) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    try:
+        tok = _get(
+            f"https://ghcr.io/token?scope=repository:{GHCR_IMAGE}:pull", {}
+        )["token"]
+        return _get(
+            f"https://ghcr.io/v2/{GHCR_IMAGE}/tags/list",
+            {"Authorization": f"Bearer {tok}"},
+        ).get("tags", []) or []
+    except Exception:
+        return []
+
+
+def _git_commit_meta(shas: List[str]) -> Dict[str, Dict[str, Any]]:
+    """subject + author date for each sha, from the services checkout.
+
+    A sha the local clone has never fetched simply gets no entry; the
+    caller shows the tag without a message rather than hiding the image.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    repo = Path(__file__).resolve().parents[2]
+    for sha in shas:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(repo), "show", "-s",
+                 "--format=%H%x1f%s%x1f%aI%x1f%an", sha],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            if r.returncode != 0 or not r.stdout.strip():
+                continue
+            full, subject, authored, author = r.stdout.strip().split("\x1f")
+            out[sha] = {"commit_full": full, "subject": subject,
+                        "authored_at": authored, "author": author}
+        except Exception:
+            continue
+    return out
+
+
+@app.get("/images")
+def list_images(req: Request, instance: Optional[str] = None,
+                limit: int = 25):
+    """CI-built images for this branch, newest first.
+
+    Each entry carries the commit message and date so a build can be
+    chosen by what it changed rather than by hash. deployed=true marks
+    the one the instance is currently running.
+    """
+    _require_token(req)
+    inst = _resolve_instance(instance)
+
+    now = time.time()
+    cached = _images_cache.get("data")
+    if cached is None or (now - _images_cache["at"]) >= _IMAGES_TTL_SEC:
+        cached = _ghcr_tags()
+        _images_cache["at"] = now
+        _images_cache["data"] = cached
+    tags = cached
+
+    # What this instance runs right now, so the app can mark it.
+    running_commit = None
+    exe = _instance_dir(inst) / "bin" / "hft_app"
+    probed = _probe_binary_provenance(exe)
+    if probed:
+        running_commit = probed.get("commit")
+
+    # Tags are "<branch>-<shortsha>"; the bare branch tag is a moving
+    # pointer at the newest build and would duplicate a pinned entry.
+    entries = []
+    seen = set()
+    for tag in tags:
+        if "-" not in tag:
+            continue
+        sha = tag.rsplit("-", 1)[1]
+        if len(sha) < 6 or not all(c in "0123456789abcdef" for c in sha):
+            continue
+        if sha in seen:
+            continue
+        seen.add(sha)
+        entries.append({"tag": tag, "commit": sha})
+
+    meta = _git_commit_meta([e["commit"] for e in entries])
+    for e in entries:
+        m = meta.get(e["commit"], {})
+        e["subject"] = m.get("subject")
+        e["authored_at"] = m.get("authored_at")
+        e["author"] = m.get("author")
+        e["deployed"] = (e["commit"] == running_commit)
+
+    # Newest first. Commits we have metadata for sort by date; anything
+    # unknown goes last rather than being silently dropped.
+    entries.sort(key=lambda e: (e["authored_at"] or ""), reverse=True)
+
+    return {
+        "instance": inst,
+        "image": GHCR_IMAGE,
+        "running_commit": running_commit,
+        "images": entries[: max(1, min(limit, 100))],
+    }
+
+
+@app.post("/images/deploy")
+def deploy_image(payload: Dict[str, Any], req: Request):
+    """Deploy a CI image to an instance.
+
+    Body: {"instance": "paper", "tag": "<branch>-<sha>", "force": false}
+
+    Delegates to scripts/deploy_from_ghcr.sh, which owns the safety
+    rules: it refuses while that instance's engine is running (not
+    overridable), refuses inside the trading window unless forced,
+    verifies the pulled binary runs and reports the commit it claims,
+    and rolls the symlink back if the post-swap check fails.
+    """
+    _require_token(req)
+    inst = _resolve_instance(payload.get("instance"))
+    tag = str(payload.get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="tag is required")
+    # The tag becomes a docker ref and a directory name.
+    if not all(c.isalnum() or c in "-._" for c in tag):
+        raise HTTPException(status_code=400, detail="invalid tag")
+
+    script = Path(__file__).resolve().parents[1] / "deploy_from_ghcr.sh"
+    cmd = ["bash", str(script), "--instance", inst, "--tag", tag]
+    if payload.get("force"):
+        cmd.append("--force")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=600, check=False)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="deploy timed out")
+
+    ok = r.returncode == 0
+    return {
+        "ok": ok,
+        "instance": inst,
+        "tag": tag,
+        "returncode": r.returncode,
+        # Both streams matter: the interlocks explain themselves on
+        # stderr, and a refusal is a normal outcome, not a crash.
+        "stdout": r.stdout[-4000:],
+        "stderr": r.stderr[-4000:],
+    }
+
+
 @app.get("/live/orders")
 def live_orders(req: Request, instance: Optional[str] = None):
     """Positions, working exit orders and P&L for one instance.

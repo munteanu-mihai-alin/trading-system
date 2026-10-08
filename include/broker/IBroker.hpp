@@ -125,6 +125,20 @@ struct BrokerOpenOrder {
   std::string side;
   double qty = 0.0;
   double limit = 0.0;
+  // IBKR's OrderState::status. reqAllOpenOrders fires openOrder for
+  // EVERY order the broker still knows about -- Cancelled, Inactive and
+  // Filled included -- so "open" in the callback name is a misnomer.
+  // Startup reconciliation must not bind a dead order as a working
+  // exit: route_exit_orders skips any position whose sell_order_id is
+  // set, so one phantom binding silences that position for good. Empty
+  // means the broker did not say, which is treated as live.
+  std::string status;
+
+  // PendingSubmit / PreSubmitted / Submitted are the live states.
+  [[nodiscard]] bool is_working() const {
+    return status.empty() || status == "PendingSubmit" ||
+           status == "PreSubmitted" || status == "Submitted";
+  }
 };
 
 class IBroker {

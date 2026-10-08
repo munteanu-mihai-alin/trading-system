@@ -26,6 +26,7 @@
 #include "Execution.h"
 #include "Order.h"
 #include "OrderCancel.h"
+#include "OrderState.h"
 
 namespace hft {
 
@@ -243,7 +244,7 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
   void tickEFP(TickerId, TickType, double, const std::string&, double, int,
                const std::string&, double, double) override {}
   void openOrder(OrderId orderId, const Contract& contract, const Order& order,
-                 const OrderState&) override {
+                 const OrderState& state) override {
     if (callbacks_ == nullptr)
       return;
     // Translate Decimal qty -> double; map LMT/BUY-SELL action to the
@@ -255,8 +256,11 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
     const std::string side = (order.action == "BUY")    ? "buy"
                              : (order.action == "SELL") ? "sell"
                                                         : order.action;
+    // state.status carries Submitted / Cancelled / Filled / ...
+    // Without it the engine cannot tell a working order from a dead
+    // one, and reqAllOpenOrders reports both.
     callbacks_->on_open_order(static_cast<int>(orderId), contract.symbol, side,
-                              qty, order.lmtPrice);
+                              qty, order.lmtPrice, state.status);
   }
   void openOrderEnd() override {
     if (callbacks_ != nullptr) {

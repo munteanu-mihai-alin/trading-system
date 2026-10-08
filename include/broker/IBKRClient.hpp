@@ -147,8 +147,8 @@ class IBKRClient final : public IBroker, public IBKRCallbacks {
                    double avg_cost) override;
   void on_position_end() override;
   void on_open_order(int order_id, const std::string& symbol,
-                     const std::string& side, double qty,
-                     double limit) override;
+                     const std::string& side, double qty, double limit,
+                     const std::string& status) override;
   void on_open_order_end() override;
   void on_commission_report(const std::string& exec_id, int order_id,
                             double commission_dollars) override;

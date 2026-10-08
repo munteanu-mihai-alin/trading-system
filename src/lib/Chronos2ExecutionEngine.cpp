@@ -37,6 +37,26 @@ std::string quote(const std::string& s) {
   return out;
 }
 
+// Round a limit to the contract's minimum price variation.
+//
+// IBKR rejects anything else with code 110, "The price does not
+// conform to the minimum price variation for this contract". Every
+// exit order this engine placed was rejected that way: the target is
+// entry * (1 + target_profit_pct) or a Chronos prediction, both raw
+// doubles, so limits like 191.722 and 77.4523 went out. 110 was not
+// dispatched either, so the lifecycle kept believing the order was
+// working and route_exit_orders skipped the position forever. Six
+// positions held for over a week with no exit.
+//
+// US equities above $1 are penny-ticked, which is the whole universe
+// here. Sub-dollar names tick at $0.0001; if any are ever added this
+// needs the real minTick from reqContractDetails.
+[[nodiscard]] double round_to_tick(double price, double tick) {
+  if (tick <= 0.0 || price <= 0.0)
+    return price;
+  return std::round(price / tick) * tick;
+}
+
 std::string today_yyyymmdd() {
   std::time_t t = std::time(nullptr);
   std::tm tm{};
@@ -460,6 +480,11 @@ void Chronos2ExecutionEngine::reconcile_positions_from_broker() {
   for (const auto& bo : orders) {
     if (bo.side != "sell")
       continue;
+    // reqAllOpenOrders also reports Cancelled and Filled orders.
+    // Binding a dead one as a working exit makes route_exit_orders skip
+    // that position permanently.
+    if (!bo.is_working())
+      continue;
     auto it = open_positions_.find(bo.symbol);
     if (it == open_positions_.end())
       continue;
@@ -720,7 +745,7 @@ void Chronos2ExecutionEngine::route_exit_orders() {
     req.symbol = pos.symbol;
     req.is_buy = false;
     req.qty = pos.qty;
-    req.limit = target;
+    req.limit = round_to_tick(target, cfg_.app.price_tick);
     // GTC: an exit must survive the close and the pre-open window.
     // With DAY it was cancelled on arrival at 09:25 and never replaced.
     req.tif = cfg_.app.exit_tif;

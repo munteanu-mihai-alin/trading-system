@@ -60,7 +60,7 @@ class IBKRCallbacks {
   // on_open_order_end() once the broker has delivered every order.
   virtual void on_open_order(int /*order_id*/, const std::string& /*symbol*/,
                              const std::string& /*side*/, double /*qty*/,
-                             double /*limit*/) {}
+                             double /*limit*/, const std::string& /*status*/) {}
   virtual void on_open_order_end() {}
 
   // Item 18: commissionAndFeesReport. IBKR emits one of these per fill

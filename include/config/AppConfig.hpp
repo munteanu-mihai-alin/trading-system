@@ -45,6 +45,11 @@ struct AppConfig {
   // fills; DAY orders are cancelled at the close AND before the open,
   // and the engine starts at 09:25 ET.
   std::string exit_tif = "GTC";
+
+  // Minimum price variation. Limits are rounded to it before being
+  // sent; IBKR rejects anything else with code 110. 0.01 covers US
+  // equities above $1, which is this universe.
+  double price_tick = 0.01;
   bool order_enabled = true;
   double order_qty = 10.0;
   double max_order_qty = 10.0;

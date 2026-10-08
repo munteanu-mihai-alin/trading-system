@@ -472,6 +472,8 @@ namespace {
 // rejection would cancel healthy orders.
 [[nodiscard]] bool is_order_rejection_code(int code) {
   switch (code) {
+    case 110:    // Price does not conform to the minimum price
+                 // variation (tick size) for this contract
     case 201:    // Order rejected - see message for the reason
     case 203:    // Security is not available or not allowed for this account
     case 321:    // Server error validating the order
@@ -550,10 +552,10 @@ std::vector<BrokerOpenOrder> IBKRClient::query_open_orders() {
 
 void IBKRClient::on_open_order(int order_id, const std::string& symbol,
                                const std::string& side, double qty,
-                               double limit) {
+                               double limit, const std::string& status) {
   std::lock_guard<std::mutex> lock(open_orders_mutex_);
   pending_open_orders_.push_back(
-      BrokerOpenOrder{order_id, symbol, side, qty, limit});
+      BrokerOpenOrder{order_id, symbol, side, qty, limit, status});
 }
 
 void IBKRClient::on_open_order_end() {

@@ -74,6 +74,8 @@ AppConfig AppConfig::load_from_file(const std::string& path) {
         cfg.market_data_max_age_ms = std::stoi(val);
       } else if (key == "require_rth") {
         cfg.require_rth = parse_bool(val);
+      } else if (key == "exit_tif") {
+        cfg.exit_tif = val;
       } else if (key == "order_enabled") {
         cfg.order_enabled = parse_bool(val);
       } else if (key == "order_qty") {

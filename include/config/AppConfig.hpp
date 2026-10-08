@@ -40,6 +40,11 @@ struct AppConfig {
   // strictly worse than opening one. Backtest and sim ignore this
   // entirely (see app/trading_hours.hpp).
   bool require_rth = true;
+
+  // Time-in-force for exit orders. GTC so an exit rests until it
+  // fills; DAY orders are cancelled at the close AND before the open,
+  // and the engine starts at 09:25 ET.
+  std::string exit_tif = "GTC";
   bool order_enabled = true;
   double order_qty = 10.0;
   double max_order_qty = 10.0;

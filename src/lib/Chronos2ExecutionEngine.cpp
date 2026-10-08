@@ -721,6 +721,9 @@ void Chronos2ExecutionEngine::route_exit_orders() {
     req.is_buy = false;
     req.qty = pos.qty;
     req.limit = target;
+    // GTC: an exit must survive the close and the pre-open window.
+    // With DAY it was cancelled on arrival at 09:25 and never replaced.
+    req.tif = cfg_.app.exit_tif;
     broker_->place_limit_order(req);
 
     pos.sell_order_id = req.id;

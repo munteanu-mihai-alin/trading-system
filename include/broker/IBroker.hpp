@@ -70,6 +70,21 @@ struct OrderRequest {
   double qty = 0.0;
   double limit = 0.0;
   bool transmit = true;
+  // Time-in-force. Empty leaves it to IBKR, which applies the account
+  // preset -- in practice DAY, and a DAY order sent outside regular
+  // hours is cancelled on arrival with code 10349 ("Order TIF was set
+  // to DAY based on order preset").
+  //
+  // That is not theoretical: the RTH timer starts the engine at 09:25
+  // ET, five minutes BEFORE the open, so every exit placed on the
+  // first step was cancelled before the session began. The engine was
+  // never told (10349 is not dispatched), so sell_order_id stayed set
+  // and no replacement was ever placed. Six positions ran for over a
+  // week with no working exit.
+  //
+  // Exits therefore ask for GTC: an exit should rest until it fills,
+  // not evaporate at every close and pre-open.
+  std::string tif = "DAY";
   // Optional, same semantics as MarketDepthRequest::primary_exchange. When
   // set, RealIBKRTransport pins Contract.primaryExchange so the order
   // routes to the exact listing the engine subscribed against. Leaving it

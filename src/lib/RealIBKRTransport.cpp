@@ -104,6 +104,8 @@ class RealIBKRTransport : public IBKRTransport, public EWrapper {
     order.orderType = "LMT";
     order.totalQuantity = DecimalFunctions::doubleToDecimal(req.qty);
     order.lmtPrice = req.limit;
+    if (!req.tif.empty())
+      order.tif = req.tif;
     order.transmit = req.transmit;
 
     client_.placeOrder(req.id, contract, order);
